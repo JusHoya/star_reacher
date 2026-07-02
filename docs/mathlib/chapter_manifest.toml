@@ -1,0 +1,17 @@
+# Chapter manifest for the FR-29 accretion gate.
+#
+# Every core model module is listed here with the math-library chapter that
+# derives it. scripts/lint_chapters.py enforces the invariant on every CI
+# build: if the module file exists in the tree, its chapter file must exist,
+# must contain the declared \label, and every \testid{...} named in the
+# chapter must exist in the test tree. A model without its chapter is a red
+# build; a chapter without its model (written ahead of the code) is allowed.
+#
+# All paths are relative to the repository root.
+
+schema_version = 1
+
+[[chapter]]
+module = "cpp/src/models/twobody.cpp"
+chapter = "docs/mathlib/chapters/twobody.tex"
+label = "ch:twobody"

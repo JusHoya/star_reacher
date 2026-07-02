@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv*/
+dist/
+_skbuild/
+.pytest_cache/
+
+# C++ / CMake out-of-source build directories
+build*/
+
+# Project outputs: run artifacts and fetched ephemeris data are regenerable,
+# never committed (D-8; test fixtures are synthesized in test code, so no
+# .srlog belongs in the tree).
+out/
+data/
+*.srlog
+
+# LaTeX build litter (docs/mathlib, docs/report). Built PDFs are CI
+# artifacts, not tracked files.
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fls
+*.fdb_latexmk
+*.log
+*.out
+*.run.xml
+*.toc
+*.lof
+*.lot
+*.synctex.gz
+docs/mathlib/*.pdf
+docs/report/*.pdf
+docs/mathlib/version.tex
+docs/report/version.tex
+
+# Editor and OS litter
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

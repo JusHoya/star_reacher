@@ -1,0 +1,226 @@
+% Chapter 2 — Two-body point-mass placeholder model. Follows the mandatory
+% FR-29 six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. The equation labels eq:twobody:accel and eq:twobody:rk4 are
+% echoed verbatim in comments in cpp/src/models/twobody.cpp (FR-29
+% equation-label-to-code traceability); renaming them breaks that trace.
+\chapter{Two-Body Point-Mass Placeholder Model}
+\label{ch:twobody}
+
+\section{Purpose}
+\label{sec:twobody:purpose}
+
+This chapter documents the Phase~1 placeholder dynamics model: a spacecraft
+treated as a massless test particle under the point-mass gravity of a single
+central body, integrated with the classical fourth-order Runge--Kutta method.
+The model exists to exercise the complete pipeline --- mission configuration,
+the C++ core, the SRLOG writer, the Python loader, and the determinism gates
+--- before any production physics lands, and to establish the mandatory
+chapter template and equation-label-to-code traceability discipline that every
+subsequent model chapter follows. It is implemented in
+\texttt{cpp/src/models/twobody.cpp}.
+
+\section{Assumptions and domain of validity}
+\label{sec:twobody:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item The central body is a point mass or, equivalently by Newton's shell
+    theorem, a spherically symmetric mass distribution; its gravitational
+    field is characterized entirely by the parameter $\mu = GM$.
+  \item The spacecraft is a test particle: its mass is negligible relative to
+    the central body ($m \ll M$) and does not influence the motion; the
+    logged mass is constant.
+  \item No perturbations act: no gravity-field harmonics, no third-body
+    gravity, no atmospheric drag, no solar radiation pressure, no thrust.
+  \item No attitude dynamics are modeled. The logged attitude channels carry
+    the fixed identity quaternion $[\,1, 0, 0, 0\,]$ (scalar-first, per
+    Chapter~\ref{ch:notation}) and zero angular rate; they exist to establish
+    the log schema, not to represent physics.
+\end{enumerate}
+
+Domain of validity: pipeline and infrastructure testing, determinism gating,
+and Keplerian reference cases for which an analytic solution exists. The
+model is \emph{not} valid for mission analysis of any real orbit regime.
+
+Out-of-domain behavior: the model silently omits every perturbing
+acceleration, so its error against a real trajectory grows secularly --- for
+example, Earth-orbit nodal regression driven by the $J_2$ zonal harmonic (on
+the order of degrees per day in low Earth orbit) is entirely absent. There is
+no in-model detection of this condition; the guard is procedural, namely that
+Phase~3 perturbation models supersede this chapter's dynamics for any
+production study, and this placeholder remains selectable only as an explicit
+configuration choice.
+
+\section{Derivation}
+\label{sec:twobody:derivation}
+
+The derivation follows the standard two-body development; see
+Vallado~\cite{vallado2013} for the classical treatment. Let two bodies of
+masses $M$ (central body) and $m$ (spacecraft) have inertial positions
+$\vv{R}_M^{I}$ and $\vv{R}_m^{I}$, and define the relative position
+$\vv{r} = \vv{R}_m^{I} - \vv{R}_M^{I}$ with $r = \norm{\vv{r}}$. Newton's law
+of universal gravitation gives the force on the spacecraft due to the central
+body as
+\begin{equation}
+  \vv{F}_{m} = -\,\frac{G M m}{r^{2}}\,\frac{\vv{r}}{r},
+  \label{eq:twobody:newton}
+\end{equation}
+and, by Newton's third law, $\vv{F}_{M} = -\vv{F}_{m}$. Applying Newton's
+second law to each body in the inertial frame,
+\begin{equation}
+  \ddot{\vv{R}}_m^{I} = -\,\frac{G M}{r^{3}}\,\vv{r},
+  \qquad
+  \ddot{\vv{R}}_M^{I} = +\,\frac{G m}{r^{3}}\,\vv{r}.
+  \label{eq:twobody:eachbody}
+\end{equation}
+Subtracting the second of equations~\eqref{eq:twobody:eachbody} from the
+first yields the equation of relative motion,
+\begin{equation}
+  \ddot{\vv{r}} = -\,\frac{G\,(M + m)}{r^{3}}\,\vv{r}.
+  \label{eq:twobody:relative}
+\end{equation}
+Under assumption 2 ($m \ll M$), the mass sum reduces to $M$ alone; defining
+the gravitational parameter $\mu \equiv G M$ gives the model's governing
+equation,
+\begin{equation}
+  \boxed{\;\ddot{\vv{r}} = -\,\mu\,\frac{\vv{r}}{\norm{\vv{r}}^{3}}\;}
+  \label{eq:twobody:accel}
+\end{equation}
+with $\vv{r}$ and $\ddot{\vv{r}}$ resolved in the GCRF ($I$) frame of
+Table~\ref{tab:notation:frames}.
+
+Two conserved quantities of equation~\eqref{eq:twobody:accel} anchor the
+validation evidence. First, the specific angular momentum
+$\vv{h} = \vv{r} \times \vv{v}$, with $\vv{v} = \dot{\vv{r}}$, is constant:
+\begin{equation}
+  \dot{\vv{h}}
+    = \dot{\vv{r}} \times \vv{v} + \vv{r} \times \dot{\vv{v}}
+    = \vv{v} \times \vv{v}
+      - \frac{\mu}{r^{3}}\,\bigl(\vv{r} \times \vv{r}\bigr)
+    = \vv{0}.
+  \label{eq:twobody:hconst}
+\end{equation}
+Second, the specific orbital energy
+$\varepsilon = \tfrac{1}{2}\,\vv{v}\cdot\vv{v} - \mu/r$ is constant: using
+$\dot{r} = (\vv{r} \cdot \vv{v})/r$,
+\begin{equation}
+  \dot{\varepsilon}
+    = \vv{v} \cdot \dot{\vv{v}} + \frac{\mu}{r^{2}}\,\dot{r}
+    = -\,\frac{\mu}{r^{3}}\,\bigl(\vv{v} \cdot \vv{r}\bigr)
+      + \frac{\mu}{r^{3}}\,\bigl(\vv{r} \cdot \vv{v}\bigr)
+    = 0.
+  \label{eq:twobody:energyconst}
+\end{equation}
+
+For the circular reference case used in validation, setting the gravitational
+acceleration equal to the centripetal acceleration $v_c^{2}/a$ at constant
+radius $a$ gives the circular speed and period
+\begin{equation}
+  v_c = \sqrt{\frac{\mu}{a}},
+  \qquad
+  T = \frac{2 \pi a}{v_c} = 2 \pi \sqrt{\frac{a^{3}}{\mu}}.
+  \label{eq:twobody:period}
+\end{equation}
+
+\section{Discretization and implementation}
+\label{sec:twobody:implementation}
+
+Equation~\eqref{eq:twobody:accel} is integrated as the autonomous first-order
+system
+\begin{equation}
+  \vv{y} =
+  \begin{bmatrix} \vv{r} \\ \vv{v} \end{bmatrix},
+  \qquad
+  \dot{\vv{y}} = \vv{f}(\vv{y}) =
+  \begin{bmatrix} \vv{v} \\ -\,\mu\,\vv{r}/\norm{\vv{r}}^{3} \end{bmatrix},
+  \label{eq:twobody:firstorder}
+\end{equation}
+using the classical fourth-order Runge--Kutta method (RK4) with a fixed step
+$h = \Delta t$; see Hairer, N{\o}rsett, and Wanner~\cite{hairer1993} for the
+method and its coefficients. One step from $\vv{y}_n$ to $\vv{y}_{n+1}$ is
+\begin{equation}
+  \begin{aligned}
+    \vv{k}_1 &= \vv{f}(\vv{y}_n), \\
+    \vv{k}_2 &= \vv{f}\!\bigl(\vv{y}_n + \tfrac{h}{2}\,\vv{k}_1\bigr), \\
+    \vv{k}_3 &= \vv{f}\!\bigl(\vv{y}_n + \tfrac{h}{2}\,\vv{k}_2\bigr), \\
+    \vv{k}_4 &= \vv{f}\!\bigl(\vv{y}_n + h\,\vv{k}_3\bigr), \\
+    \vv{y}_{n+1} &= \vv{y}_n
+      + \tfrac{h}{6}\,\bigl(\vv{k}_1 + 2\vv{k}_2 + 2\vv{k}_3 + \vv{k}_4\bigr),
+  \end{aligned}
+  \label{eq:twobody:rk4}
+\end{equation}
+with local truncation error $\mathcal{O}(h^{5})$ and global error
+$\mathcal{O}(h^{4})$~\cite{hairer1993}. Because the system is autonomous, no
+explicit time argument appears in the stage evaluations.
+
+Implementation notes:
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/twobody.cpp}. The source comments echo the labels
+    \texttt{eq:twobody:accel} (the acceleration evaluation) and
+    \texttt{eq:twobody:rk4} (the RK4 stage update) verbatim, so each code
+    block traces to its defining equation and the chapter-manifest lint can
+    hold code and document together.
+  \item \textbf{Gravitational parameter.} The Earth value is
+    $\mu_\oplus = \qty{3.986004418e14}{\metre\cubed\per\second\squared}$,
+    from the IERS Conventions (2010), Technical Note No.~36~\cite{iers2010}.
+    The constant is defined once in the core (exposed as
+    \texttt{\_core.gm("earth")}) and cited at its definition.
+  \item \textbf{Determinism.} The integration loop is single-threaded with a
+    fixed evaluation order, compiled with fast-math disabled and
+    floating-point contraction off (decision D-10), so the same inputs on the
+    same binary reproduce bit-identical trajectories --- the property gated
+    by test \testid{V001}.
+  \item \textbf{Logging.} States are recorded at the configured truth rate by
+    decimation of integrator steps: the state is logged at $t = 0$ and at
+    every $k$-th step thereafter, where $k = 1/(\Delta t \cdot
+    f_{\text{truth}})$ is validated to be an exact positive integer. Logged
+    values are never interpolated.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:twobody:validation}
+
+Table~\ref{tab:twobody:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}; the tolerances
+are recorded next to each test in its suite.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the two-body placeholder model.}
+  \label{tab:twobody:validation}
+  \begin{tabular}{llp{6.4cm}}
+    \toprule
+    Test ID & Suite & Acceptance basis \\
+    \midrule
+    \testid{twobody_circular_orbit_analytic} &
+      doctest (\texttt{cpp/tests/}) &
+      Circular-orbit closure against
+      equation~\eqref{eq:twobody:period}: position error after one analytic
+      period $T = 2\pi\sqrt{a^{3}/\mu}$ below \qty{1}{\metre} for
+      $a = \qty{6778.137}{\kilo\metre}$, $\Delta t = \qty{0.1}{\second}$. \\
+    \testid{twobody_energy_momentum_drift} &
+      doctest (\texttt{cpp/tests/}) &
+      Relative drift of the conserved quantities $\varepsilon$
+      (equation~\eqref{eq:twobody:energyconst}) and $\norm{\vv{h}}$
+      (equation~\eqref{eq:twobody:hconst}) bounded over a multi-orbit
+      propagation. \\
+    \testid{V001} &
+      \texttt{star verify} &
+      Double-run determinism: two runs of the reference two-body mission
+      produce SHA-256-identical SRLOG files (decision D-10). \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:twobody:references}
+
+This chapter relies on Vallado~\cite{vallado2013} for the two-body
+development, on Hairer, N{\o}rsett, and Wanner~\cite{hairer1993} for the
+classical Runge--Kutta method and its error orders, and on the IERS
+Conventions (2010), Technical Note No.~36~\cite{iers2010} for the value of
+the geocentric gravitational parameter. Full bibliographic details appear in
+the bibliography.

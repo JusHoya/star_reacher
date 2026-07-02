@@ -9,14 +9,11 @@
 
 <br>
 
-<!-- Honest static badges only — no fake CI/coverage/version badges. -->
-[![status](https://img.shields.io/badge/status-spec%20baseline%20(pre--alpha)-6E56CF?style=flat-square)](#roadmap)
-![core](https://img.shields.io/badge/core-C%2B%2B17%20%2B%20Eigen-6E56CF?style=flat-square)
-![frontend](https://img.shields.io/badge/frontend-Python%20%E2%89%A5%203.11-6E56CF?style=flat-square)
-![hardware](https://img.shields.io/badge/hardware-Pi%205%20%E2%86%92%20workstation-6E56CF?style=flat-square)
-[![license](https://img.shields.io/badge/license-undecided-6E56CF?style=flat-square)](#faq)
+<!-- Honest badges only: the real CI workflow and the decided license. -->
+[![ci](https://github.com/JusHoya/star_reacher/actions/workflows/ci.yml/badge.svg)](https://github.com/JusHoya/star_reacher/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-6E56CF?style=flat-square)](LICENSE)
 
-[Why](#why) · [Architecture](#architecture) · [Quickstart](#quickstart) · [Design guarantees](#design-guarantees) · [Roadmap](#roadmap) · [Cite](#how-to-cite)
+[Why](#why) · [Architecture](#architecture) · [Quickstart](#quickstart) · [Design guarantees](#design-guarantees) · [Roadmap](#roadmap) · [Cite](#how-to-cite) · [License](#license)
 
 </div>
 
@@ -27,7 +24,7 @@
 **star_reacher** is a high-fidelity 6DOF simulator for launch vehicles, satellites, and lunar/Mars missions, built as a small C++17/Eigen compute core behind a Python analysis frontend. It is a research instrument — for mission analysis, GNC algorithm development, and world-model and AI/ML spacecraft-navigation research — not a game and not an operational flight tool. The full specification lives in [`PRD.md`](PRD.md); this README is the front door.
 
 > [!IMPORTANT]
-> **Status: specification baseline. No code is implemented yet.** The repository currently contains the PRD, this README, and project memory. The `star` CLI, the C++ core, and every command shown below are the *target* interface defined by the spec — they are Phase-1 work, not shipped. Track what is actually built in the [Roadmap](#roadmap).
+> **Status: Phase 1 (skeleton, contracts, and doc scaffold).** The repository builds, installs, logs, and documents deterministically: the `star` CLI runs a two-body placeholder mission, the SRLOG v1 log format has a writer and a pure-Python reader, the documentation and citation machinery is CI-gated, and the license is decided (Apache-2.0, [ADR 0001](docs/adr/0001-license-and-visibility.md)). No production physics is implemented yet — that begins in Phase 2. Track what is actually built in the [Roadmap](#roadmap).
 
 ## Why
 
@@ -73,16 +70,16 @@ The C++ core (`star::`) owns time systems, reference frames, force/torque compos
 
 ## Quickstart
 
-> These are the **target** commands specified for Phase 1 — they are not yet implemented. Once Phase 1 ships, a new user reaches a rendered 3D trajectory in four commands from a clean machine (the verification-first onboarding, DX-5/FR-31):
+Four commands, all real and copy-pasteable today (verification-first onboarding, DX-5/FR-31). Prerequisites: Python ≥ 3.11, a C++17 compiler, and CMake ≥ 3.26.
 
 ```text
-pip install .                          # install the star CLI + native core
-star verify --quick                    # smoke-test determinism & models (< 60 s on a Pi 5)
-star run missions/ascent_leo.toml      # fly a scripted pad-to-LEO ascent
-star view out/ascent_leo.srlog         # open a self-contained 3D playback in any browser
+pip install .                                  # build the native core and install the star CLI
+star verify --quick                            # run the acceptance smoke tier (< 60 s; ends "VERIFY: PASS")
+star run missions/twobody_leo.toml             # propagate the two-body reference mission -> out/twobody-leo/
+star export --csv out/twobody-leo/run.srlog    # export every logged channel to CSV, round-trip exact
 ```
 
-The intended everyday loop is three commands with zero intermediate steps: run a baseline, edit one value in a vehicle or mission TOML, run the variant, then `star plot out/a out/b --overlay …`. Every plotted curve is labeled with its resolved-config hash, so a plot can never be misattributed to the wrong edit.
+`star plot` (quicklook PNGs) and `star view` (self-contained HTML 3D playback) land in Phase 5; `star docs` builds both PDFs today if a TeX distribution with `latexmk` and `biber` is installed. The everyday loop once plotting lands is three commands with zero intermediate steps: run a baseline, edit one TOML value, run the variant, overlay the plots — every curve labeled with its resolved-config hash so a plot can never be misattributed to the wrong edit.
 
 ## Design guarantees
 
@@ -96,43 +93,63 @@ The intended everyday loop is three commands with zero intermediate steps: run a
 
 ## Roadmap
 
-Eight independently shippable phases, each ending in red-team-checkable exit criteria (full detail in [`PRD.md` §8](PRD.md)). Honest status — only the specification baseline exists today:
+Eight independently shippable phases, each gated on red-team-checkable exit criteria (full detail in [`PRD.md` §8](PRD.md)). Honest status per phase:
 
-- [x] **Spec baseline** — full PRD: 32 functional requirements, 19 keyed decisions, an 8-phase plan, and a requirements-traceability matrix. *(This document set.)*
-- [ ] **Phase 1 — Skeleton, contracts, doc scaffold.** Repo builds/installs/logs deterministically; `star` CLI with a two-body placeholder; SRLOG v1 + loader; CI on all four platforms; doc skeletons; license/visibility decision recorded. *Not yet built.*
-- [ ] **Phase 2 — Math kernel.** Time systems, reference frames, DE440 ephemeris repack + evaluator, RK4/RKF7(8) integrators with dense output and events. *Not yet built.*
-- [ ] **Phase 3 — Environment force models.** Harmonic gravity, third-body, SRP with conical shadow, atmospheres and drag; first cross-tool cases. *Not yet built.*
-- [ ] **Phase 4 — Vehicle 6DOF.** KSP-lite vehicle schema + validator, mass properties, propulsion, aero, attitude dynamics, staging; starter fleet; ascent and trans-lunar missions. *Not yet built.*
-- [ ] **Phase 5 — Data out.** `star plot`, the `star view` HTML viewer, NPZ/Parquet exporters, and live performance gates. *Not yet built.*
-- [ ] **Phase 6 — Sensors, GNC, stepping API.** Sensor suite, GNC plugin interface (C++/Python), `Sim` stepping API, `star consistency` NEES/NIS gates. *Not yet built.*
-- [ ] **Phase 7 — Batch, Monte Carlo, ML layer.** `star mc` sweeps, MC regression goldens, the Gymnasium and ONNX adapters. *Not yet built.*
-- [ ] **Phase 8 — Validation campaign, report, release.** Full cross-tool table, the scientific report, a fresh-machine walkthrough, and a tagged release with wheels. *Not yet built.*
+| Phase | Scope | Exit criteria (summary) | Status |
+| --- | --- | --- | --- |
+| — | **Spec baseline** — full PRD: 32 functional requirements, 19 keyed decisions, requirements traceability | Document set complete and internally consistent | Complete |
+| 1 | **Skeleton, contracts, doc scaffold** — repo builds/installs/logs deterministically; `star` CLI with two-body placeholder; SRLOG v1 writer + pure-Python loader; RNG streams; doc + citation machinery; CI matrix; license decision (D-19) | `pip install .` on all four CI legs; double-run SHA-256 identity; minor-version log read forward, major/corrupt rejected nonzero; CSV round-trips bit-exact; both PDFs build with zero LaTeX errors and chapter lint enforces model-without-chapter as red; `cffconvert --validate` + README BibTeX match; `verify --quick` < 60 s with `VERIFY: PASS` on the ARM leg | In progress (this change set) |
+| 2 | **Math kernel** — time systems, frames, DE440 repack + Chebyshev evaluator, RK4/RKF7(8) with dense output, event detection | Time/frame conversions match SOFA/ERFA (1e-9 s, 1e-11 matrix elements); ephemeris < 1 m vs Horizons; integrator convergence slopes 4.0 ± 0.2 / ≥ 7.5; events < 1 µs; cross-platform divergence measured and ≤ 1e-9 relative | Planned |
+| 3 | **Environment force models** — harmonic gravity, third-body, SRP + conical shadow, atmospheres and drag | Accelerations < 1e-12 relative vs independent synthesis; J2 secular rates within 0.5 %; shadow times within 0.1 s; LEO cross-tool RMS < 10 m (GMAT) and < 100 m with drag (Orekit) | Planned |
+| 4 | **Vehicle 6DOF** — KSP-lite schema + validator, mass properties, propulsion, aero, attitude, staging; starter fleet; ascent + TLI missions | Validator mutation tests; Tsiolkovsky closure within 0.1 %; torque-free attitude benchmarks; staging momentum conservation to 1e-12; ascent and TLI missions run in one command each with SHA-256-identical reruns | Planned |
+| 5 | **Data out** — `star plot`, `star view` HTML playback, NPZ/Parquet exporters, performance gates | Headless PNGs on a Pi 5; viewer opens offline with zero network requests; exports round-trip; Pi 5 gates (cislunar < 60 s wall, ascent ≥ 100× real time); dependency and wheel-size minimality gates live | Planned |
+| 6 | **Sensors, GNC, stepping API** — `ISensor` suite, GNC plugin interface (C++/Python), `Sim` stepping API, `star consistency` | Sensor statistics inside chi-square bounds; Allan deviation recovers IMU coefficients within ±10 %; reference EKF passes ensemble NEES/NIS 95 % gates; step-wise and batch runs hash-identical | Planned |
+| 7 | **Batch, Monte Carlo, ML layer** — `star mc` sweeps, MC regression goldens, Gymnasium + ONNX extras | 256/256 sweep manifest success with per-run reproducibility; MC statistics within distributional bounds; `check_env` passes; ONNX controller closes the loop on x86-64 and Pi 5 | Planned |
+| 8 | **Validation campaign, report, release** — full cross-tool table, completed report, fresh-machine walkthrough, tagged release | Every cross-tool case within stated tolerance (e.g., trans-lunar < 1 km at arrival); byte-identical doc rebuilds; fresh-machine README walkthrough succeeds; release wheels pass `verify --quick` on all four platforms | Planned |
 
 ## Data in, data out
 
 - **In:** TOML for everything — missions, vehicles, sensor presets, and sweep specs — with units in the key names (`thrust_vac_N`) and comments carrying each parameter's justification.
-- **Out:** a versioned, self-describing binary log (SRLOG) plus a `meta.json` sidecar. `star_reacher.load(path)` returns NumPy structured arrays (no sim install required to read a log), with optional `to_pandas()`; `star export` writes CSV and NPZ, and Parquet behind an extra. NPZ is the ML-training interchange.
+- **Out:** a versioned, self-describing binary log (SRLOG, format spec in [`docs/formats/srlog_v1.md`](docs/formats/srlog_v1.md)) plus a `meta.json` sidecar written by the CLI. The log itself contains no wall-clock or host data, so it is byte-comparable across reruns.
+
+Reading a log needs only NumPy — the reader is pure Python and works without the compiled core, so analysis machines never need a compiler:
+
+```python
+from star_reacher import load
+
+run = load("out/twobody-leo/run.srlog")
+run.header["config_sha256"]        # the exact configuration that produced this file
+r = run.groups["truth"]["r_m"]     # (N, 3) float64, GCRF position
+t = run.groups["truth"]["t_s"]     # (N,) float64, strictly increasing
+run.events                         # structured array of (t_s, code, detail)
+```
+
+`star export --csv` writes one CSV per channel group with floats emitted via `repr`, so every value round-trips to full stored precision. NPZ and Parquet exporters land in Phase 5; NPZ is the ML-training interchange.
 
 ## How to cite
 
-The publication machinery is specified (D-18/FR-31) and lands with Phase 1: a `CITATION.cff` at the repository root, a math-library PDF, and a scientific-report PDF, all carrying the author byline **Melvin Hoyer III**, with a CI check keeping the README BibTeX consistent with `CITATION.cff`. Until the first tagged release, treat the following as the intended citation (version and DOI forthcoming):
+Citation metadata lives in [`CITATION.cff`](CITATION.cff) (validated by `cffconvert` in CI); a CI check (`scripts/check_citation.py`) keeps the BibTeX block below consistent with it field for field. The math-library PDF and the scientific-report PDF both carry the author byline **Melvin Hoyer III** and are built by `star docs`.
 
 ```bibtex
 @software{hoyer_star_reacher,
   author  = {Hoyer, III, Melvin},
-  title   = {{star\_reacher}: a small, deterministic 6DOF space-mission simulator},
+  title   = {star\_reacher},
   year    = {2026},
-  url      = {https://github.com/JusHoya/star_reacher},
-  note    = {Version and DOI forthcoming}
+  url     = {https://github.com/JusHoya/star_reacher},
+  version = {0.1.0}
 }
 ```
+
+## License
+
+Apache License 2.0 — see [`LICENSE`](LICENSE). The decision (Apache-2.0, public repository) and its rationale, including the patent-disclosure consequences, are recorded in [ADR 0001](docs/adr/0001-license-and-visibility.md).
 
 ## FAQ
 
 <details>
 <summary><b>Is anything implemented yet?</b></summary>
 
-No. The specification baseline (the PRD) is complete, and this README describes the system it defines. Implementation begins with Phase 1. The Roadmap reflects the true state: only the spec baseline is checked.
+Phase 1 is the current state: the build/install path, the `star` CLI with a two-body placeholder mission, the SRLOG v1 log format (writer and pure-Python reader), the RNG streams, the verification harness, the documentation and citation machinery, and CI on all four platforms. Production physics (time systems, frames, ephemerides, force models, the vehicle 6DOF) begins in Phase 2. The [Roadmap](#roadmap) reflects the true state per phase.
 
 </details>
 
@@ -146,7 +163,7 @@ Those tools are excellent at what they do, and star_reacher validates against GM
 <details>
 <summary><b>What is the license?</b></summary>
 
-Undecided, deliberately. A public commit of substantive technical content is a legal disclosure event (a 12-month US grace clock; it can forfeit patent rights in absolute-novelty jurisdictions), so the license and visibility choice — MIT vs. Apache-2.0 vs. all-rights-reserved — is an explicit open decision to be made before the first substantive public push. The development plan proceeds identically either way.
+Apache License 2.0, with the repository public — decided 2026-07-02 and recorded in [ADR 0001](docs/adr/0001-license-and-visibility.md). Apache-2.0 was chosen over MIT for its explicit patent grant; the decision record also documents the disclosure consequences (the 12-month US grace clock, and the effect on absolute-novelty foreign rights).
 
 </details>
 
