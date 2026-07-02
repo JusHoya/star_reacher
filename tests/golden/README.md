@@ -20,8 +20,13 @@ tests/golden/
 Value files are TOML. Unsigned 64-bit integers are recorded as `"0x..."` hex
 strings because TOML integers are signed 64-bit; floating-point values that
 must be exact are recorded as binary64 hex literals (Python `float.hex()`
-form). Binary fixtures are never committed (contract section 11): tests that
-need byte streams synthesize them in test code.
+form). Binary fixtures are not committed when tests can synthesize the bytes
+in test code (the Phase 1 rule, contract section 11). Phase 2 adds one
+deliberate exception: real DE440 Chebyshev coefficients cannot be
+synthesized, so `ephemeris/` commits small binary SREPH excerpts of the
+repacked kernel data (D-8: "tiny kernel excerpts needed by golden-vector
+tests are committed with provenance"), marked `binary` in `.gitattributes`
+and covered by the directory's provenance manifest like every other golden.
 
 ## manifest.toml schema
 
@@ -65,3 +70,12 @@ this policy.
   `time_utc_tai_tt_golden`, `time_tdb_series_golden`, and
   `time_leap_table_golden` (and by the Python binding tests). See
   `time/manifest.toml` for provenance and tolerances.
+- `ephemeris/` — DE440s repack validation set (FR-4, D-8): a committed
+  binary SREPH excerpt of the repacked Chebyshev records, bit-level
+  evaluator goldens, JPL Horizons geometric state vectors with raw query
+  transcripts (`horizons/`), jplephem-evaluated DE440 lunar states and
+  libration angles, and the committed full-span validation summary
+  (`full_span_validation.md`). Consumed by the doctest cases
+  `ephemeris_bitlevel_golden`, `ephemeris_segment_boundary_continuity`, and
+  `ephemeris_error_paths`, and by `tests/python/test_ephemeris_horizons.py`.
+  See `ephemeris/manifest.toml` for provenance and tolerances.

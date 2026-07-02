@@ -20,3 +20,8 @@ label = "ch:twobody"
 module = "cpp/src/time.cpp"
 chapter = "docs/mathlib/chapters/time.tex"
 label = "ch:time"
+
+[[chapter]]
+module = "cpp/src/ephemeris.cpp"
+chapter = "docs/mathlib/chapters/ephemeris.tex"
+label = "ch:ephemeris"

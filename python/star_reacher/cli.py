@@ -1,9 +1,10 @@
 """The ``star`` command-line interface (D-4, FR-20, DX-1).
 
-Exactly four subcommands in Phase 1 (run, verify, export, docs) and no stubs:
-every command documented here works. Exit codes: 0 success, 2 validation
-errors (accumulated per DX-2), 1 runtime errors. ``python -m star_reacher``
-and the installed ``star`` console script both dispatch through ``main``.
+Five subcommands (run, verify, export, docs from Phase 1; data from Phase 2)
+and no stubs: every command documented here works. Exit codes: 0 success, 2
+validation errors (accumulated per DX-2), 1 runtime errors. ``python -m
+star_reacher`` and the installed ``star`` console script both dispatch
+through ``main``.
 """
 
 from __future__ import annotations
@@ -30,7 +31,9 @@ def _build_parser() -> argparse.ArgumentParser:
             f"(frontend {__version__})."
         ),
     )
-    sub = parser.add_subparsers(dest="command", required=True, metavar="{run,verify,export,docs}")
+    sub = parser.add_subparsers(
+        dest="command", required=True, metavar="{run,verify,export,docs,data}"
+    )
 
     p_run = sub.add_parser(
         "run",
@@ -108,6 +111,33 @@ def _build_parser() -> argparse.ArgumentParser:
     docs_scope.add_argument(
         "--report-only", action="store_true", help="build only docs/report"
     )
+
+    p_data = sub.add_parser(
+        "data",
+        help="manage fetched datasets (Phase 2: 'fetch de440s')",
+        description=(
+            "Dataset management (D-8). 'star data fetch de440s' downloads the JPL "
+            "DE440s SPK and the DE440 lunar principal-axis PCK with SHA-256 "
+            "verification and repacks the 2020-2060 Chebyshev segments into "
+            "data/de440s_2020_2060.sreph for the C++ core. Idempotent: with the "
+            "files already present it verifies checksums instead of re-downloading."
+        ),
+    )
+    data_sub = p_data.add_subparsers(dest="data_command", required=True, metavar="{fetch}")
+    p_fetch = data_sub.add_parser(
+        "fetch",
+        help="download and repack a named dataset with checksum verification",
+    )
+    p_fetch.add_argument(
+        "dataset",
+        choices=["de440s"],
+        help="dataset to fetch (Phase 2: de440s only)",
+    )
+    p_fetch.add_argument(
+        "--data-dir",
+        default="data",
+        help="destination directory for kernels and the repack (default: data/)",
+    )
     return parser
 
 
@@ -184,6 +214,14 @@ def _cmd_docs(args: argparse.Namespace) -> int:
     return build_docs(mathlib_only=args.mathlib_only, report_only=args.report_only)
 
 
+def _cmd_data(args: argparse.Namespace) -> int:
+    from star_reacher.data_fetch import cli_fetch
+
+    # The subparser is required and 'fetch' is its only member, so dispatch
+    # is direct; new data verbs get their own branch when a phase earns them.
+    return cli_fetch(args.dataset, args.data_dir)
+
+
 def main(argv: list[str] | None = None) -> int:
     args_in = list(sys.argv[1:]) if argv is None else list(argv)
     parser = _build_parser()
@@ -196,6 +234,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_export(args)
     if args.command == "docs":
         return _cmd_docs(args)
+    if args.command == "data":
+        return _cmd_data(args)
     # Unreachable: the subparser is required and exhaustive.
     parser.error(f"unknown command {args.command!r}")
     return _EXIT_VALIDATION

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "star/ephemeris.hpp"
 #include "star/rng.hpp"
 #include "star/run.hpp"
 #include "star/time.hpp"
@@ -90,6 +91,14 @@ py::dict leap_table_info() {
       py::make_tuple(info.expiry_year, info.expiry_month, info.expiry_day);
   d["entries"] = info.entries;
   return d;
+}
+
+std::vector<double> to_vec3(const Eigen::Vector3d& v) {
+  return {v[0], v[1], v[2]};
+}
+
+py::tuple state_tuple(const star::EphemerisState& s) {
+  return py::make_tuple(to_vec3(s.r_m), to_vec3(s.v_mps));
 }
 
 py::dict run_and_summarize(const star::RunConfig& cfg,
@@ -212,4 +221,46 @@ PYBIND11_MODULE(_core, m) {
         "first UTC date a leap second not in the table could take effect - "
         "and entries. The Python layer warns on post-expiry epochs; the "
         "core never reads the clock (D-2).");
+
+  py::class_<star::Ephemeris>(m, "Ephemeris",
+                              "Trimmed-DE440 Chebyshev ephemeris evaluator over an "
+                              "SREPH v1 file produced by 'star data fetch de440s' "
+                              "(FR-4, D-8; format: docs/formats/sreph_v1.md). All "
+                              "epochs are TDB seconds since J2000 TDB.")
+      .def_static("load", &star::Ephemeris::load_file, py::arg("path"),
+                  "Load an SREPH v1 file; raises RuntimeError naming the defect "
+                  "on a malformed file.")
+      .def(
+          "state",
+          [](const star::Ephemeris& e, const std::string& body, double tdb_s) {
+            return state_tuple(e.state(body, tdb_s));
+          },
+          py::arg("body"), py::arg("tdb_s"),
+          "([x,y,z] position [m], [vx,vy,vz] velocity [m/s]) of body relative "
+          "to its stored center (SSB for sun/emb/venus_bary/mars_bary/"
+          "jupiter_bary; EMB for earth/moon). Raises ValueError for an unknown "
+          "body and IndexError for an out-of-span epoch (never extrapolates).")
+      .def(
+          "moon_geocentric",
+          [](const star::Ephemeris& e, double tdb_s) {
+            return state_tuple(e.moon_geocentric(tdb_s));
+          },
+          py::arg("tdb_s"),
+          "Geocentric Moon state composed from the verbatim EMB-relative moon "
+          "and earth segments.")
+      .def(
+          "lunar_librations",
+          [](const star::Ephemeris& e, double tdb_s) {
+            const star::LibrationAngles a = e.lunar_librations(tdb_s);
+            return py::make_tuple(to_vec3(a.angles_rad), to_vec3(a.rates_radps));
+          },
+          py::arg("tdb_s"),
+          "([phi,theta,psi] [rad], rates [rad/s]) of the DE440 Moon "
+          "principal-axis frame relative to the ICRF equator (3-1-3 Euler).")
+      .def("bodies", &star::Ephemeris::bodies,
+           "Sorted distinct body names stored in the file.")
+      .def("span_start_tdb_s", &star::Ephemeris::span_start_tdb_s,
+           "Start of the span on which every stored body is evaluable.")
+      .def("span_end_tdb_s", &star::Ephemeris::span_end_tdb_s,
+           "End of the span on which every stored body is evaluable.");
 }

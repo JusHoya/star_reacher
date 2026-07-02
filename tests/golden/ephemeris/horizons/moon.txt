@@ -1,0 +1,119 @@
+# JPL Horizons API transcript for golden quantity 'moon'
+# fetched 2026-07-02 by tests/golden/ephemeris/generate.py
+# request:
+# https://ssd.jpl.nasa.gov/api/horizons.api?format=text&COMMAND=%27301%27&OBJ_DATA=%27NO%27&MAKE_EPHEM=%27YES%27&EPHEM_TYPE=%27VECTORS%27&CENTER=%27500%403%27&TLIST_TYPE=%27JD%27&TLIST=%272458848.5+2459659.5+2460471.5+2461283.5+2462095.5+2462906.5+2463716.5+2463718.5+2464530.5+2465342.5+2466154.5+2466965.5+2467777.5+2468588.5+2468589.5+2469401.5+2470212.5+2471024.5+2471836.5+2472648.5+2473460.5%27&REF_SYSTEM=%27ICRF%27&REF_PLANE=%27FRAME%27&VEC_TABLE=%272%27&VEC_CORR=%27NONE%27&OUT_UNITS=%27KM-S%27&CSV_FORMAT=%27YES%27
+# response follows verbatim:
+API VERSION: 1.2
+API SOURCE: NASA/JPL Horizons API
+
+
+
+*******************************************************************************
+Ephemeris / API_USER Thu Jul  2 15:28:16 2026 Pasadena, USA      / Horizons
+*******************************************************************************
+Target body name: Moon (301)                      {source: DE441}
+Center body name: Earth-Moon Barycenter (3)       {source: DE441}
+Center-site name: BODY CENTER
+*******************************************************************************
+Start time      : A.D. 2019-Dec-31 00:00:00.0000 TDB
+Stop  time      : A.D. 2060-Jan-02 00:00:00.0000 TDB
+Step-size       : DISCRETE TIME-LIST
+*******************************************************************************
+Center geodetic : 0.0, 0.0, 0.0                   {E-lon(deg),Lat(deg),Alt(km)}
+Center cylindric: 0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}
+Center radii    : (undefined)
+Output units    : KM-S
+Calendar mode   : Mixed Julian/Gregorian
+Output type     : GEOMETRIC cartesian states
+Output format   : 2 (position and velocity)
+Reference frame : ICRF
+*******************************************************************************
+            JDTDB,            Calendar Date (TDB),                      X,                      Y,                      Z,                     VX,                     VY,                     VZ,
+**************************************************************************************************************************************************************************************************
+$$SOE
+2458848.500000000, A.D. 2019-Dec-31 00:00:00.0000,  3.555188629860947E+05, -1.478206464646585E+05, -9.709126556450219E+04,  4.447979487790195E-01,  8.035859066125204E-01,  2.918029857830000E-01,
+2459659.500000000, A.D. 2022-Mar-21 00:00:00.0000, -3.032686847847076E+05, -1.953986520477814E+05, -7.308808827678795E+04,  6.059619216652966E-01, -7.403609915085917E-01, -4.175439771290658E-01,
+2460471.500000000, A.D. 2024-Jun-10 00:00:00.0000, -2.048289599268878E+05,  2.874026972040843E+05,  1.597495462618587E+05, -8.672015439488987E-01, -4.297491021973541E-01, -2.128386160973101E-01,
+2461283.500000000, A.D. 2026-Aug-31 00:00:00.0000,  3.678582402307807E+05,  5.939097130022806E+04,  5.103469603677666E+04, -2.418422506159733E-01,  8.822861364460488E-01,  4.559137993552955E-01,
+2462095.500000000, A.D. 2028-Nov-20 00:00:00.0000,  7.857141706466489E+04, -3.400334374421051E+05, -1.490164637865098E+05,  9.971230356309528E-01,  9.688639163277815E-02,  1.403280139982575E-01,
+2462906.500000000, A.D. 2031-Feb-09 00:00:00.0000, -3.545517731127578E+05,  1.546113799806513E+05,  3.012108760427022E+04, -3.617421282769441E-01, -8.519342141092207E-01, -3.607826235073588E-01,
+2463716.500000000, A.D. 2033-Apr-29 00:00:00.0000,  2.859166704513170E+05,  2.008316646211068E+05,  7.704344087909872E+04, -6.236245935587761E-01,  8.362028011037954E-01,  2.584497094368845E-01,
+2463718.500000000, A.D. 2033-May-01 00:00:00.0000,  1.479514547571144E+05,  3.151424073870175E+05,  1.105812372489063E+05, -9.369356287041516E-01,  4.632974076459834E-01,  1.230822154590265E-01,
+2464530.500000000, A.D. 2035-Jul-22 00:00:00.0000,  2.834974940830496E+05, -2.567782797988151E+05, -9.834040623845793E+04,  6.559103645173259E-01,  6.910054425120784E-01,  2.080226343057472E-01,
+2465342.500000000, A.D. 2037-Oct-11 00:00:00.0000, -2.564398695889824E+05, -2.403038935362600E+05, -7.201420758459752E+04,  7.072860477651294E-01, -7.259553571755004E-01, -3.446362364484888E-01,
+2466154.500000000, A.D. 2040-Jan-01 00:00:00.0000, -1.723215876445354E+05,  3.202235293959065E+05,  1.660705049818969E+05, -8.582877040391140E-01, -4.227230159536586E-01, -1.149256090032946E-01,
+2466965.500000000, A.D. 2042-Mar-22 00:00:00.0000,  3.512242831816854E+05,  3.193158294230743E+04,  8.807251749092975E+02, -8.216951679287239E-02,  9.562249930091649E-01,  5.149552562627288E-01,
+2467777.500000000, A.D. 2044-Jun-11 00:00:00.0000, -4.119179553034374E+04, -3.511016828321163E+05, -1.896853934590561E+05,  9.543471712406726E-01, -1.027552056963597E-01, -2.985156659044087E-02,
+2468588.500000000, A.D. 2046-Aug-31 00:00:00.0000, -2.963631597084753E+05,  1.861577217989802E+05,  6.701436227274532E+04, -5.650502025525211E-01, -8.035853647565192E-01, -4.450315961924670E-01,
+2468589.500000000, A.D. 2046-Sep-01 00:00:00.0000, -3.352291176389460E+05,  1.115231995659496E+05,  2.683947709620496E+04, -3.290713316474350E-01, -9.150145196933772E-01, -4.799984154519154E-01,
+2469401.500000000, A.D. 2048-Nov-21 00:00:00.0000,  1.715836081239478E+05,  3.261869905171168E+05,  1.506324571529576E+05, -8.598695602470939E-01,  4.350660749136349E-01,  9.490334635247245E-02,
+2470212.500000000, A.D. 2051-Feb-10 00:00:00.0000,  1.962594421927540E+05, -2.908085052012869E+05, -9.144192801903895E+04,  8.620809942114238E-01,  5.677967505756724E-01,  2.448491476000574E-01,
+2471024.500000000, A.D. 2053-May-02 00:00:00.0000, -3.314032042854780E+05, -1.947725698845256E+05, -6.143345578712405E+04,  4.875721514549927E-01, -8.168283439088464E-01, -2.751650783853619E-01,
+2471836.500000000, A.D. 2055-Jul-23 00:00:00.0000, -7.094183861025280E+04,  3.405471975702745E+05,  1.298632021021256E+05, -1.003025508303634E+00, -2.614445609667670E-01, -1.946197548175736E-02,
+2472648.500000000, A.D. 2057-Oct-12 00:00:00.0000,  3.725606754491351E+05,  7.774718513180301E+04, -1.539587075896350E+03, -1.461646216828303E-01,  9.119170478499535E-01,  4.162081881012485E-01,
+2473460.500000000, A.D. 2060-Jan-02 00:00:00.0000, -6.994687662808354E+04, -3.346833625519606E+05, -1.657353329851082E+05,  1.002876844880061E+00, -9.073156869377386E-02, -1.174403238576328E-01,
+$$EOE
+**************************************************************************************************************************************************************************************************
+ 
+TIME
+
+  Barycentric Dynamical Time ("TDB" or T_eph) output was requested. This
+continuous coordinate time is equivalent to the relativistic proper time
+of a clock at rest in a reference frame co-moving with the solar system
+barycenter but outside the system's gravity well. It is the independent
+variable in the solar system relativistic equations of motion.
+
+  TDB runs at a uniform rate of one SI second per second and is independent
+of irregularities in Earth's rotation.
+ 
+CALENDAR SYSTEM
+
+  Mixed calendar mode was active such that calendar dates after AD 1582-Oct-15
+(if any) are in the modern Gregorian system. Dates prior to 1582-Oct-5 (if any)
+are in the Julian calendar system, which is automatically extended for dates
+prior to its adoption on 45-Jan-1 BC.  The Julian calendar is useful for
+matching historical dates. The Gregorian calendar more accurately corresponds
+to the Earth's orbital motion and seasons. A "Gregorian-only" calendar mode is
+available if such physical events are the primary interest.
+
+REFERENCE FRAME AND COORDINATES
+
+  International Celestial Reference Frame (ICRF)
+
+    The ICRF is an adopted reference frame whose axes are defined relative to 
+    fixed extragalactic radio sources distributed across the sky.
+
+    The ICRF was aligned with the prior FK5/J2000 dynamical system at the ~0.02 
+    arcsecond level but is not identical and has no associated standard epoch.
+
+  Symbol meaning:
+
+    JDTDB    Julian Day Number, Barycentric Dynamical Time
+      X      X-component of position vector (km)
+      Y      Y-component of position vector (km)
+      Z      Z-component of position vector (km)
+      VX     X-component of velocity vector (km/sec)                           
+      VY     Y-component of velocity vector (km/sec)                           
+      VZ     Z-component of velocity vector (km/sec)                           
+
+ABERRATIONS AND CORRECTIONS
+
+ Geometric state vectors have NO corrections or aberrations applied.
+
+Computations by ...
+
+    Solar System Dynamics Group, Horizons On-Line Ephemeris System
+    4800 Oak Grove Drive, Jet Propulsion Laboratory
+    Pasadena, CA  91109   USA
+
+    General site: https://ssd.jpl.nasa.gov/
+    Mailing list: https://ssd.jpl.nasa.gov/email_list.html
+    System news : https://ssd.jpl.nasa.gov/horizons/news.html
+    User Guide  : https://ssd.jpl.nasa.gov/horizons/manual.html
+    Connect     : browser        https://ssd.jpl.nasa.gov/horizons/app.html#/x
+                  API            https://ssd-api.jpl.nasa.gov/doc/horizons.html
+                  command-line   telnet ssd.jpl.nasa.gov 6775
+                  e-mail/batch   https://ssd.jpl.nasa.gov/ftp/ssd/horizons_batch.txt
+                  scripts        https://ssd.jpl.nasa.gov/ftp/ssd/SCRIPTS
+    Inquiries   : Jon.D.Giorgini@jpl.nasa.gov
+*******************************************************************************
