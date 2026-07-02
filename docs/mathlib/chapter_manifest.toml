@@ -15,3 +15,13 @@ schema_version = 1
 module = "cpp/src/models/twobody.cpp"
 chapter = "docs/mathlib/chapters/twobody.tex"
 label = "ch:twobody"
+
+[[chapter]]
+module = "cpp/src/integrate.cpp"
+chapter = "docs/mathlib/chapters/integrators.tex"
+label = "ch:integrators"
+
+[[chapter]]
+module = "cpp/src/events.cpp"
+chapter = "docs/mathlib/chapters/events.tex"
+label = "ch:events"

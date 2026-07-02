@@ -1,0 +1,457 @@
+% Chapter — Numerical integrators. Follows the mandatory FR-29 six-section
+% template: purpose; assumptions and domain of validity; derivation;
+% discretization and implementation; validation evidence; references. The
+% equation labels eq:integrators:rk4, eq:integrators:rkf78:stages,
+% eq:integrators:rkf78:err, eq:integrators:errnorm, eq:integrators:pi, and
+% eq:integrators:hermite are echoed verbatim in comments in
+% cpp/src/integrate.cpp (FR-29 equation-label-to-code traceability);
+% renaming them breaks that trace.
+\chapter{Numerical Integrators}
+\label{ch:integrators}
+
+\section{Purpose}
+\label{sec:integrators:purpose}
+
+This chapter documents the shared ordinary-differential-equation integrator
+library (requirement FR-11): the fixed-step classical fourth-order
+Runge--Kutta method, the Fehlberg 7(8) embedded pair in both fixed-step and
+adaptive modes, the per-state-group error norm and
+proportional--integral (PI) step-size controller that drive the adaptive
+mode, and the cubic Hermite dense output that spans each accepted step. Every
+dynamical model in the simulator propagates through this library --- models
+supply only their right-hand side $\dot{\vv{y}} = \vv{f}(t, \vv{y})$ --- so
+the accuracy, determinism, and step-control behavior established here apply
+to the entire simulation. The dense output additionally feeds event location
+(Chapter~\ref{ch:events}) and uniform-rate logging. The implementation lives
+in \texttt{cpp/src/integrate.cpp}.
+
+\section{Assumptions and domain of validity}
+\label{sec:integrators:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item The right-hand side $\vv{f}$ is sufficiently smooth on the span of
+    each step: the classical convergence orders assume
+    $\vv{f} \in C^{4}$ (RK4) and $\vv{f} \in C^{8}$ (the 7(8) pair) along
+    the solution. Discontinuous dynamics --- staging, impulsive maneuvers,
+    frame re-centering --- must be handled by stopping the integrator at the
+    discontinuity through the event framework of Chapter~\ref{ch:events} and
+    restarting, never by stepping across it.
+  \item The problem is non-stiff. Explicit Runge--Kutta methods have bounded
+    stability regions; orbital and atmospheric-flight dynamics at the step
+    sizes used here sit well inside them.
+  \item The state is a flat vector of doubles. Manifold-valued components
+    (the unit quaternion of later phases) are integrated as raw components
+    and repaired by the owning model (post-step normalization, FR-1); the
+    integrator itself knows nothing of the constraint.
+\end{enumerate}
+
+Domain of validity and out-of-domain behavior, matching the code:
+\begin{itemize}
+  \item The adaptive mode's error control is asymptotic: it assumes the
+    local-error expansion $\text{err} \approx C h^{8}$ holds at the working
+    step size. If the error test cannot be satisfied at the configured
+    minimum step $h_{\min}$ --- the signature of stiffness, a singularity,
+    or an unreachable tolerance --- \texttt{propagate} throws
+    \texttt{std::runtime\_error} rather than silently delivering an
+    out-of-tolerance state.
+  \item A step below the resolution of double precision at the current time
+    ($t + h = t$ in floating point) throws rather than looping forever.
+  \item The dense output is third-order accurate regardless of the
+    integrator order (Section~\ref{sec:integrators:derivation}); consumers
+    that need better interpolation accuracy must cap the step size
+    ($h_{\max}$), not tighten the integrator tolerance. This is the
+    documented control for microsecond-level event timing
+    (Chapter~\ref{ch:events}).
+  \item Tolerances are per state group with $d_i > 0$ enforced; a group
+    partition that does not exactly cover the state vector is rejected with
+    \texttt{std::invalid\_argument}.
+\end{itemize}
+
+\section{Derivation}
+\label{sec:integrators:derivation}
+
+\subsection{Explicit Runge--Kutta methods and order conditions}
+
+An explicit $s$-stage Runge--Kutta method for
+$\dot{\vv{y}} = \vv{f}(t, \vv{y})$ advances one step $h$ by
+\begin{equation}
+  \vv{k}_i = \vv{f}\Bigl(t_n + c_i h,\;
+    \vv{y}_n + h \sum_{j=0}^{i-1} a_{ij}\, \vv{k}_j\Bigr),
+  \qquad
+  \vv{y}_{n+1} = \vv{y}_n + h \sum_{i=0}^{s-1} b_i\, \vv{k}_i,
+  \label{eq:integrators:erk}
+\end{equation}
+characterized by its Butcher tableau $(c_i, a_{ij}, b_i)$. The method has
+order $p$ when the Taylor expansions of the numerical and exact solutions
+agree through $h^{p}$, which holds if and only if the tableau satisfies the
+rooted-tree order conditions of Butcher; see Hairer, N{\o}rsett, and
+Wanner~\cite{hairer1993}, Chapter~II.2, for the complete theory. Three
+families of these conditions are used in this chapter as machine-checkable
+transcription gates:
+\begin{align}
+  \sum_{j} a_{ij} &= c_i
+    &&\text{(row-sum convention),}
+    \label{eq:integrators:rowsum}\\
+  \sum_{i} b_i\, c_i^{\,q} &= \frac{1}{q+1},
+    \quad q = 0, \dots, p - 1
+    &&\text{(quadrature conditions),}
+    \label{eq:integrators:quadrature}\\
+  \sum_{i,j} b_i\, a_{ij}\, c_j = \tfrac{1}{6},
+  \quad
+  \sum_{i,j} b_i\, c_i\, a_{ij}\, c_j &= \tfrac{1}{8},
+  \quad
+  \sum_{i,j} b_i\, a_{ij}\, c_j^{2} = \tfrac{1}{12},
+  \quad
+  \sum_{i,j,k} b_i\, a_{ij}\, a_{jk}\, c_k = \tfrac{1}{24}
+    &&\text{(coupling conditions of orders 3--4).}
+    \label{eq:integrators:coupling}
+\end{align}
+These are necessary conditions for order $p$ (equation~%
+\eqref{eq:integrators:quadrature} with $q \le p-1$, and equation~%
+\eqref{eq:integrators:coupling} for $p \ge 4$), not sufficient ones; the
+\emph{sufficient} evidence that the implemented methods achieve their orders
+is the measured convergence slope of
+Section~\ref{sec:integrators:validation}. A single mistranscribed
+coefficient in any of the tableaux below violates at least one of these
+identities at the $10^{-4}$ level or worse, far above the $10^{-13}$
+verification tolerance.
+
+\subsection{Classical RK4}
+
+The classical fourth-order method is the four-stage instance of
+equation~\eqref{eq:integrators:erk} with the tableau of
+Kutta~\cite{hairer1993}:
+\begin{equation}
+  \begin{aligned}
+    \vv{k}_1 &= \vv{f}(t_n,\, \vv{y}_n), \\
+    \vv{k}_2 &= \vv{f}\bigl(t_n + \tfrac{h}{2},\,
+      \vv{y}_n + \tfrac{h}{2}\,\vv{k}_1\bigr), \\
+    \vv{k}_3 &= \vv{f}\bigl(t_n + \tfrac{h}{2},\,
+      \vv{y}_n + \tfrac{h}{2}\,\vv{k}_2\bigr), \\
+    \vv{k}_4 &= \vv{f}\bigl(t_n + h,\, \vv{y}_n + h\,\vv{k}_3\bigr), \\
+    \vv{y}_{n+1} &= \vv{y}_n
+      + \tfrac{h}{6}\bigl(\vv{k}_1 + 2\vv{k}_2 + 2\vv{k}_3 + \vv{k}_4\bigr),
+  \end{aligned}
+  \label{eq:integrators:rk4}
+\end{equation}
+with local truncation error $\mathcal{O}(h^{5})$ and global error
+$\mathcal{O}(h^{4})$~\cite{hairer1993}.
+
+\subsection{The Fehlberg 7(8) embedded pair}
+
+Fehlberg's 13-stage pair~\cite{fehlberg1968} evaluates
+equation~\eqref{eq:integrators:erk} once per step and forms \emph{two}
+solutions from the same stages: a seventh-order combination with weights
+$b_i$ and an eighth-order combination with weights $\hat{b}_i$,
+\begin{equation}
+  \vv{k}_i = \vv{f}\Bigl(t_n + c_i h,\;
+    \vv{y}_n + h \sum_{j=0}^{i-1} a_{ij}\, \vv{k}_j\Bigr),
+  \qquad
+  \vv{y}^{(7)}_{n+1} = \vv{y}_n + h \sum_i b_i \vv{k}_i,
+  \qquad
+  \vv{y}^{(8)}_{n+1} = \vv{y}_n + h \sum_i \hat{b}_i \vv{k}_i.
+  \label{eq:integrators:rkf78:stages}
+\end{equation}
+The coefficients, transcribed as exact rationals from
+Fehlberg~\cite{fehlberg1968}, are reproduced in
+Tables~\ref{tab:integrators:rkf78a} and~\ref{tab:integrators:rkf78b}. Their
+difference collapses to four stages because $b_i = \hat{b}_i$ for
+$i = 5, \dots, 9$:
+\begin{equation}
+  \vv{y}^{(7)}_{n+1} - \vv{y}^{(8)}_{n+1}
+    = \frac{41\,h}{840}
+      \bigl(\vv{k}_0 + \vv{k}_{10} - \vv{k}_{11} - \vv{k}_{12}\bigr)
+    \;\equiv\; \vv{e}_{n+1},
+  \label{eq:integrators:rkf78:err}
+\end{equation}
+which estimates the local error of the \emph{seventh}-order solution and is
+therefore $\mathcal{O}(h^{8})$. The implementation propagates the
+eighth-order solution $\vv{y}^{(8)}$ (\emph{local extrapolation}) while
+controlling the step on $\vv{e}_{n+1}$: the delivered trajectory then
+carries the higher order --- the measured fixed-step convergence slope of
+$\approx 8$ in Section~\ref{sec:integrators:validation} is the direct
+consequence --- and the controller retains a conservative, well-scaled
+error signal.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Fehlberg 7(8) nodes $c_i$ and nonzero coupling coefficients
+    $a_{ij}$, as exact rationals (transcribed from
+    Fehlberg~\cite{fehlberg1968}; machine-verified against
+    equations~\eqref{eq:integrators:rowsum}--\eqref{eq:integrators:coupling}
+    by \testid{rkf78_tableau_order_conditions}).}
+  \label{tab:integrators:rkf78a}
+  \scriptsize
+  \begin{tabular}{clp{11.2cm}}
+    \toprule
+    $i$ & $c_i$ & nonzero $a_{ij}$ \\
+    \midrule
+    0  & $0$     & --- \\
+    1  & $2/27$  & $a_{1,0}=\frac{2}{27}$ \\
+    2  & $1/9$   & $a_{2,0}=\frac{1}{36}$, $a_{2,1}=\frac{1}{12}$ \\
+    3  & $1/6$   & $a_{3,0}=\frac{1}{24}$, $a_{3,2}=\frac{1}{8}$ \\
+    4  & $5/12$  & $a_{4,0}=\frac{5}{12}$, $a_{4,2}=-\frac{25}{16}$,
+                   $a_{4,3}=\frac{25}{16}$ \\
+    5  & $1/2$   & $a_{5,0}=\frac{1}{20}$, $a_{5,3}=\frac{1}{4}$,
+                   $a_{5,4}=\frac{1}{5}$ \\
+    6  & $5/6$   & $a_{6,0}=-\frac{25}{108}$, $a_{6,3}=\frac{125}{108}$,
+                   $a_{6,4}=-\frac{65}{27}$, $a_{6,5}=\frac{125}{54}$ \\
+    7  & $1/6$   & $a_{7,0}=\frac{31}{300}$, $a_{7,4}=\frac{61}{225}$,
+                   $a_{7,5}=-\frac{2}{9}$, $a_{7,6}=\frac{13}{900}$ \\
+    8  & $2/3$   & $a_{8,0}=2$, $a_{8,3}=-\frac{53}{6}$,
+                   $a_{8,4}=\frac{704}{45}$, $a_{8,5}=-\frac{107}{9}$,
+                   $a_{8,6}=\frac{67}{90}$, $a_{8,7}=3$ \\
+    9  & $1/3$   & $a_{9,0}=-\frac{91}{108}$, $a_{9,3}=\frac{23}{108}$,
+                   $a_{9,4}=-\frac{976}{135}$, $a_{9,5}=\frac{311}{54}$,
+                   $a_{9,6}=-\frac{19}{60}$, $a_{9,7}=\frac{17}{6}$,
+                   $a_{9,8}=-\frac{1}{12}$ \\
+    10 & $1$     & $a_{10,0}=\frac{2383}{4100}$, $a_{10,3}=-\frac{341}{164}$,
+                   $a_{10,4}=\frac{4496}{1025}$, $a_{10,5}=-\frac{301}{82}$,
+                   $a_{10,6}=\frac{2133}{4100}$, $a_{10,7}=\frac{45}{82}$,
+                   $a_{10,8}=\frac{45}{164}$, $a_{10,9}=\frac{18}{41}$ \\
+    11 & $0$     & $a_{11,0}=\frac{3}{205}$, $a_{11,5}=-\frac{6}{41}$,
+                   $a_{11,6}=-\frac{3}{205}$, $a_{11,7}=-\frac{3}{41}$,
+                   $a_{11,8}=\frac{3}{41}$, $a_{11,9}=\frac{6}{41}$ \\
+    12 & $1$     & $a_{12,0}=-\frac{1777}{4100}$, $a_{12,3}=-\frac{341}{164}$,
+                   $a_{12,4}=\frac{4496}{1025}$, $a_{12,5}=-\frac{289}{82}$,
+                   $a_{12,6}=\frac{2193}{4100}$, $a_{12,7}=\frac{51}{82}$,
+                   $a_{12,8}=\frac{33}{164}$, $a_{12,9}=\frac{12}{41}$,
+                   $a_{12,11}=1$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Fehlberg 7(8) weights: seventh-order $b_i$ and eighth-order
+    $\hat{b}_i$ (transcribed from Fehlberg~\cite{fehlberg1968}; entries not
+    listed are zero).}
+  \label{tab:integrators:rkf78b}
+  \begin{tabular}{ccccccccc}
+    \toprule
+    $i$ & 0 & 5 & 6 & 7 & 8 & 9 & 10 & 11, 12 \\
+    \midrule
+    $b_i$ & $\frac{41}{840}$ & $\frac{34}{105}$ & $\frac{9}{35}$
+      & $\frac{9}{35}$ & $\frac{9}{280}$ & $\frac{9}{280}$
+      & $\frac{41}{840}$ & $0$ \\
+    $\hat{b}_i$ & $0$ & $\frac{34}{105}$ & $\frac{9}{35}$ & $\frac{9}{35}$
+      & $\frac{9}{280}$ & $\frac{9}{280}$ & $0$ & $\frac{41}{840}$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Per-group error norm}
+
+The state vector is partitioned into named groups $g$ (position, velocity,
+and later attitude components), each carrying its own relative and absolute
+tolerances $(\mathrm{rtol}_g, \mathrm{atol}_g)$, because the groups live on
+scales separated by many orders of magnitude and a single tolerance pair
+would mis-weight all but one of them. Following the scaled norm of Hairer,
+N{\o}rsett, and Wanner~\cite{hairer1993}, Section~II.4, the error estimate
+$\vv{e}$ of equation~\eqref{eq:integrators:rkf78:err} is reduced to
+\begin{equation}
+  \mathrm{err} = \sqrt{\frac{1}{n} \sum_{i=0}^{n-1}
+    \left(\frac{e_i}{d_i}\right)^{2}},
+  \qquad
+  d_i = \mathrm{atol}_{g(i)}
+      + \mathrm{rtol}_{g(i)} \max\bigl(|y_{n,i}|,\, |y_{n+1,i}|\bigr),
+  \label{eq:integrators:errnorm}
+\end{equation}
+and a step is accepted if and only if $\mathrm{err} \le 1$.
+
+\subsection{PI step-size control}
+
+In the asymptotic regime the error estimate obeys
+$\mathrm{err}_n \approx C_n h_n^{k}$ with $k = 8$ (the order of the
+embedded estimate, equation~\eqref{eq:integrators:rkf78:err}). The
+elementary controller inverts this relation toward
+$\mathrm{err} = 1$: $h_{n+1} = S\, h_n\, \mathrm{err}_n^{-1/k}$ with safety
+factor $S < 1$. Gustafsson's control-theoretic analysis~%
+\cite{gustafsson1991} showed that this pure-integral rule oscillates when
+$C_n$ drifts along the trajectory, and that adding a proportional term on
+the error history damps it. The resulting PI controller, in the form given
+by Hairer and Wanner~\cite{hairer1996}, Section~IV.2, is
+\begin{equation}
+  h_{n+1} = h_n \cdot
+    \mathrm{clamp}\!\left(
+      S\; \mathrm{err}_n^{-\beta_1}\, \mathrm{err}_{n-1}^{\;\beta_2},\;
+      f_{\min},\, f_{\max}\right),
+  \qquad
+  \beta_1 = \frac{0.7}{k}, \quad \beta_2 = \frac{0.4}{k},
+  \label{eq:integrators:pi}
+\end{equation}
+with the exponent pair recommended there ($k_I = 0.3/k$, $k_P = 0.4/k$ in
+integral/proportional form; $\beta_1 = k_I + k_P$, $\beta_2 = k_P$). The
+implementation uses $S = 0.9$, growth/shrink clamps
+$f_{\min} = 0.2$, $f_{\max} = 5$, and three standard safeguards from the
+same sources: the error history is seeded with
+$\mathrm{err}_{-1} = 1$ so the first step reduces to the elementary
+controller; the step never grows on the first acceptance after a rejection;
+and rejected steps are re-proposed with the elementary controller clamped to
+no growth. Steps are clamped to $[h_{\min}, h_{\max}]$ throughout.
+
+\subsection{Cubic Hermite dense output}
+\label{sec:integrators:hermite}
+
+Each accepted step already holds the endpoint states
+$\vv{y}_0 = \vv{y}(t_0)$, $\vv{y}_1 = \vv{y}(t_0 + h)$ and derivatives
+$\vv{f}_0$, $\vv{f}_1$, which determine a unique cubic (Hermite) interpolant.
+With $\theta = (t - t_0)/h \in [0, 1]$,
+\begin{equation}
+  \vv{u}(\theta) = (1 - \theta)\,\vv{y}_0 + \theta\,\vv{y}_1
+    + \theta(\theta - 1)\Bigl[(1 - 2\theta)(\vv{y}_1 - \vv{y}_0)
+      + (\theta - 1)\, h \vv{f}_0 + \theta\, h \vv{f}_1\Bigr],
+  \label{eq:integrators:hermite}
+\end{equation}
+which satisfies $\vv{u}(0) = \vv{y}_0$, $\vv{u}(1) = \vv{y}_1$,
+$\vv{u}'(0) = h\vv{f}_0$, and $\vv{u}'(1) = h\vv{f}_1$ by direct evaluation
+of the polynomial and its derivative; this is the standard order-3 dense
+output of Runge--Kutta theory~\cite{hairer1993}.
+
+\emph{Interpolation error.} Let $y \in C^{4}[t_0, t_1]$ be a scalar solution
+component with Hermite interpolant $H$ matching $y$ and $y'$ at both
+endpoints, and fix $t \in (t_0, t_1)$. Define
+$\psi(s) = (s - t_0)^2 (s - t_1)^2$ and the auxiliary function
+$w(s) = y(s) - H(s) - K\,\psi(s)$ with $K$ chosen so that $w(t) = 0$. Then
+$w$ has five zeros in $[t_0, t_1]$ counted with multiplicity (double zeros
+at $t_0$ and $t_1$, a simple zero at $t$), so by repeated application of
+Rolle's theorem $w^{(4)}$ has a zero $\xi \in (t_0, t_1)$. Since $H$ is
+cubic, $H^{(4)} = 0$, and $\psi^{(4)} = 4! = 24$, whence
+$0 = y^{(4)}(\xi) - 24K$ and
+\begin{equation}
+  y(t) - H(t) = \frac{y^{(4)}(\xi)}{24}\,(t - t_0)^2 (t - t_1)^2,
+  \qquad
+  \bigl|y(t) - H(t)\bigr|
+    \le \frac{h^{4}}{384}\, \max_{[t_0,t_1]} \bigl|y^{(4)}\bigr|,
+  \label{eq:integrators:hermite:err}
+\end{equation}
+because $(t - t_0)^2(t_1 - t)^2$ attains its maximum $h^4/16$ at the
+midpoint. Two consequences drive design decisions elsewhere:
+\begin{itemize}
+  \item The interpolant is \emph{lower order than both integrators}
+    ($\mathcal{O}(h^4)$ against $\mathcal{O}(h^5)$ local for RK4 and
+    $\mathcal{O}(h^9)$ local for the extrapolated 7(8) pair), so any
+    quantity read off the dense output --- interpolated log records, located
+    event times --- is interpolant-limited and improves as $h^4$ only.
+    Capping $h_{\max}$ is the documented control
+    (Chapter~\ref{ch:events} derives the resulting event-timing error law).
+  \item The bound assumes exact endpoint data; the integrator's own local
+    error adds a term of the integrator's order, negligible for the 7(8)
+    pair at the step sizes where the $h^4$ term matters.
+\end{itemize}
+
+\section{Discretization and implementation}
+\label{sec:integrators:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The library lives in
+    \texttt{cpp/src/integrate.cpp} with the public interface in
+    \texttt{cpp/include/star/integrate.hpp}. The source comments echo the
+    labels \texttt{eq:integrators:rk4},
+    \texttt{eq:integrators:rkf78:stages},
+    \texttt{eq:integrators:rkf78:err}, \texttt{eq:integrators:errnorm},
+    \texttt{eq:integrators:pi}, and \texttt{eq:integrators:hermite}
+    verbatim at the corresponding code.
+  \item \textbf{Right-hand-side interface.} Models supply
+    $\vv{f}(t, \vv{y})$ through a non-owning function reference
+    (\texttt{integrate::RhsRef}): one indirect call per evaluation, no
+    allocation, no virtual dispatch, storage-agnostic raw-pointer
+    signature. This is the permanent hot-loop interface.
+  \item \textbf{Determinism (D-10).} Stage evaluations and the weighted
+    combinations of equations~\eqref{eq:integrators:rk4}
+    and~\eqref{eq:integrators:rkf78:stages} run in fixed ascending order;
+    the tableau's zero entries are skipped by a compile-time-constant
+    pattern, so the floating-point operation sequence is identical across
+    runs and platforms. All workspace is allocated at construction; the
+    step loop performs no heap allocation. The test
+    \testid{rkf78_adaptive_double_run_bitwise} gates bitwise equality of
+    two identical adaptive runs, controller history included.
+  \item \textbf{Local extrapolation.} \texttt{Rkf78::step} writes the
+    eighth-order solution and returns the embedded difference of
+    equation~\eqref{eq:integrators:rkf78:err} as the error vector; the
+    controller's order constant is accordingly $k = 8$.
+  \item \textbf{Terminal step.} The driver truncates the final step to land
+    exactly on the requested end time; a truncated step is integrated with
+    the truncated $h$, not interpolated.
+  \item \textbf{Zero error estimate.} $\mathrm{err} = 0$ (dynamics the pair
+    integrates exactly) grows the step at $f_{\max}$ instead of dividing by
+    zero, and the stored error history is floored at a tiny positive value.
+  \item \textbf{Convergence-measurement design.} The validation
+    measurements below use a dyadic span ($t_{\text{end}} = \qty{7168}{s} =
+    2^{10}\cdot 7$) and power-of-two step sizes, so every step time
+    $k\,h$ is exactly representable and accumulated time carries zero
+    rounding error. The ladders keep the smallest truncation error at least
+    2.5 orders of magnitude above the position roundoff floor
+    ($\approx \sqrt{N}\,\mathrm{ulp}(|\vv{r}|) \approx \qty{6e-8}{m}$
+    here), which is how the measured slopes avoid the double-precision
+    plateau. The choices are recorded with the measured errors in
+    \texttt{cpp/tests/test\_integrate.cpp}.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:integrators:validation}
+
+Table~\ref{tab:integrators:validation} lists the tests that constitute this
+chapter's validation evidence. Each identifier is machine-checked to exist
+in the test tree by \texttt{scripts/lint\_chapters.py}; tolerances are
+recorded next to each test in its suite, and the Python-side entry points
+(\texttt{tests/python/test\_integrators.py}) reproduce the same numbers
+through the compiled core. The reference orbit and its analytic checkpoint
+states are committed goldens with provenance
+(\texttt{tests/golden/integrators/manifest.toml}).
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the integrator library. Measured values
+    are from the acceptance run recorded in the test sources (MSVC x64,
+    \texttt{/fp:strict}).}
+  \label{tab:integrators:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{rkf78_tableau_order_conditions} &
+      Row-sum, quadrature ($q \le 6$ for $b$, $q \le 7$ for $\hat b$), and
+      order-3/4 coupling conditions
+      (equations~\eqref{eq:integrators:rowsum}--%
+      \eqref{eq:integrators:coupling}) hold to $10^{-13}$ on the transcribed
+      tableau. \\
+    \testid{kepler_reference_propagator_golden} &
+      The C++ analytic reference propagator matches the independently
+      generated golden checkpoints to $\qty{1e-6}{m}$ /
+      $\qty{1e-9}{m/s}$ at 8 epochs. \\
+    \testid{rk4_kepler_convergence_slope} &
+      Global-error slope on the eccentric Kepler problem
+      (equation~\eqref{eq:integrators:rk4}): measured 4.026, gate
+      $4.0 \pm 0.2$ (Phase 2 exit criterion 3). \\
+    \testid{rkf78_fixed_kepler_convergence_slope} &
+      Fixed-step slope of the extrapolated 7(8) pair: measured 7.944, gate
+      $\ge 7.5$ (Phase 2 exit criterion 3). \\
+    \testid{rkf78_adaptive_energy_momentum_drift} &
+      Specific energy and $\norm{\vv{h}}$ drift over 10 orbits at adaptive
+      tolerance $10^{-12}$: measured $7.4\times10^{-14}$ and
+      $2.0\times10^{-13}$, gate $< 10^{-10}$ (Phase 2 exit criterion 4). \\
+    \testid{dense_output_hermite_midstep_accuracy} &
+      Midstep interpolant error within the bound of
+      equation~\eqref{eq:integrators:hermite:err} (measured $0.67\times$
+      the bound at $h = \qty{64}{s}$) and scaling as $h^4$ (measured ratio
+      15.8 for $h \to h/2$). \\
+    \testid{rkf78_adaptive_double_run_bitwise} &
+      Two identical adaptive runs produce bit-identical final states
+      (D-10, no tolerance). \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:integrators:references}
+
+This chapter relies on Fehlberg~\cite{fehlberg1968} for the 7(8) tableau
+and embedded error estimate; on Hairer, N{\o}rsett, and
+Wanner~\cite{hairer1993} for Runge--Kutta order theory, the RK4 method, the
+scaled error norm, and dense output; on Gustafsson~\cite{gustafsson1991}
+and Hairer and Wanner~\cite{hairer1996} for PI step-size control; and on
+Vallado~\cite{vallado2013} for the closed-form Kepler propagation used as
+truth by the validation suite. Full bibliographic details appear in the
+bibliography.
