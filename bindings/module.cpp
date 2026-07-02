@@ -11,6 +11,7 @@
 
 #include "star/rng.hpp"
 #include "star/run.hpp"
+#include "star/time.hpp"
 #include "star/version.hpp"
 
 namespace py = pybind11;
@@ -40,6 +41,55 @@ std::vector<double> rng_stream_normal(std::uint64_t master_seed,
     out.push_back(sampler.next());
   }
   return out;
+}
+
+// Time-system wrappers (FR-2, D-6). Epochs cross the binding as plain
+// (day, sec) / calendar-field tuples rather than bound classes: the values
+// are two ints and a handful of doubles, and tuples keep the Python side
+// free of core object lifetimes. std::domain_error from star::time maps to
+// Python ValueError via the pybind11 built-in exception translator.
+py::tuple utc_to_tai(int year, int month, int day, int hour, int minute,
+                     double second) {
+  const star::time::TaiEpoch tai =
+      star::time::tai_from_utc({year, month, day, hour, minute, second});
+  return py::make_tuple(tai.day, tai.sec);
+}
+
+py::tuple tai_to_utc(std::int64_t day, double sec) {
+  const star::time::UtcTime utc = star::time::utc_from_tai({day, sec});
+  return py::make_tuple(utc.year, utc.month, utc.day, utc.hour, utc.minute,
+                        utc.second);
+}
+
+py::tuple tai_to_jd(std::int64_t day, double sec) {
+  const star::time::TwoPartJd jd = star::time::tai_jd({day, sec});
+  return py::make_tuple(jd.jd1, jd.jd2);
+}
+
+py::tuple tt_to_jd(std::int64_t day, double sec) {
+  const star::time::TwoPartJd jd = star::time::tt_jd({day, sec});
+  return py::make_tuple(jd.jd1, jd.jd2);
+}
+
+py::tuple tdb_to_jd(std::int64_t day, double sec) {
+  const star::time::TwoPartJd jd = star::time::tdb_jd({day, sec});
+  return py::make_tuple(jd.jd1, jd.jd2);
+}
+
+py::tuple tai_add_seconds(std::int64_t day, double sec, double delta_s) {
+  const star::time::TaiEpoch out =
+      star::time::tai_add_seconds({day, sec}, delta_s);
+  return py::make_tuple(out.day, out.sec);
+}
+
+py::dict leap_table_info() {
+  const star::time::LeapTableInfo info = star::time::leap_table_info();
+  py::dict d;
+  d["version"] = std::string(info.version);
+  d["expiry_utc"] =
+      py::make_tuple(info.expiry_year, info.expiry_month, info.expiry_day);
+  d["entries"] = info.entries;
+  return d;
 }
 
 py::dict run_and_summarize(const star::RunConfig& cfg,
@@ -105,4 +155,61 @@ PYBIND11_MODULE(_core, m) {
         py::arg("stream_name"), py::arg("n"),
         "First n standard-normal Box-Muller deviates of the named stream "
         "(D-9; see star/rng.hpp for the exact draw-consumption pattern).");
+
+  m.def("utc_to_tai", &utc_to_tai, py::arg("year"), py::arg("month"),
+        py::arg("day"), py::arg("hour"), py::arg("minute"), py::arg("second"),
+        "Numeric UTC calendar fields -> two-part TAI epoch (day, sec): whole "
+        "TAI days since 2000-01-01T00:00:00.0 TAI and TAI seconds of day in "
+        "[0, 86400) (D-6). second in [60, 61) is accepted only inside an "
+        "inserted leap second. Raises ValueError outside the 1972-onward "
+        "table domain or for invalid fields.");
+
+  m.def("tai_to_utc", &tai_to_utc, py::arg("day"), py::arg("sec"),
+        "Two-part TAI epoch -> UTC calendar fields (year, month, day, hour, "
+        "minute, second); instants inside an inserted leap second come back "
+        "with second in [60, 61).");
+
+  m.def("tai_minus_utc", &star::time::tai_minus_utc_s, py::arg("year"),
+        py::arg("month"), py::arg("day"),
+        "TAI - UTC in whole seconds for a UTC calendar date (bundled IERS "
+        "Bulletin C leap-second table; see leap_table_info()). Dates past "
+        "the table expiry return the last tabulated value.");
+
+  m.def("tai_to_jd", &tai_to_jd, py::arg("day"), py::arg("sec"),
+        "Two-part TAI Julian Date (jd1 half-integer day, jd2 fraction of "
+        "day) for a two-part TAI epoch.");
+
+  m.def("tt_jd", &tt_to_jd, py::arg("day"), py::arg("sec"),
+        "Two-part TT Julian Date for a two-part TAI epoch "
+        "(TT = TAI + 32.184 s exactly).");
+
+  m.def("tdb_jd", &tdb_to_jd, py::arg("day"), py::arg("sec"),
+        "Two-part TDB Julian Date for a two-part TAI epoch (TT plus the "
+        "truncated Fairhead-Bretagnon series).");
+
+  m.def("tt_julian_centuries", [](std::int64_t day, double sec) {
+          return star::time::tt_julian_centuries({day, sec});
+        },
+        py::arg("day"), py::arg("sec"),
+        "TT Julian centuries since J2000 (2000-01-01T12:00:00.0 TT) for a "
+        "two-part TAI epoch.");
+
+  m.def("tdb_minus_tt", [](std::int64_t day, double sec) {
+          return star::time::tdb_minus_tt_s({day, sec});
+        },
+        py::arg("day"), py::arg("sec"),
+        "TDB - TT in seconds: the seven-term series of Kaplan, USNO "
+        "Circular 179 (2005), eq. 2.6 (~30 us truncation budget per D-6).");
+
+  m.def("tai_add_seconds", &tai_add_seconds, py::arg("day"), py::arg("sec"),
+        py::arg("delta_s"),
+        "Two-part TAI epoch plus delta_s SI seconds, with the "
+        "0 <= sec < 86400 invariant restored.");
+
+  m.def("leap_table_info", &leap_table_info,
+        "Bundled leap-second table metadata: version (the IERS Bulletin C "
+        "state the table was verified against), expiry_utc (y, m, d) - the "
+        "first UTC date a leap second not in the table could take effect - "
+        "and entries. The Python layer warns on post-expiry epochs; the "
+        "core never reads the clock (D-2).");
 }
