@@ -102,9 +102,11 @@ configure_file(cpp/src/version.cpp.in
 add_library(star_core STATIC
   cpp/src/ephemeris.cpp
   cpp/src/events.cpp
+  cpp/src/frames.cpp
   cpp/src/integrate.cpp
   cpp/src/models/twobody.cpp
   cpp/src/rng.cpp
+  cpp/src/rotation.cpp
   cpp/src/run.cpp
   cpp/src/srlog_writer.cpp
   cpp/src/time.cpp
@@ -141,7 +143,9 @@ if(STAR_BUILD_TESTING)
     cpp/tests/test_integrate.cpp
     cpp/tests/test_main.cpp
     cpp/tests/test_ephemeris.cpp
+    cpp/tests/test_frames.cpp
     cpp/tests/test_rng.cpp
+    cpp/tests/test_rotation.cpp
     cpp/tests/test_srlog.cpp
     cpp/tests/test_time.cpp
     cpp/tests/test_twobody.cpp)

@@ -35,3 +35,13 @@ label = "ch:integrators"
 module = "cpp/src/events.cpp"
 chapter = "docs/mathlib/chapters/events.tex"
 label = "ch:events"
+
+[[chapter]]
+module = "cpp/src/rotation.cpp"
+chapter = "docs/mathlib/chapters/rotations.tex"
+label = "ch:rotations"
+
+[[chapter]]
+module = "cpp/src/frames.cpp"
+chapter = "docs/mathlib/chapters/frames.tex"
+label = "ch:frames"

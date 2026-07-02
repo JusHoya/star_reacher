@@ -1,0 +1,450 @@
+% Chapter — Reference frames (FR-3). Follows the mandatory FR-29
+% six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. The equation labels eq:frames:fw, eq:frames:nut00b,
+% eq:frames:xy, eq:frames:s06, eq:frames:c2i, eq:frames:era,
+% eq:frames:chain, eq:frames:moonpa, and eq:frames:mars are echoed
+% verbatim in comments in cpp/src/frames.cpp and
+% cpp/include/star/frames.hpp (FR-29 equation-label-to-code traceability);
+% renaming them breaks that trace.
+\chapter{Reference Frames}
+\label{ch:frames}
+
+\section{Purpose}
+\label{sec:frames:purpose}
+
+This chapter documents the reference-frame module (FR-3): the CIO-based
+transformation between the GCRF ($I$ in
+Table~\ref{tab:notation:frames}) and the rotating Earth-fixed frame ($E$)
+using the IAU 2006/2000B precession-nutation model and the Earth rotation
+angle; the lunar principal-axis frame ($L$) realized from the DE 3-1-3
+libration Euler angles; and the Mars body-fixed frame ($M$) from the IAU
+Working Group 2015 rotational elements. These constructions orient every
+body-fixed model of later phases --- harmonic gravity fields, atmospheres,
+ground-track and launch-site geometry --- and consume the time systems of
+Chapter~\ref{ch:time} and the rotation kernel of
+Chapter~\ref{ch:rotations}. The module is implemented in
+\texttt{cpp/src/frames.cpp} with its interface in
+\texttt{cpp/include/star/frames.hpp}.
+
+\section{Assumptions and domain of validity}
+\label{sec:frames:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{IAU 2000B nutation suffices.} The 77-term IAU 2000B
+    abridged series delivers a celestial pole within \qty{1}{\mas}
+    ($\approx \qty{4.8e-9}{\radian}$) of the full IAU 2000A model over
+    1995--2050~\cite{mccarthy2003}. A \qty{1}{\mas} pole error displaces an
+    Earth-fixed position by $\sim \qty{3}{\centi\metre}$ at the surface
+    --- far below the mission-analysis needs of this simulator. The free
+    core nutation, unpredictable and of comparable sub-mas size, is
+    unmodeled in both 2000A and 2000B.
+  \item \textbf{Polar motion is neglected.} The produced ``Earth-fixed''
+    frame is strictly the Terrestrial Intermediate Reference System: the
+    final polar-motion rotation $\mat{W}(x_p, y_p, s')$ of the full IERS
+    chain is omitted. Polar motion is observed, not modeled; its
+    magnitude is bounded by $|x_p|, |y_p| \lesssim \qty{0.6}{\arcsecond}
+    \approx \qty{2.9e-6}{\radian}$~\cite{iers2010}, i.e.\ up to
+    $\sim \qty{18}{\metre}$ of surface displacement. EOP time-series
+    ingestion is a PRD non-goal; the omission is exactly this bounded
+    rotation.
+  \item \textbf{Constant, user-suppliable $\Delta$UT1 (default 0).}
+    UT1 is realized as $\mathrm{UT1} = \mathrm{UTC} + \Delta\mathrm{UT1}$
+    with a constant offset. By construction of UTC,
+    $|\mathrm{UT1} - \mathrm{UTC}| < \qty{0.9}{\second}$, so the default
+    $\Delta\mathrm{UT1} = 0$ bounds the Earth-rotation error by
+    \qty{0.9}{\second} of spin: $\qty{0.9}{\second} \times
+    \qty{7.292e-5}{\radian\per\second} \approx \qty{6.6e-5}{\radian}$,
+    $\sim \qty{420}{\metre}$ at the surface. A user-supplied constant
+    appropriate to the mission epoch reduces the error to the UT1 drift
+    accumulated across the mission window (of order milliseconds per day,
+    i.e.\ decimetres per day at the surface).
+  \item \textbf{Time plumbing.} The TT argument of the precession-nutation
+    series comes from the two-part TAI epoch (Chapter~\ref{ch:time});
+    the Mars elements use the D-6 truncated TDB. The TDB truncation error
+    ($\leq \qty{30}{\micro\second}$, observed \qty{5.5e-6}{\second})
+    enters Mars $W$ through the rotation rate as
+    $\leq \qty{2.1e-9}{\radian}$ --- below the physical accuracy of the
+    rotational-element model itself (mas level).
+  \item \textbf{Moon PA assembly only.} The lunar construction is the
+    exact 3-1-3 composition of supplied libration angles; the angles
+    themselves come from the DE440 ephemeris evaluator (a separate
+    module), and their physical accuracy is that of
+    DE440~\cite{park2021}.
+\end{enumerate}
+
+Domain of validity: epochs from 1972 (the leap-table domain of
+Chapter~\ref{ch:time}); model fidelity per assumption 1 holds over the
+published 1995--2050 comparison span and degrades gracefully outside it
+(the golden gates run to 2060 against the same model). The frame chain is
+\emph{model-faithful} to IAU 2006/2000B at the $10^{-11}$ matrix-element
+level everywhere in 2020--2060; its \emph{physical} fidelity to the true
+Earth orientation is set by assumptions 2 and 3, which dominate every
+other term.
+
+Out-of-domain behavior, matching the code exactly: epochs before
+1972-01-01 throw \texttt{std::domain\_error} from the time module (the
+UT1 realization needs $\Delta AT$); epochs past the leap-table expiry use
+the last tabulated offset with the Python-layer warning of
+Chapter~\ref{ch:time}. No function of this module throws on its own.
+
+\section{Derivation}
+\label{sec:frames:derivation}
+
+\subsection{The CIO-based chain}
+
+The IERS Conventions (2010), Chapter~5~\cite{iers2010}, factor the
+celestial-to-terrestrial transformation as $\mat{W}(t)\, \mat{R}_3(
+\mathrm{ERA})\, \mat{Q}^{\mathsf T}(t)$, where $\mat{Q}(t)$ orients the
+Celestial Intermediate Pole (CIP) and Origin (CIO) in the GCRS, ERA is the
+Earth rotation angle, and $\mat{W}$ is polar motion. With $\mat{W}$
+omitted (assumption 2) and this project's frame-transformation DCM
+convention, the implemented chain is
+\begin{equation}
+  \dcm{I}{E} = \mat{R}_3\bigl(\mathrm{ERA}(\mathrm{UT1})\bigr)\,
+               \dcm{I}{\mathrm{CIRS}},
+  \label{eq:frames:chain}
+\end{equation}
+with $\dcm{I}{\mathrm{CIRS}}$ the celestial-to-intermediate matrix built
+from the CIP coordinates $X, Y$ and the CIO locator $s$ below.
+
+\subsection{IAU 2006 precession in Fukushima--Williams angles}
+
+The IAU 2006 (P03) precession~\cite{capitaine2003} is parameterized by the
+four Fukushima--Williams angles~\cite{fukushima2003, wallace2006}
+$\bar\gamma$, $\bar\phi$, $\bar\psi$, $\epsilon_A$ --- polynomials in the
+TT Julian-century argument $t$ of equation~\eqref{eq:time:ttcent}, with
+frame bias absorbed into the polynomial constant terms. The
+bias-precession-nutation (NPB) matrix folds the nutation components
+directly into two of the angles~\cite{wallace2006}:
+\begin{equation}
+  \mat{M}_{\mathrm{NPB}} =
+  \mat{R}_1\bigl(-(\epsilon_A + \Delta\epsilon)\bigr)\,
+  \mat{R}_3\bigl(-(\bar\psi + \Delta\psi)\bigr)\,
+  \mat{R}_1(\bar\phi)\,
+  \mat{R}_3(\bar\gamma),
+  \label{eq:frames:fw}
+\end{equation}
+using the elementary frame rotations of
+equation~\eqref{eq:rotations:r1r2r3}. The polynomial coefficients (and the
+IAU 2006 mean obliquity $\epsilon_A$) are tabulated in
+\texttt{cpp/src/frames\_series.hpp}, transcribed from the ERFA 2.0.1
+reference source~\cite{erfa201} implementing~\cite{capitaine2003,
+wallace2006}.
+
+\subsection{IAU 2000B nutation}
+
+The abridged IAU 2000B model~\cite{mccarthy2003} evaluates 77 luni-solar
+terms on the linear Delaunay arguments $l, l', F, D, \Omega$ (their
+truncation to linear polynomials is part of the published model), plus
+fixed offsets standing in for the truncated planetary terms:
+\begin{equation}
+  \Delta\psi = \sum_{k} \bigl[(A_k + A'_k t)\sin\theta_k
+    + A''_k \cos\theta_k\bigr] + \Delta\psi_{\mathrm{pl}},
+  \qquad
+  \Delta\epsilon = \sum_{k} \bigl[(B_k + B'_k t)\cos\theta_k
+    + B''_k \sin\theta_k\bigr] + \Delta\epsilon_{\mathrm{pl}},
+  \label{eq:frames:nut00b}
+\end{equation}
+where $\theta_k$ is the integer combination of the five arguments for term
+$k$ and the planetary offsets are $\Delta\psi_{\mathrm{pl}} =
+\qty{-0.135}{\mas}$, $\Delta\epsilon_{\mathrm{pl}} = \qty{0.388}{\mas}$
+(the Luzum values appropriate to applying frame bias, precession, and
+nutation separately, as equation~\eqref{eq:frames:fw}
+does~\cite{mccarthy2003, erfa201}).
+
+\subsection{CIP coordinates, the CIO locator, and the intermediate matrix}
+
+The CIP unit vector in the GCRS is the third row of the NPB matrix, so its
+coordinates are read off directly:
+\begin{equation}
+  X = \bigl(\mat{M}_{\mathrm{NPB}}\bigr)_{31},
+  \qquad
+  Y = \bigl(\mat{M}_{\mathrm{NPB}}\bigr)_{32}.
+  \label{eq:frames:xy}
+\end{equation}
+The CIO locator $s$ positions the Celestial Intermediate Origin on the
+CIP equator; it is evaluated in the standard $s + XY/2$ form --- a
+polynomial plus Poisson series in the eight fundamental luni-solar and
+planetary arguments, per IERS Conventions (2010) Chapter~5 and the SOFA
+S06 realization consistent with IAU 2006 precession~\cite{iers2010,
+wallace2006}:
+\begin{equation}
+  s = -\frac{XY}{2}
+      + \sum_{j=0}^{5} t^{j} \Bigl[ c_j + \sum_{k}
+        \bigl( S_{jk} \sin\alpha_{jk} + C_{jk} \cos\alpha_{jk} \bigr)
+        \Bigr],
+  \label{eq:frames:s06}
+\end{equation}
+with the coefficients again tabulated in
+\texttt{cpp/src/frames\_series.hpp}. Writing the CIP direction in
+spherical form, $E = \operatorname{atan2}(Y, X)$ and
+$d = \arctan\sqrt{(X^2 + Y^2)/(1 - X^2 - Y^2)}$, the
+celestial-to-intermediate matrix is
+\begin{equation}
+  \dcm{I}{\mathrm{CIRS}} = \mat{R}_3\bigl(-(E + s)\bigr)\,
+    \mat{R}_2(d)\, \mat{R}_3(E),
+  \label{eq:frames:c2i}
+\end{equation}
+the standard construction of IERS Conventions (2010),
+Chapter~5~\cite{iers2010}.
+
+\subsection{Earth rotation angle}
+
+The Earth rotation angle is the defining linear function of the UT1
+Julian-day interval $T_u$ from J2000 (Capitaine, Guinot \&
+McCarthy~\cite{capitaine2000}; IERS Conventions (2010),
+eq.~5.15~\cite{iers2010}):
+\begin{equation}
+  \mathrm{ERA}(T_u) = 2\pi \bigl( \operatorname{frac}(T_u)
+    + 0.7790572732640 + 0.00273781191135448\, T_u \bigr) ,
+  \label{eq:frames:era}
+\end{equation}
+where $\operatorname{frac}(T_u)$ is taken from the two Julian-date parts
+separately before the small rate coefficient multiplies the collapsed
+$T_u$ --- the arrangement that preserves the two-part precision
+(Section~\ref{sec:frames:implementation}). UT1 itself is
+$\mathrm{UT1} = \mathrm{TAI} - \Delta AT + \Delta\mathrm{UT1}$ with
+$\Delta AT$ from the leap table of Chapter~\ref{ch:time} and constant
+$\Delta\mathrm{UT1}$ per assumption 3.
+
+\subsection{Moon principal-axis frame}
+
+The DE-series lunar librations are published as the 3-1-3 Euler angles
+$\phi, \theta, \psi$ that carry the ICRF axes onto the lunar
+principal axes~\cite{park2021}, so with the sequence convention of
+equation~\eqref{eq:rotations:e313},
+\begin{equation}
+  \dcm{I}{L} = \mat{R}_3(\psi)\, \mat{R}_1(\theta)\, \mat{R}_3(\phi).
+  \label{eq:frames:moonpa}
+\end{equation}
+The construction takes the three angles as plain arguments: the DE440
+Chebyshev evaluator that interpolates them is a separate module, and the
+assembly must not depend on it. Representative DE440 magnitudes ($\phi$
+small, $\theta \approx \qty{0.4}{\radian}$, $\psi$ unbounded) are among
+the committed golden angle sets.
+
+\subsection{Mars body-fixed frame}
+
+The IAU Working Group 2015 report~\cite{archinal2018} (with its
+correction~\cite{archinal2019}; numerical values as distributed in NAIF
+\texttt{pck00011.tpc}~\cite{pck00011}) gives the Mars north-pole right
+ascension $\alpha_0$, declination $\delta_0$, and prime-meridian angle
+$W$, in degrees, as functions of the TDB interval from J2000.0
+($= \mathrm{JD}\,2451545.0$ TDB): $d$ in days for the $W$ rate and $T =
+d/36525$ in Julian centuries elsewhere,
+\begin{equation}
+  \begin{aligned}
+    \alpha_0 &= 317.269202 - 0.10927547\,T
+      + \textstyle\sum_i a_i \sin(\theta_i), \\
+    \delta_0 &= 54.432516 - 0.05827105\,T
+      + \textstyle\sum_i b_i \cos(\phi_i), \\
+    W &= 176.049863 + 350.891982443297\,d
+      + \textstyle\sum_i c_i \sin(\chi_i),
+  \end{aligned}
+  \label{eq:frames:mars}
+\end{equation}
+with the periodic terms of Table~\ref{tab:frames:mars}. The body-fixed
+frame follows the standard IAU construction:
+\begin{equation}
+  \dcm{I}{M} = \mat{R}_3(W)\,
+    \mat{R}_1\bigl(\tfrac{\pi}{2} - \delta_0\bigr)\,
+    \mat{R}_3\bigl(\tfrac{\pi}{2} + \alpha_0\bigr),
+  \label{eq:frames:marsdcm}
+\end{equation}
+whose third row is the pole direction $(\cos\delta_0 \cos\alpha_0,
+\cos\delta_0 \sin\alpha_0, \sin\delta_0)$ --- the cross-check the golden
+generator asserts independently.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Mars periodic rotational-element terms (Archinal et
+    al.~\cite{archinal2018}; amplitudes and arguments in degrees, argument
+    rates in degrees per TDB Julian century).}
+  \label{tab:frames:mars}
+  \begin{tabular}{lrrr}
+    \toprule
+    Element (function) & Amplitude & Phase & Rate \\
+    \midrule
+    $\alpha_0$ ($\sin$) & 0.000068 & 198.991226 & 19139.4819985 \\
+                        & 0.000238 & 226.292679 & 38280.8511281 \\
+                        & 0.000052 & 249.663391 & 57420.7251593 \\
+                        & 0.000009 & 266.183510 & 76560.6367950 \\
+                        & 0.419057 & 79.398797 & 0.5042615 \\
+    \midrule
+    $\delta_0$ ($\cos$) & 0.000051 & 122.433576 & 19139.9407476 \\
+                        & 0.000141 & 43.058401 & 38280.8753272 \\
+                        & 0.000031 & 57.663379 & 57420.7517205 \\
+                        & 0.000005 & 79.476401 & 76560.6495004 \\
+                        & 1.591274 & 166.325722 & 0.5042615 \\
+    \midrule
+    $W$ ($\sin$)        & 0.000145 & 129.071773 & 19140.0328244 \\
+                        & 0.000157 & 36.352167 & 38281.0473591 \\
+                        & 0.000040 & 56.668646 & 57420.9295360 \\
+                        & 0.000001 & 67.364003 & 76560.2552215 \\
+                        & 0.000001 & 104.792680 & 95700.4387578 \\
+                        & 0.584542 & 95.391654 & 0.5042615 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Discretization and implementation}
+\label{sec:frames:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The chain lives in
+    \texttt{cpp/src/frames.cpp}; the source comments echo the labels
+    \texttt{eq:frames:fw}, \texttt{eq:frames:nut00b},
+    \texttt{eq:frames:xy}, \texttt{eq:frames:s06},
+    \texttt{eq:frames:c2i}, \texttt{eq:frames:era},
+    \texttt{eq:frames:chain}, \texttt{eq:frames:moonpa}, and
+    \texttt{eq:frames:mars} verbatim.
+  \item \textbf{Series tables and transcription control.} All series
+    coefficients are compiled constants in
+    \texttt{cpp/src/frames\_series.hpp}, transcribed verbatim from the
+    ERFA 2.0.1 reference source~\cite{erfa201}. Transcription is
+    controlled twice: the golden generator carries an independent Python
+    mirror of the same tables, validated functionally against ERFA at
+    314 epochs at generation time (residuals at the $10^{-16}$ level),
+    and the committed table file \texttt{series\_terms.toml} is compared
+    term by term against the compiled constants
+    (\testid{frames_series_transcription}, exact binary64 equality).
+  \item \textbf{Fixed summation order (D-10).} Both Poisson series sum
+    smallest terms first --- the reverse of the published table order,
+    exactly the SOFA/ERFA evaluation order --- and the polynomial
+    combinations use the reference's nested parenthesization, so the
+    implementation is bit-compatible with the operation sequence the
+    golden values were generated by, up to libm differences.
+  \item \textbf{Two-part UT1 through the ERA.} A matrix-element target of
+    $10^{-11}$ corresponds to $\sim \qty{1.4e-7}{\second}$ of UT1; a
+    single binary64 of seconds since J2000 carries only
+    $\sim \qty{2.4e-7}{\second}$ of resolution by 2060
+    (Chapter~\ref{ch:time}), which is why the two-part epoch exists. The
+    implementation forms UT1 as an exact whole-day part
+    ($\mathrm{JD}\,2451544.5 + d$, exact in binary64 over the table
+    domain) plus a seconds-of-day fraction $(s - \Delta AT +
+    \Delta\mathrm{UT1})/86400$ with quantum
+    $\sim \qty{1.5e-11}{\second}$, and
+    equation~\eqref{eq:frames:era} takes $\operatorname{frac}(T_u)$ from
+    the parts separately; only the $2.7 \times 10^{-3}$ rate coefficient
+    multiplies the collapsed $T_u$, suppressing its rounding by the same
+    factor. The fraction may be negative for epochs in the first
+    $\Delta AT$ seconds of a TAI day; the final modular reduction
+    normalizes the angle.
+  \item \textbf{One rotation kernel.} Every matrix is composed from the
+    $\mat{R}_1/\mat{R}_2/\mat{R}_3$ primitives of
+    Chapter~\ref{ch:rotations} (which match the SOFA sign convention), in
+    the same association order as the reference routines; the Moon PA
+    assembly is literally the kernel's 3-1-3 composition (asserted
+    bit-identical in \testid{frames_moon_pa_golden}).
+  \item \textbf{Mars argument reduction.} Each periodic argument is
+    reduced modulo \qty{360}{\degree} \emph{before} the radian conversion,
+    and $W$'s linear term is reduced the same way, in a fixed order
+    identical to the golden generator; the TDB day count is formed as the
+    exact two-part difference $(\mathrm{jd}_1 - 2451545.0) +
+    \mathrm{jd}_2$ before the single collapse.
+  \item \textbf{Where polar motion would go.} The omitted $\mat{W}$ of
+    the full IERS chain would left-multiply
+    equation~\eqref{eq:frames:chain}; the cookbook cross-check test
+    documents this by comparing against the published no-polar-motion
+    matrix.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:frames:validation}
+
+Tables~\ref{tab:frames:validation-core}
+and~\ref{tab:frames:validation-py} list the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
+provenance and tolerances are recorded in
+\texttt{tests/golden/frames/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the reference-frame module: core
+    (doctest, \texttt{cpp/tests/}).}
+  \label{tab:frames:validation-core}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{frames_series_transcription} &
+      Every compiled series constant equals the committed,
+      ERFA-validated table term by term (exact binary64 equality). \\
+    \testid{frames_erfa_chain_golden} &
+      Phase~2 exit criterion 1: $\dcm{I}{E}$ matrix elements match the
+      ERFA-generated chain at 14 epochs spanning 2020--2060 to
+      $\leq 10^{-11}$ (observed worst \num{3.5e-14}); chain components
+      $\Delta\psi, \Delta\epsilon, X, Y, s, \mathrm{ERA}$ to
+      $\leq \qty{1e-12}{\radian}$ (observed worst \qty{3.6e-14}{\radian});
+      two-part TAI plumbing bit-identical; orthonormality of every
+      produced matrix. \\
+    \testid{frames_sofa_cookbook_crosscheck} &
+      The published SOFA cookbook worked example (2007-04-05 12:00 UTC,
+      IAU 2006/2000A, CIO based, no polar motion)~\cite{sofacookbook}:
+      matrix elements within the documented \num{8e-9} model-difference
+      bound (2000B vs.\ 2000A plus the cookbook's CIP corrections;
+      observed \num{2.3e-9}); published $X$, $Y$, $s$, ERA at their
+      documented bounds. \\
+    \testid{frames_eci_ecef_roundtrip} &
+      Phase~2 exit criterion 6b: ECI$\to$ECEF$\to$ECI position round trip
+      at $r = \qty{6778137}{\metre}$, 14 epochs $\times$ 6 directions,
+      error $\leq \qty{1e-8}{\metre}$ (observed worst
+      \qty{3.8e-9}{\metre}); norm preservation to the same bound. \\
+    \testid{frames_moon_pa_golden} &
+      Equation~\eqref{eq:frames:moonpa} vs.\ ERFA-composed goldens at 7
+      committed angle sets (representative DE440 magnitudes plus
+      degenerate geometry) to $\leq 10^{-15}$ per element; bit equality
+      with the rotation kernel's 3-1-3 composition. \\
+    \testid{frames_mars_iau_golden} &
+      Equation~\eqref{eq:frames:mars} vs.\ the independent golden
+      evaluation at 6 epochs to $\leq \qty{1e-13}{\radian}$ per element
+      angle and $\leq 10^{-14}$ per matrix element (observed bit-identical);
+      TDB plumbing bit-identical; pole-vector cross-check. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the reference-frame module: binding
+    surface (pytest, \texttt{tests/python/}).}
+  \label{tab:frames:validation-py}
+  \begin{tabular}{lp{7.0cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{test_frames_bindings_match_goldens} &
+      The pybind11 surface reproduces the ERFA-chain goldens at the same
+      $10^{-11}$/$10^{-12}$ gates. \\
+    \testid{test_frames_cookbook_bindings} &
+      The published cookbook example through the bindings at its
+      documented bounds. \\
+    \testid{test_frames_eci_ecef_roundtrip_bindings} &
+      Criterion 6b through the bindings ($\leq \qty{1e-8}{\metre}$). \\
+    \testid{test_frames_moon_mars_bindings} &
+      Moon PA and Mars element/matrix goldens through the bindings. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:frames:references}
+
+This chapter relies on the IERS Conventions (2010)~\cite{iers2010} for the
+CIO-based transformation structure, the $s$ series, and the ERA
+expression; on McCarthy and Luzum~\cite{mccarthy2003} for the IAU 2000B
+nutation model and its accuracy statement; on Capitaine, Wallace and
+Chapront~\cite{capitaine2003} for the IAU 2006 precession, with the
+Fukushima--Williams parameterization per Fukushima~\cite{fukushima2003}
+and Wallace and Capitaine~\cite{wallace2006}; on Capitaine, Guinot and
+McCarthy~\cite{capitaine2000} for the Earth rotation angle; on the ERFA
+reference implementation~\cite{erfa201} for the transcribed series
+coefficients and evaluation order; on the SOFA cookbook~\cite{sofacookbook}
+for the published worked example; on Park et al.~\cite{park2021} for the
+DE440 libration-angle convention; and on Archinal et
+al.~\cite{archinal2018, archinal2019} (values per NAIF
+\texttt{pck00011.tpc}~\cite{pck00011}) for the Mars rotational elements.
+Full bibliographic details appear in the bibliography.
