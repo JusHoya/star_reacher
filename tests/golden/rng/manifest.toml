@@ -1,0 +1,52 @@
+# Provenance manifest for the RNG golden vectors in this directory
+# (FR-22 layer 1: uncited golden = lint failure; schema documented in
+# tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "rng"
+date = "2026-07-02"
+generation = """
+All four value files are written by tests/golden/rng/generate.py, which
+implements each algorithm independently in pure Python integers and, for
+every PCG64 case, cross-checks the sequence against numpy.random.PCG64
+(an independent C implementation of the same generator) via random_raw with
+an injected (state, inc) pair. SplitMix64 is anchored to the published first
+output for seed 0 (0xE220A8397B1DCDAF) and FNV-1a to its defining property
+that the hash of the empty string equals the offset basis. Regenerating is
+`python tests/golden/rng/generate.py`; output is byte-deterministic.
+"""
+
+[[file]]
+name = "fnv1a.toml"
+source = "generate.py reference implementation (pure Python integers)"
+citation = "Fowler/Noll/Vo FNV-1a, 64-bit parameters per IETF draft-eastlake-fnv (offset basis 14695981039346656037, prime 1099511628211)"
+generation = "fnv1a64() in generate.py over the listed input strings"
+date = "2026-07-02"
+tolerance = "exact (u64 bit equality)"
+
+[[file]]
+name = "splitmix64.toml"
+source = "generate.py reference implementation (pure Python integers)"
+citation = "S. Vigna, splitmix64.c reference implementation (public domain, prng.di.unimi.it); algorithm from Steele, Lea, and Flood, 'Fast Splittable Pseudorandom Number Generators', OOPSLA 2014"
+citation_anchor = "first output for seed 0 (0xE220A8397B1DCDAF) asserted at generation time"
+generation = "splitmix64_sequence() in generate.py, 16 outputs per seed"
+date = "2026-07-02"
+tolerance = "exact (u64 bit equality)"
+
+[[file]]
+name = "pcg64.toml"
+source = "generate.py reference implementation, cross-checked against numpy.random.PCG64.random_raw for every case"
+citation = "M. E. O'Neill, 'PCG: A Family of Simple Fast Space-Efficient Statistically Good Algorithms for Random Number Generation', Harvey Mudd College technical report HMC-CS-2014-0905; reference implementation at pcg-random.org (pcg_setseq_128 XSL-RR 128/64, srandom seeding)"
+generation = "Pcg64/make_stream in generate.py, 16 outputs per case; stream derivation per Phase 1 contract section 4 (FNV-1a key, SplitMix64 expansion)"
+date = "2026-07-02"
+tolerance = "exact (u64 bit equality)"
+
+[[file]]
+name = "box_muller.toml"
+source = "generate.py reference implementation (math.log/cos/sin on named-stream draws)"
+citation = "G. E. P. Box and M. E. Muller, 'A Note on the Generation of Random Normal Deviates', Annals of Mathematical Statistics 29(2), 1958; draw-consumption pattern per Phase 1 contract section 4"
+generation = "box_muller_sequence() in generate.py; values recorded as exact binary64 hex literals (float.hex()); odd-count case exercises the cached second variate"
+date = "2026-07-02"
+tolerance = "abs-or-rel 1e-13: |got - golden| <= 1e-13 * max(1, |golden|). The transform output passes through libm log/cos/sin/sqrt, which are not correctly rounded and may differ by a few ulps between C runtimes; 1e-13 gives roughly three orders of margin over observed ulp-level spread while still catching any algorithmic deviation."

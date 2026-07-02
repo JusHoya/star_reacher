@@ -1,0 +1,12 @@
+// Configured by CMake from cpp/src/version.cpp.in - do not edit the generated
+// file. The values are frozen at configure time so the running core needs no
+// access to git or the filesystem to identify itself (D-11 producer fields).
+#include "star/version.hpp"
+
+namespace star {
+
+const char* core_version() { return "@PROJECT_VERSION@"; }
+
+const char* git_hash() { return "@STAR_GIT_HASH@"; }
+
+}  // namespace star
