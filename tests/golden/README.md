@@ -56,3 +56,12 @@ this policy.
   `rng_pcg64_golden`, and `rng_box_muller_golden` (and by the Python
   cross-validation tests). See `rng/manifest.toml` for provenance and
   tolerances.
+
+## Phase 2 contents
+
+- `time/` — UTC→TAI→TT conversion, TDB−TT series, and leap-second history
+  golden vectors (FR-2, D-6), cross-checked against ERFA and the published
+  SOFA cookbook anchor; consumed by the doctest cases
+  `time_utc_tai_tt_golden`, `time_tdb_series_golden`, and
+  `time_leap_table_golden` (and by the Python binding tests). See
+  `time/manifest.toml` for provenance and tolerances.

@@ -104,6 +104,7 @@ add_library(star_core STATIC
   cpp/src/rng.cpp
   cpp/src/run.cpp
   cpp/src/srlog_writer.cpp
+  cpp/src/time.cpp
   "${CMAKE_CURRENT_BINARY_DIR}/generated/version.cpp")
 target_include_directories(star_core PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include")
@@ -136,6 +137,7 @@ if(STAR_BUILD_TESTING)
     cpp/tests/test_main.cpp
     cpp/tests/test_rng.cpp
     cpp/tests/test_srlog.cpp
+    cpp/tests/test_time.cpp
     cpp/tests/test_twobody.cpp)
   target_link_libraries(star_tests PRIVATE star_core)
   # Golden vectors are read from the source tree so the test binary needs no
