@@ -1,0 +1,133 @@
+# Phase 1 CI (PRD section 7 matrix; exit criteria 1, 5, 6, 7).
+# Honesty rule: no continue-on-error anywhere — a red gate is a red build.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Exit criteria 1 and 7: the wheel builds and installs on all four legs,
+  # the Python suite passes, and `star verify --quick` finishes under 60 s
+  # with a PASS verdict. Criterion 7 targets the ARM leg (Pi 5 proxy), but
+  # the timing gate is enforced on every leg — a slower leg failing it is
+  # information, not noise.
+  build-test:
+    strategy:
+      # All legs report even when one fails, so a platform-specific defect
+      # is visible in a single CI round-trip.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install package (builds the native core)
+        run: pip install .
+      - name: Install test dependencies
+        run: pip install pytest
+      - name: Run Python test suite
+        # Serial on purpose: no -n auto (project resource-containment rule,
+        # and parallel workers would blur determinism-gate diagnostics).
+        run: pytest tests/python -q
+      - name: star verify --quick (timed gate)
+        # Inline wrapper instead of `time`/`timeout` shell tools so the same
+        # step runs identically on POSIX and Windows runners. Fails on:
+        # nonzero exit, wall time >= 60 s, or a missing PASS verdict.
+        shell: python
+        run: |
+          import subprocess
+          import sys
+          import time
+
+          start = time.monotonic()
+          proc = subprocess.run(
+              ["star", "verify", "--quick"],
+              capture_output=True,
+              text=True,
+          )
+          elapsed = time.monotonic() - start
+          output = proc.stdout + proc.stderr
+          print(output)
+          print(f"wall time: {elapsed:.1f} s")
+          if proc.returncode != 0:
+              sys.exit(f"star verify --quick exited {proc.returncode}")
+          if elapsed >= 60.0:
+              sys.exit(f"star verify --quick took {elapsed:.1f} s (gate: < 60 s)")
+          if "VERIFY: PASS" not in output:
+              sys.exit("output does not contain 'VERIFY: PASS'")
+
+  # C++ unit tests (doctest via CTest) with warnings-as-errors. A plain
+  # configure is used rather than a preset so this job has no coupling to
+  # preset binary-directory naming; the determinism flags are applied
+  # unconditionally by the core CMakeLists, not by any preset.
+  cpp-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (warnings as errors)
+        run: >-
+          cmake -S . -B build/ci
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_FLAGS="-Wall -Wextra -Werror"
+      - name: Build
+        run: cmake --build build/ci --parallel 4
+      - name: Run doctest suite
+        run: ctest --test-dir build/ci --output-on-failure
+
+  # Exit criterion 5: both PDFs build with zero LaTeX errors on a clean
+  # clone, the FR-29 chapter lint is green, and the PDFs are uploaded as
+  # artifacts. The lint runs before the build so a documentation-accretion
+  # failure is reported even when LaTeX would also fail.
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install TeX Live and latexmk
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y --no-install-recommends
+          latexmk biber
+          texlive-latex-base texlive-latex-recommended texlive-latex-extra
+          texlive-fonts-recommended texlive-bibtex-extra texlive-science
+      - name: Install package (provides the `star docs` command)
+        run: pip install .
+      - name: Chapter-manifest lint (FR-29 accretion gate)
+        run: python scripts/lint_chapters.py
+      - name: Build both PDFs
+        run: star docs
+      - name: Assert both PDFs exist
+        run: |
+          test -f docs/mathlib/mathlib.pdf
+          test -f docs/report/report.pdf
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-pdfs
+          path: |
+            docs/mathlib/mathlib.pdf
+            docs/report/report.pdf
+          if-no-files-found: error
+
+  # Exit criterion 6: CITATION.cff validates against the CFF schema and the
+  # README BibTeX block matches it field for field.
+  citation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install cffconvert
+        run: pip install cffconvert
+      - name: Validate CITATION.cff
+        run: cffconvert --validate
+      - name: Check README BibTeX consistency
+        run: python scripts/check_citation.py

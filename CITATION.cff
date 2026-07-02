@@ -1,0 +1,20 @@
+# Citation metadata (D-18). CI validates this file with `cffconvert
+# --validate` and cross-checks it against the README BibTeX block with
+# scripts/check_citation.py, so edits here must be mirrored there.
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+title: star_reacher
+version: 0.1.0
+date-released: 2026-07-02
+license: Apache-2.0
+repository-code: "https://github.com/JusHoya/star_reacher"
+abstract: >-
+  A small, deterministic six-degree-of-freedom space-mission simulator for
+  launch vehicles, satellites, and lunar/Mars missions, built as a C++17/Eigen
+  core behind a Python frontend, with every physical model derived, cited, and
+  validated.
+authors:
+  - family-names: Hoyer
+    given-names: Melvin
+    name-suffix: III
