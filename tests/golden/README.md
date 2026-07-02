@@ -79,3 +79,8 @@ this policy.
   `ephemeris_bitlevel_golden`, `ephemeris_segment_boundary_continuity`, and
   `ephemeris_error_paths`, and by `tests/python/test_ephemeris_horizons.py`.
   See `ephemeris/manifest.toml` for provenance and tolerances.
+- `integrators/` — reference eccentric-orbit definition, analytic Kepler
+  checkpoint states, and analytic apsis passage times consumed by the
+  integrator/event acceptance suites (doctest `test_integrate.cpp` and
+  `test_events.cpp`, pytest `test_integrators.py`). See
+  `integrators/manifest.toml` for provenance and tolerances.

@@ -1,0 +1,46 @@
+# Analytic apsis passage times for the reference orbit defined in
+# kepler_orbit.toml (case "definition"), over (0, 3.2 T]. Generated
+# by generate.py (provenance in manifest.toml). Periapsis: mean
+# anomaly M = 0 (mod 2 pi); apoapsis: M = pi (mod 2 pi); times are
+# t = (target - M0)/n from the committed initial state.
+# span = 3.2 periods = 22787.461048249676 s
+
+[[case]]
+name = "span"
+t_end_s = "0x1.640dd81d0848fp+14"
+
+[[case]]
+name = "apsis_0"
+# t = 1497.842615544601 s
+kind = "apoapsis"
+t_s = "0x1.7675ed69bfca6p+10"
+
+[[case]]
+name = "apsis_1"
+# t = 5058.383404333613 s
+kind = "periapsis"
+t_s = "0x1.3c26226c95203p+12"
+
+[[case]]
+name = "apsis_2"
+# t = 8618.924193122624 s
+kind = "apoapsis"
+t_s = "0x1.0d5764bf5d26ep+13"
+
+[[case]]
+name = "apsis_3"
+# t = 12179.464981911635 s
+kind = "periapsis"
+t_s = "0x1.7c9bb8486fbdap+13"
+
+[[case]]
+name = "apsis_4"
+# t = 15740.005770700647 s
+kind = "apoapsis"
+t_s = "0x1.ebe00bd182547p+13"
+
+[[case]]
+name = "apsis_5"
+# t = 19300.54655948966 s
+kind = "periapsis"
+t_s = "0x1.2d922fad4a75ap+14"

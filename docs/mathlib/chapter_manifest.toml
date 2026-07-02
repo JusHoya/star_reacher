@@ -25,3 +25,13 @@ label = "ch:time"
 module = "cpp/src/ephemeris.cpp"
 chapter = "docs/mathlib/chapters/ephemeris.tex"
 label = "ch:ephemeris"
+
+[[chapter]]
+module = "cpp/src/integrate.cpp"
+chapter = "docs/mathlib/chapters/integrators.tex"
+label = "ch:integrators"
+
+[[chapter]]
+module = "cpp/src/events.cpp"
+chapter = "docs/mathlib/chapters/events.tex"
+label = "ch:events"
