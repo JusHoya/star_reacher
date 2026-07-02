@@ -884,6 +884,11 @@ def main() -> None:
     term_cases.append(poly_case("fa_ve", FA_VE))
     term_cases.append(poly_case("fa_e", FA_E))
     term_cases.append(poly_case("fa_pa", FA_PA))
+    term_cases.append(poly_case("nutfa_l", NUT00B_FA["el"]))
+    term_cases.append(poly_case("nutfa_lp", NUT00B_FA["elp"]))
+    term_cases.append(poly_case("nutfa_f", NUT00B_FA["f"]))
+    term_cases.append(poly_case("nutfa_d", NUT00B_FA["d"]))
+    term_cases.append(poly_case("nutfa_om", NUT00B_FA["om"]))
     term_cases.append(
         {
             "name": "nut00b_planetary_offsets_mas",

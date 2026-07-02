@@ -30,7 +30,7 @@ source = "generate.py: erfa.rv2m (ERFA 2.0.1 via pyerfa 2.0.1.5) on the quaterni
 citation = "Hamilton scalar-first quaternion and attitude-matrix conventions per project decision D-7 and Markley, F. L. & Crassidis, J. L., Fundamentals of Spacecraft Attitude Determination and Control, Springer (2014); frame-rotation matrix convention per the IAU SOFA Vector/Matrix library (ERFA 2.0.1 rv2m/rx/ry/rz)"
 generation = "dcm_from_quat_erfa()/dcm_from_quat_np() in generate.py per case; quaternion inputs normalized from committed component lists, the first four non-identity cases making each component dominant in turn (Shepperd branch coverage)"
 date = "2026-07-02"
-tolerance = "consuming doctest compares the C++ quat->DCM against c00..c22 at abs 5e-16 per element (the generation-time spread between two independent constructions was 5.55e-16, and the C++ evaluation is a third rounding of the same closed form; a convention error would show as O(1)); DCM->quat recovers the committed quaternion to abs 1e-15 per component after sign normalization (qw >= 0)"
+tolerance = "consuming doctest compares the C++ quat->DCM against c00..c22 at abs 1e-15 per element (the generation-time spread between two independent constructions was 5.55e-16, and the C++ evaluation is a third rounding of the same closed form, so a few ulp of headroom is required; a convention error would show as O(1)); DCM->quat recovers the committed quaternion to abs 1e-15 per component up to overall sign, and the extraction's qw >= 0 convention is asserted separately"
 
 [[file]]
 name = "euler.toml"
@@ -38,4 +38,4 @@ source = "generate.py: erfa.rx/ry/rz frame-rotation compositions (ERFA 2.0.1 via
 citation = "Euler-sequence definitions (3-2-1: C = R1(a3) R2(a2) R3(a1); 3-1-3: C = R3(a3) R1(a2) R3(a1), frame rotations, angles in application order) per Markley & Crassidis (2014); primitive-rotation sign convention per the IAU SOFA Vector/Matrix library"
 generation = "euler321_erfa()/euler313_erfa() and the NumPy mirrors in generate.py; includes gimbal-lock-adjacent cases (321 at a2 = +/-(pi/2 - 1e-2); 313 at a2 = 1e-2 and pi - 1e-2)"
 date = "2026-07-02"
-tolerance = "consuming doctest compares the C++ euler->DCM against c00..c22 at abs 5e-16 per element (generation-time cross-check spread was 1.11e-16); DCM->euler->DCM round trips are gated separately by the criterion-6a rotation-equivalent bound, not by this file"
+tolerance = "consuming doctest compares the C++ euler->DCM against c00..c22 at abs 1e-15 per element (generation-time cross-check spread was 1.11e-16; the C++ composition is a third rounding of the same primitives); DCM->euler->DCM round trips are gated separately by the criterion-6a rotation-equivalent bound, not by this file"
