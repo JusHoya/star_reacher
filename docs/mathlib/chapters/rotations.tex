@@ -1,0 +1,397 @@
+% Chapter — Rotation kernel (FR-3, D-7). Follows the mandatory FR-29
+% six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. The equation labels eq:rotations:hamprod,
+% eq:rotations:quat2dcm, eq:rotations:r1r2r3, eq:rotations:shepperd,
+% eq:rotations:e321, and eq:rotations:e313 are echoed verbatim in comments
+% in cpp/src/rotation.cpp and cpp/include/star/rotation.hpp (FR-29
+% equation-label-to-code traceability); renaming them breaks that trace.
+\chapter{Rotation Kernel}
+\label{ch:rotations}
+
+\section{Purpose}
+\label{sec:rotations:purpose}
+
+This chapter documents the rotation kernel (FR-3, decision D-7): Hamilton
+quaternion algebra, direction-cosine matrices (DCMs), the elementary frame
+rotations $\mat{R}_1$, $\mat{R}_2$, $\mat{R}_3$, and the 3-2-1 and 3-1-3
+Euler-angle sequences, together with all conversions among these
+representations. The kernel is the attitude substrate of the project: the
+Earth, Moon, and Mars frame constructions of Chapter~\ref{ch:frames} are
+compositions of its elementary rotations, and the Phase~4 attitude dynamics
+will integrate quaternions that this kernel converts and normalizes. It is
+implemented in \texttt{cpp/src/rotation.cpp} with its interface in
+\texttt{cpp/include/star/rotation.hpp}; every convention below restates and
+implements the notation chapter's ratification of decision D-7
+(Section~\ref{sec:notation:quaternion}).
+
+\section{Assumptions and domain of validity}
+\label{sec:rotations:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Unit quaternions for attitude.} Attitude operations
+    (\texttt{dcm\_from\_quat}, \texttt{quat\_transform}) assume unit-norm
+    input; \texttt{quat\_normalize} provides the projection and is exact
+    to a few ulp. Normalizing a zero or non-finite quaternion would
+    fabricate an attitude, so it throws \texttt{std::domain\_error}
+    (surfaced in Python as \texttt{ValueError}) instead of defaulting.
+  \item \textbf{Proper rotation matrices for extraction.} The DCM-input
+    functions (\texttt{quat\_from\_dcm}, the Euler extractions) assume an
+    orthonormal matrix with determinant $+1$. Orthonormality is a caller
+    invariant, maintained by construction everywhere in the core and gated
+    by the property tests (\testid{rotation_dcm_orthonormality_properties});
+    it is not re-checked per call inside the deterministic loop.
+  \item \textbf{Double-precision conditioning near gimbal lock.} Within an
+    angular distance $\delta$ of an Euler sequence's singular middle angle,
+    the \emph{individual} first and third angles are ill-conditioned: an
+    absolute matrix-element perturbation of order the machine epsilon
+    $\varepsilon$ produces angle errors of order $\varepsilon/\delta$,
+    because the four elements that determine those angles all carry a
+    factor $\cos a_2$ (3-2-1) or $\sin a_2$ (3-1-3) of magnitude $\delta$.
+    The recomposed \emph{rotation} degrades with the same $O(\varepsilon/
+    \delta)$ envelope, since the two ill-conditioned angle errors arise
+    from independent matrix elements and do not cancel. The implementation
+    is tested against the conservative envelope $100\,\varepsilon/\delta$
+    and observed at $2$--$5\,\varepsilon/\delta$
+    (Section~\ref{sec:rotations:validation}).
+\end{enumerate}
+
+Domain of validity: all of $SO(3)$ for quaternion and DCM operations; all
+of $SO(3)$ for Euler \emph{composition}; Euler \emph{extraction} recovers
+individually meaningful angles only away from the sequence's gimbal lock
+($|a_2| = \pi/2$ for 3-2-1; $a_2 \in \{0, \pi\}$ for 3-1-3), with the
+quantified degradation above inside that neighborhood.
+
+Out-of-domain behavior, matching the code exactly:
+\begin{itemize}
+  \item A non-orthonormal matrix passed to \texttt{quat\_from\_dcm} or an
+    Euler extraction returns the parameters of a nearby rotation without
+    detection --- there is no per-call orthonormality check (see
+    assumption 2). The guard is upstream: every matrix produced by the
+    core is orthonormal to machine precision by construction.
+  \item At \emph{exact} gimbal lock (the singular elements identically
+    zero) only the sum or difference of the first and third angles is
+    observable. The deterministic policy is $a_1 = 0$ with the whole
+    degenerate rotation assigned to $a_3$; the recomposed rotation is
+    exact. There is no warning --- the policy is a documented convention,
+    not an error.
+  \item \texttt{quat\_normalize} throws on zero or non-finite input
+    (assumption 1); no other kernel function throws.
+\end{itemize}
+
+\section{Derivation}
+\label{sec:rotations:derivation}
+
+The conventions and closed forms follow Markley and
+Crassidis~\cite{markley2014}, transcribed to this project's scalar-first
+component ordering; the notation chapter
+(Section~\ref{sec:notation:quaternion}) is the authoritative statement of
+the conventions themselves.
+
+\subsection{Hamilton product and the attitude matrix}
+
+With scalar-first components $\quat{q} = [\,q_w, \vv{q}_v\,]$,
+$\vv{q}_v = [q_x, q_y, q_z]^{\mathsf T}$, the Hamilton product
+(equation~\eqref{eq:notation:hamiltonproduct}) written out per component is
+\begin{equation}
+  \quat{p} \quatmul \quat{q} =
+  \begin{bmatrix}
+    p_w q_w - p_x q_x - p_y q_y - p_z q_z \\
+    p_w q_x + p_x q_w + p_y q_z - p_z q_y \\
+    p_w q_y - p_x q_z + p_y q_w + p_z q_x \\
+    p_w q_z + p_x q_y - p_y q_x + p_z q_w
+  \end{bmatrix}.
+  \label{eq:rotations:hamprod}
+\end{equation}
+For a unit quaternion the inverse is the conjugate
+$\quat{q}^{*} = [\,q_w, -\vv{q}_v\,]$. Embedding a vector as the pure
+quaternion $\tilde{\vv{v}} = [\,0, \vv{v}\,]$ and expanding the frame
+transformation sandwich $\tilde{\vv{v}}^{B} = \quat{q}^{-1} \quatmul
+\tilde{\vv{v}}^{I} \quatmul \quat{q}$ of
+equation~\eqref{eq:notation:sandwich} by two applications of
+equation~\eqref{eq:rotations:hamprod} gives, after collecting terms in
+$q_w^2$, $q_w \vv{q}_v$, and $\vv{q}_v \vv{q}_v^{\mathsf T}$,
+\begin{equation}
+  \dcm{A}{B}(\quat{q})
+  = \bigl(q_w^{2} - \vv{q}_v \cdot \vv{q}_v\bigr) \mat{I}_3
+    + 2\, \vv{q}_v \vv{q}_v^{\mathsf T}
+    - 2\, q_w \skewm{\vv{q}_v}
+  =
+  \begin{bmatrix}
+    q_w^2{+}q_x^2{-}q_y^2{-}q_z^2 & 2(q_x q_y + q_w q_z) & 2(q_x q_z - q_w q_y) \\
+    2(q_x q_y - q_w q_z) & q_w^2{-}q_x^2{+}q_y^2{-}q_z^2 & 2(q_y q_z + q_w q_x) \\
+    2(q_x q_z + q_w q_y) & 2(q_y q_z - q_w q_x) & q_w^2{-}q_x^2{-}q_y^2{+}q_z^2
+  \end{bmatrix},
+  \label{eq:rotations:quat2dcm}
+\end{equation}
+the element form of the attitude matrix of
+equation~\eqref{eq:notation:quat2dcm}~\cite{markley2014}. Because
+$\quat{q}$ and $-\quat{q}$ produce the same matrix, every extraction below
+resolves the sign to $q_w \geq 0$.
+
+\subsection{Elementary frame rotations}
+
+The elementary rotations are \emph{frame} rotations (coordinate
+transformations): $\mat{R}_3(\theta)$ maps the coordinates of a fixed
+vector into a frame rotated by $+\theta$ about the $+z$ axis,
+\begin{equation}
+  \mat{R}_1(\theta) =
+  \begin{bmatrix}
+    1 & 0 & 0 \\ 0 & \cos\theta & \sin\theta \\ 0 & -\sin\theta & \cos\theta
+  \end{bmatrix},
+  \;
+  \mat{R}_2(\theta) =
+  \begin{bmatrix}
+    \cos\theta & 0 & -\sin\theta \\ 0 & 1 & 0 \\ \sin\theta & 0 & \cos\theta
+  \end{bmatrix},
+  \;
+  \mat{R}_3(\theta) =
+  \begin{bmatrix}
+    \cos\theta & \sin\theta & 0 \\ -\sin\theta & \cos\theta & 0 \\ 0 & 0 & 1
+  \end{bmatrix}.
+  \label{eq:rotations:r1r2r3}
+\end{equation}
+Each is the DCM of the axis-angle quaternion $[\cos(\theta/2),
+\sin(\theta/2)\,\vv{e}_i]$ under equation~\eqref{eq:rotations:quat2dcm}
+(verified as a hand-value test), and the signs coincide with the
+$\mathtt{Rx}/\mathtt{Ry}/\mathtt{Rz}$ primitives of the IAU SOFA
+vector-matrix library~\cite{erfa201}, which the Earth-orientation chain of
+Chapter~\ref{ch:frames} composes.
+
+\subsection{Euler sequences}
+
+Angles are stated in \emph{application order}: the sequence name lists the
+rotation axes in the order applied. The two sequences the project requires
+(aerospace 3-2-1; the 3-1-3 of the lunar libration and Mars pole
+constructions) are
+\begin{align}
+  \dcm{A}{B} &= \mat{R}_1(a_3)\,\mat{R}_2(a_2)\,\mat{R}_3(a_1)
+  \nonumber \\
+  &=
+  \begin{bmatrix}
+    c_2 c_1 & c_2 s_1 & -s_2 \\
+    s_3 s_2 c_1 - c_3 s_1 & c_3 c_1 + s_3 s_2 s_1 & s_3 c_2 \\
+    s_3 s_1 + c_3 s_2 c_1 & c_3 s_2 s_1 - s_3 c_1 & c_3 c_2
+  \end{bmatrix}
+  \qquad \text{(3-2-1)},
+  \label{eq:rotations:e321} \\[2pt]
+  \dcm{A}{B} &= \mat{R}_3(a_3)\,\mat{R}_1(a_2)\,\mat{R}_3(a_1)
+  \nonumber \\
+  &=
+  \begin{bmatrix}
+    c_3 c_1 - s_3 c_2 s_1 & c_3 s_1 + s_3 c_2 c_1 & s_3 s_2 \\
+    -s_3 c_1 - c_3 c_2 s_1 & c_3 c_2 c_1 - s_3 s_1 & c_3 s_2 \\
+    s_2 s_1 & -s_2 c_1 & c_2
+  \end{bmatrix}
+  \qquad \text{(3-1-3)},
+  \label{eq:rotations:e313}
+\end{align}
+with $c_i = \cos a_i$, $s_i = \sin a_i$, obtained by direct multiplication
+of equation~\eqref{eq:rotations:r1r2r3}; the sequence definitions follow
+Markley and Crassidis~\cite{markley2014}.
+
+Extraction inverts the element identities. For 3-2-1, from
+equation~\eqref{eq:rotations:e321}: $C_{13} = -\sin a_2$ and
+$C_{11}^2 + C_{12}^2 = \cos^2 a_2$, so
+\begin{equation}
+  a_2 = \operatorname{atan2}\!\Bigl(-C_{13},\, \sqrt{C_{11}^2 + C_{12}^2}
+  \Bigr),
+  \qquad
+  a_1 = \operatorname{atan2}(C_{12}, C_{11}),
+  \qquad
+  a_3 = \operatorname{atan2}(C_{23}, C_{33}),
+  \label{eq:rotations:e321extract}
+\end{equation}
+which places $a_2 \in [-\pi/2, \pi/2]$. The two-argument arctangent of the
+$(\sin, \cos)$ pair is used for $a_2$ rather than $\arcsin(-C_{13})$
+because the derivative of $\arcsin$ diverges at $\pm 1$: near lock the
+$\arcsin$ form loses half the significand, while the pair form keeps $a_2$
+accurate to machine precision arbitrarily close to lock. For 3-1-3, from
+equation~\eqref{eq:rotations:e313}: $C_{33} = \cos a_2$,
+$C_{13}^2 + C_{23}^2 = \sin^2 a_2$, and
+\begin{equation}
+  a_2 = \operatorname{atan2}\!\Bigl(\sqrt{C_{13}^2 + C_{23}^2},\, C_{33}
+  \Bigr),
+  \qquad
+  a_1 = \operatorname{atan2}(C_{31}, -C_{32}),
+  \qquad
+  a_3 = \operatorname{atan2}(C_{13}, C_{23}),
+  \label{eq:rotations:e313extract}
+\end{equation}
+with $a_2 \in [0, \pi]$. At exact lock the arguments of the $a_1$ and
+$a_3$ arctangents are all identically zero and the policy of
+Section~\ref{sec:rotations:domain} applies: $a_1 = 0$, and $a_3$ is read
+from the sub-block that then depends only on the observable combination
+(for 3-2-1 at $a_2 = +\pi/2$, $C_{21} = \sin(a_3 - a_1)$ and
+$C_{22} = \cos(a_3 - a_1)$; the other lock branches are analogous and
+spelled out in the source).
+
+\subsection{Robust quaternion extraction (Shepperd's method)}
+
+Taking traces and diagonal elements of
+equation~\eqref{eq:rotations:quat2dcm} with $\norm{\quat{q}} = 1$ gives
+\begin{equation}
+  1 + \operatorname{tr}\dcm{A}{B} = 4 q_w^2,
+  \qquad
+  1 + 2 C_{ii} - \operatorname{tr}\dcm{A}{B} = 4 q_i^2
+  \quad (i = x, y, z),
+  \label{eq:rotations:shepperd}
+\end{equation}
+while the off-diagonal sums and differences yield the mixed products, e.g.
+$C_{23} - C_{32} = 4 q_w q_x$ and $C_{12} + C_{21} = 4 q_x q_y$. Since the
+four quantities in equation~\eqref{eq:rotations:shepperd} sum to $4$, the
+largest is at least $1$; Shepperd's method~\cite{shepperd1978} computes
+that component by square root and the remaining three by division with the
+guaranteed-large denominator, so the extraction never divides by a small
+quantity and is numerically robust for every attitude --- unlike the
+trace-only formula, which cancels catastrophically near $180^\circ$
+rotations. The four golden cases \texttt{shepperd\_*\_dominant} make each
+component dominant in turn, exercising all four branches.
+
+\subsection{Conditioning near gimbal lock}
+
+Let the input matrix carry absolute element perturbations of order
+$\varepsilon$ (the rounding floor of any upstream computation, e.g.
+equation~\eqref{eq:rotations:quat2dcm}). At angular distance $\delta$ from
+lock, the elements determining $a_1$ and $a_3$ have magnitude
+$O(\delta)$ --- each carries the factor $\cos a_2$ or $\sin a_2$ --- so the
+extracted angles err by $O(\varepsilon/\delta)$. Recomposition does not
+cancel these errors: the 3-2-1 element $C_{22} = c_3 c_1 + s_3 s_2 s_1$
+depends on the error combination $(e_1 - e_3)\sin(a_3 - a_1)$ at lock, and
+$e_1$, $e_3$ derive from disjoint element sets. The end-to-end round-trip
+error is therefore bounded by $K \varepsilon / \delta$ with $K$ of order
+unity; the validation evidence tests $K = 100$ as a conservative envelope
+and observes $K \approx 2$--$5$
+(Table~\ref{tab:rotations:validation-core}). For uniformly random
+attitudes the probability of falling within $10^{-3}$ of lock is below
+$10^{-6}$ per draw, and the Phase~2 criterion-6a bound of
+\qty{1e-13}{\radian} holds with two orders of margin over the observed
+worst case.
+
+\section{Discretization and implementation}
+\label{sec:rotations:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The kernel lives in
+    \texttt{cpp/src/rotation.cpp}; the source comments echo the labels
+    \texttt{eq:rotations:hamprod}, \texttt{eq:rotations:quat2dcm},
+    \texttt{eq:rotations:r1r2r3}, \texttt{eq:rotations:shepperd},
+    \texttt{eq:rotations:e321}, and \texttt{eq:rotations:e313} verbatim.
+  \item \textbf{Eigen storage mapping (D-7).} Quaternions are stored as
+    \texttt{Eigen::Quaterniond}, whose constructor is scalar-first while
+    its internal \texttt{coeffs()} storage is scalar-last; the mandatory
+    mapping table and its two binding rules are in the notation chapter
+    (Section~\ref{sec:notation:eigen}). The binding layer emits
+    quaternions scalar-first through the named accessors exclusively.
+    Eigen's \texttt{.toRotationMatrix()} implements the \emph{active}
+    convention and would return the transpose of
+    equation~\eqref{eq:rotations:quat2dcm}; core code uses this kernel's
+    \texttt{dcm\_from\_quat} for frame transformations, never
+    \texttt{.toRotationMatrix()}.
+  \item \textbf{One code path for vector transformation.}
+    \texttt{quat\_transform} evaluates the sandwich through
+    \texttt{dcm\_from\_quat}, so the DCM and the quaternion action on
+    vectors agree structurally rather than by test alone.
+  \item \textbf{Explicit Hamilton product.} \texttt{quat\_multiply} writes
+    out equation~\eqref{eq:rotations:hamprod} component by component
+    rather than delegating to Eigen's \texttt{operator*}, so the
+    convention is visible at the code and immune to any upstream semantic
+    change; the golden tests pin the equivalence.
+  \item \textbf{Sign conventions.} \texttt{quat\_from\_dcm} returns
+    $q_w \geq 0$; extractions are therefore reproducible bit for bit
+    (D-10). All compositions use fixed evaluation order; there is no
+    fast-math and no contraction (D-10 build flags).
+  \item \textbf{Exact-lock branch.} The Euler extractions branch to the
+    lock policy only when the singular elements are \emph{exactly} zero
+    (the hypot of two doubles vanishes only then); every other input takes
+    the general branch, whose conditioning is quantified above.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:rotations:validation}
+
+Tables~\ref{tab:rotations:validation-core}
+and~\ref{tab:rotations:validation-py} list the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
+provenance and tolerances are recorded in
+\texttt{tests/golden/rotations/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the rotation kernel: core (doctest,
+    \texttt{cpp/tests/}).}
+  \label{tab:rotations:validation-core}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{rotation_quat_dcm_golden} &
+      Equation~\eqref{eq:rotations:quat2dcm} vs.\ doubly constructed
+      golden matrices (ERFA primitives and independent NumPy closed form)
+      to $\leq 10^{-15}$ per element; Shepperd extraction recovers the
+      committed quaternion to $\leq 10^{-15}$ per component with
+      $q_w \geq 0$, all four pivot branches exercised. \\
+    \testid{rotation_euler_golden} &
+      Equations~\eqref{eq:rotations:e321}
+      and~\eqref{eq:rotations:e313} vs.\ ERFA-composed goldens to
+      $\leq 10^{-15}$ per element, including gimbal-lock-adjacent angle
+      sets. \\
+    \testid{rotation_primitive_axes_hand_values} &
+      Equation~\eqref{eq:rotations:r1r2r3} against hand values at
+      $\pm\pi/2$ and $\pi/6$ and against the equivalent axis-angle
+      quaternions. \\
+    \testid{rotation_quat_algebra_properties} &
+      Unit norm after normalization; $(\quat{p} \quatmul \quat{q})^{*} =
+      \quat{q}^{*} \quatmul \quat{p}^{*}$; $\quat{p} \quatmul
+      \quat{p}^{*} = $ identity; the composition rule of
+      equation~\eqref{eq:notation:quatcomp}; sandwich--DCM agreement. \\
+    \testid{rotation_dcm_orthonormality_properties} &
+      $\mat{C}^{\mathsf T}\mat{C} = \mat{I}_3$ and $\det \mat{C} = +1$ to
+      $2 \times 10^{-15}$ (a few ulp) for every produced DCM: 200 random
+      attitudes, Euler compositions, primitive products. \\
+    \testid{rotation_quat_dcm_euler_roundtrip} &
+      Phase~2 exit criterion 6a: quaternion$\to$DCM$\to$Euler round trips
+      recover the input to $\leq \qty{1e-13}{\radian}$ rotation-equivalent
+      over 1{,}000 seeded random attitudes (observed worst
+      \qty{1.3e-15}{\radian}) and near-lock draws at $\delta = 10^{-1},
+      10^{-2}$; degradation at $\delta = 10^{-4}, 10^{-6}, 10^{-8}$ held
+      to the $100\,\varepsilon/\delta$ envelope (observed \num{5.4e-13},
+      \num{1.1e-10}, and \qty{1.7e-9}{\radian}); exact-lock
+      policy recomposes to $\leq 5 \times 10^{-16}$ per element. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the rotation kernel: binding surface
+    (pytest, \texttt{tests/python/}).}
+  \label{tab:rotations:validation-py}
+  \begin{tabular}{lp{7.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{test_rotation_bindings_match_goldens} &
+      The pybind11 surface reproduces the quaternion and Euler goldens
+      (scalar-first tuples; $\leq 10^{-15}$ per element). \\
+    \testid{test_rotation_bindings_roundtrip} &
+      Criterion-6a round trips through the bindings on the identical
+      seeded RNG stream the doctest consumes; \texttt{ValueError} for a
+      degenerate quaternion. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:rotations:references}
+
+This chapter relies on Markley and Crassidis~\cite{markley2014} for the
+quaternion conventions, the attitude-matrix closed form, and the Euler
+sequence definitions; on Shepperd~\cite{shepperd1978} for the robust
+DCM-to-quaternion extraction; on the ERFA/SOFA vector-matrix
+primitives~\cite{erfa201} for the frame-rotation sign convention the
+golden vectors are built with; and on Eigen~\cite{eigenweb} for the
+storage-order facts restated from the notation chapter. Full bibliographic
+details appear in the bibliography.

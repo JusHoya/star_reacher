@@ -12,6 +12,9 @@
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage{siunitx}
+% Milliarcsecond: standard astrometric unit used by the frames chapter,
+% not predefined by siunitx.
+\DeclareSIUnit\mas{mas}
 \usepackage[hidelinks]{hyperref}
 % biblatex is loaded after hyperref per the biblatex package documentation.
 \usepackage[backend=biber,style=numeric,sorting=nyt]{biblatex}
@@ -62,6 +65,8 @@
 \input{chapters/notation}
 \input{chapters/twobody}
 \input{chapters/time}
+\input{chapters/rotations}
+\input{chapters/frames}
 
 \printbibliography[heading=bibintoc,title={Bibliography}]
 
