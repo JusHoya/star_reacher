@@ -37,6 +37,9 @@ docs/report/*.pdf
 docs/mathlib/version.tex
 docs/report/version.tex
 
+# Agent-session state (local permissions, worktrees) is per-machine, never shared
+.claude/
+
 # Editor and OS litter
 .vscode/
 .idea/

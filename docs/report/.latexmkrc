@@ -8,6 +8,11 @@
 $pdf_mode = 1;        # always produce PDF via pdflatex
 $bibtex_use = 2;      # run biber as needed and clean generated .bbl on -C
 
+# A bare `latexmk` invocation globs every top-level *.tex as a build target,
+# which would include the generated version.tex fragment below; pin the one
+# real root document.
+@default_files = ('report.tex');
+
 my $version = `git describe --always --dirty`;
 if ($? != 0 or !defined($version)) { $version = ''; }
 chomp $version;
