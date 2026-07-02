@@ -4,7 +4,10 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # Phase branches get the full matrix before merge: the sprint methodology
+    # gates each phase merge on green CI, so waiting for a PR event would
+    # serialize verification behind PR plumbing.
+    branches: [main, 'phase-*']
   pull_request:
   workflow_dispatch:
 
