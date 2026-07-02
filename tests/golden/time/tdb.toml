@@ -70,20 +70,20 @@ tdb_minus_tt = "0x1.2d57d5cd6afd1p-11"
 erfa_dtdb = "0x1.2d8a45128914cp-11"
 
 [[case]]
-name = "expiry_2026_06_30_last_covered"
-tai_day = "9678"
+name = "expiry_2026_12_31_last_covered"
+tai_day = "9862"
 tai_sec = "0x1.2000000000000p+5"
-tt_centuries = "0x1.0f5080bb473f0p-2"
-tdb_minus_tt = "0x1.01e0e501eb0fap-13"
-erfa_dtdb = "0x1.f1a0b4c649492p-14"
+tt_centuries = "0x1.14791765136c2p-2"
+tdb_minus_tt = "-0x1.45f488a471050p-14"
+erfa_dtdb = "-0x1.5a8d9a8335e23p-14"
 
 [[case]]
-name = "expiry_2026_07_01_first_uncovered"
-tai_day = "9678"
+name = "expiry_2027_01_01_first_uncovered"
+tai_day = "9862"
 tai_sec = "0x1.2800000000000p+5"
-tt_centuries = "0x1.0f5080c0b8e73p-2"
-tdb_minus_tt = "0x1.01e0b91c0050ep-13"
-erfa_dtdb = "0x1.f1a05c208c497p-14"
+tt_centuries = "0x1.1479176a85144p-2"
+tdb_minus_tt = "-0x1.45f42d97a14e4p-14"
+erfa_dtdb = "-0x1.5a8d3f3e39b6fp-14"
 
 [[case]]
 name = "epoch_2030_01_01"

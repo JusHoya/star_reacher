@@ -159,8 +159,8 @@ TEST_CASE("time_leap_table_golden") {
   // Post-expiry dates keep the last tabulated offset (documented
   // out-of-domain behavior; the Python layer owns the warning).
   CHECK(star::time::tai_minus_utc_s(2060, 12, 31) == 37);
-  CHECK(info.expiry_year == 2026);
-  CHECK(info.expiry_month == 7);
+  CHECK(info.expiry_year == 2027);
+  CHECK(info.expiry_month == 1);
   CHECK(info.expiry_day == 1);
   CHECK(std::string(info.version).find("Bulletin C") != std::string::npos);
 }
