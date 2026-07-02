@@ -5,17 +5,113 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include <Eigen/Dense>
+
 #include "star/rng.hpp"
 #include "star/run.hpp"
+#include "star/testsupport/acceptance.hpp"
+#include "star/testsupport/kepler_ref.hpp"
 #include "star/version.hpp"
 
 namespace py = pybind11;
 
 namespace {
+
+Eigen::Vector3d to_vec3(const std::array<double, 3>& a) {
+  return Eigen::Vector3d(a[0], a[1], a[2]);
+}
+
+std::array<double, 3> from_vec3(const Eigen::Vector3d& v) {
+  return {v[0], v[1], v[2]};
+}
+
+// ---------------------------------------------------------------------------
+// Test-support entry points (Phase 2 acceptance evidence). These forward to
+// star/testsupport/acceptance.hpp -- the SAME drivers the doctest suite
+// asserts on -- so the Python-side evidence is the same numbers by
+// construction. They are not part of the mission-run surface.
+// ---------------------------------------------------------------------------
+
+py::dict propagate_kepler(double mu, const std::array<double, 3>& r0,
+                          const std::array<double, 3>& v0, double t) {
+  Eigen::Vector3d r, v;
+  star::testsupport::propagate_kepler(mu, to_vec3(r0), to_vec3(v0), t, &r,
+                                      &v);
+  py::dict d;
+  d["r_m"] = from_vec3(r);
+  d["v_mps"] = from_vec3(v);
+  return d;
+}
+
+py::list kepler_convergence(double mu, const std::array<double, 3>& r0,
+                            const std::array<double, 3>& v0, double t_end,
+                            const std::string& method,
+                            const std::vector<double>& ladder) {
+  star::events::Method m;
+  if (method == "rk4") {
+    m = star::events::Method::kRk4;
+  } else if (method == "rkf78") {
+    m = star::events::Method::kRkf78;
+  } else {
+    throw std::invalid_argument("method must be \"rk4\" or \"rkf78\"");
+  }
+  const auto pts = star::testsupport::kepler_convergence(
+      mu, to_vec3(r0), to_vec3(v0), t_end, m, ladder);
+  py::list out;
+  for (const auto& p : pts) {
+    py::dict d;
+    d["h_s"] = p.h_s;
+    d["err_m"] = p.err_m;
+    out.append(d);
+  }
+  return out;
+}
+
+py::dict twobody_drift(double mu, const std::array<double, 3>& r0,
+                       const std::array<double, 3>& v0, double n_orbits,
+                       double rtol, double atol_pos_m, double atol_vel_mps,
+                       double h_init, double h_max) {
+  const auto res = star::testsupport::twobody_drift(
+      mu, to_vec3(r0), to_vec3(v0), n_orbits, rtol, atol_pos_m, atol_vel_mps,
+      h_init, h_max);
+  py::dict d;
+  d["max_energy_rel"] = res.max_energy_rel;
+  d["max_hmag_rel"] = res.max_hmag_rel;
+  d["steps_accepted"] = res.steps_accepted;
+  d["steps_rejected"] = res.steps_rejected;
+  return d;
+}
+
+py::list apsis_events(double mu, const std::array<double, 3>& r0,
+                      const std::array<double, 3>& v0, double t_end,
+                      double rtol, double atol_pos_m, double atol_vel_mps,
+                      double h_init, double h_max, double event_tol_s) {
+  const auto res = star::testsupport::apsis_event_scan(
+      mu, to_vec3(r0), to_vec3(v0), t_end, rtol, atol_pos_m, atol_vel_mps,
+      h_init, h_max, event_tol_s);
+  py::list out;
+  for (const auto& hit : res.hits) {
+    py::dict d;
+    d["t_s"] = hit.t_s;
+    d["kind"] = hit.periapsis ? "periapsis" : "apoapsis";
+    out.append(d);
+  }
+  return out;
+}
+
+py::dict hermite_midstep_max_err(double mu, const std::array<double, 3>& r0,
+                                 const std::array<double, 3>& v0,
+                                 double t_end, double h) {
+  py::dict d;
+  d["max_err_m"] = star::testsupport::hermite_midstep_max_err(
+      mu, to_vec3(r0), to_vec3(v0), t_end, h);
+  return d;
+}
 
 std::vector<std::uint64_t> rng_stream_u64(std::uint64_t master_seed,
                                           const std::string& stream_name,
@@ -105,4 +201,42 @@ PYBIND11_MODULE(_core, m) {
         py::arg("stream_name"), py::arg("n"),
         "First n standard-normal Box-Muller deviates of the named stream "
         "(D-9; see star/rng.hpp for the exact draw-consumption pattern).");
+
+  // -- test-support surface (Phase 2 acceptance evidence; not mission API) --
+
+  m.def("propagate_kepler", &propagate_kepler, py::arg("mu"), py::arg("r0_m"),
+        py::arg("v0_mps"), py::arg("t_s"),
+        "TEST SUPPORT: analytic elliptic two-body state at time t_s past the "
+        "epoch state (Vallado ch. 2; star/testsupport/kepler_ref.hpp). "
+        "Returns {r_m, v_mps}.");
+
+  m.def("kepler_convergence", &kepler_convergence, py::arg("mu"),
+        py::arg("r0_m"), py::arg("v0_mps"), py::arg("t_end_s"),
+        py::arg("method"), py::arg("ladder_s"),
+        "TEST SUPPORT: fixed-step global-error ladder on the Kepler problem "
+        "for method \"rk4\" or \"rkf78\" (fixed-step mode). Returns "
+        "[{h_s, err_m}, ...]; t_end_s must be an exact multiple of every "
+        "ladder step.");
+
+  m.def("twobody_drift", &twobody_drift, py::arg("mu"), py::arg("r0_m"),
+        py::arg("v0_mps"), py::arg("n_orbits"), py::arg("rtol"),
+        py::arg("atol_pos_m"), py::arg("atol_vel_mps"), py::arg("h_init_s"),
+        py::arg("h_max_s"),
+        "TEST SUPPORT: max relative drift of specific orbital energy and "
+        "|h| over n_orbits under adaptive RKF7(8). Returns "
+        "{max_energy_rel, max_hmag_rel, steps_accepted, steps_rejected}.");
+
+  m.def("apsis_events", &apsis_events, py::arg("mu"), py::arg("r0_m"),
+        py::arg("v0_mps"), py::arg("t_end_s"), py::arg("rtol"),
+        py::arg("atol_pos_m"), py::arg("atol_vel_mps"), py::arg("h_init_s"),
+        py::arg("h_max_s"), py::arg("event_tol_s"),
+        "TEST SUPPORT: apsis passages in (0, t_end_s] located by the event "
+        "framework (g = r.v, direction-filtered, Brent on dense output). "
+        "Returns [{t_s, kind}, ...] in time order.");
+
+  m.def("hermite_midstep_max_err", &hermite_midstep_max_err, py::arg("mu"),
+        py::arg("r0_m"), py::arg("v0_mps"), py::arg("t_end_s"), py::arg("h_s"),
+        "TEST SUPPORT: worst midstep position error of the cubic Hermite "
+        "dense output vs the analytic solution over a fixed-step RKF7(8) "
+        "propagation. Returns {max_err_m}.");
 }
