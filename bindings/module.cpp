@@ -5,11 +5,14 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include "star/frames.hpp"
 #include "star/rng.hpp"
+#include "star/rotation.hpp"
 #include "star/run.hpp"
 #include "star/time.hpp"
 #include "star/version.hpp"
@@ -90,6 +93,118 @@ py::dict leap_table_info() {
       py::make_tuple(info.expiry_year, info.expiry_month, info.expiry_day);
   d["entries"] = info.entries;
   return d;
+}
+
+// Rotation and frame wrappers (FR-3, D-7). Quaternions cross the binding
+// as scalar-first (w, x, y, z) tuples - never Eigen coeffs() order (the
+// D-7 storage trap documented in star/rotation.hpp) - and 3x3 matrices as
+// row-major 9-element lists; both stay plain Python types so the binding
+// carries no core object lifetimes.
+std::array<double, 9> mat_out(const Eigen::Matrix3d& m) {
+  return {m(0, 0), m(0, 1), m(0, 2), m(1, 0), m(1, 1),
+          m(1, 2), m(2, 0), m(2, 1), m(2, 2)};
+}
+
+Eigen::Matrix3d mat_in(const std::array<double, 9>& a) {
+  Eigen::Matrix3d m;
+  m << a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8];
+  return m;
+}
+
+py::tuple quat_out(const Eigen::Quaterniond& q) {
+  return py::make_tuple(q.w(), q.x(), q.y(), q.z());
+}
+
+py::tuple quat_multiply(double pw, double px, double py_, double pz,
+                        double qw, double qx, double qy, double qz) {
+  return quat_out(star::rotation::quat_multiply(
+      Eigen::Quaterniond(pw, px, py_, pz), Eigen::Quaterniond(qw, qx, qy, qz)));
+}
+
+py::tuple quat_conjugate(double w, double x, double y, double z) {
+  return quat_out(star::rotation::quat_conjugate(Eigen::Quaterniond(w, x, y, z)));
+}
+
+py::tuple quat_normalize(double w, double x, double y, double z) {
+  return quat_out(star::rotation::quat_normalize(Eigen::Quaterniond(w, x, y, z)));
+}
+
+py::tuple quat_transform(double w, double x, double y, double z, double vx,
+                         double vy, double vz) {
+  const Eigen::Vector3d v = star::rotation::quat_transform(
+      Eigen::Quaterniond(w, x, y, z), Eigen::Vector3d(vx, vy, vz));
+  return py::make_tuple(v.x(), v.y(), v.z());
+}
+
+std::array<double, 9> quat_to_dcm(double w, double x, double y, double z) {
+  return mat_out(star::rotation::dcm_from_quat(Eigen::Quaterniond(w, x, y, z)));
+}
+
+py::tuple dcm_to_quat(const std::array<double, 9>& m) {
+  return quat_out(star::rotation::quat_from_dcm(mat_in(m)));
+}
+
+std::array<double, 9> dcm_from_euler321(double a1, double a2, double a3) {
+  return mat_out(star::rotation::dcm_from_euler321(a1, a2, a3));
+}
+
+std::array<double, 9> dcm_from_euler313(double a1, double a2, double a3) {
+  return mat_out(star::rotation::dcm_from_euler313(a1, a2, a3));
+}
+
+py::tuple euler321_from_dcm(const std::array<double, 9>& m) {
+  double a1;
+  double a2;
+  double a3;
+  star::rotation::euler321_from_dcm(mat_in(m), a1, a2, a3);
+  return py::make_tuple(a1, a2, a3);
+}
+
+py::tuple euler313_from_dcm(const std::array<double, 9>& m) {
+  double a1;
+  double a2;
+  double a3;
+  star::rotation::euler313_from_dcm(mat_in(m), a1, a2, a3);
+  return py::make_tuple(a1, a2, a3);
+}
+
+py::tuple cip_cio_06b(std::int64_t day, double sec) {
+  const star::frames::CipCio c = star::frames::cip_cio_06b({day, sec});
+  return py::make_tuple(c.x_rad, c.y_rad, c.s_rad);
+}
+
+py::tuple nutation_00b(double tt_centuries) {
+  double dpsi;
+  double deps;
+  star::frames::nutation_00b(tt_centuries, dpsi, deps);
+  return py::make_tuple(dpsi, deps);
+}
+
+double era_00(std::int64_t day, double sec, double dut1_s) {
+  return star::frames::era_00({day, sec}, dut1_s);
+}
+
+std::array<double, 9> gcrf_to_cirs(std::int64_t day, double sec) {
+  return mat_out(star::frames::c_gcrf_to_cirs({day, sec}));
+}
+
+std::array<double, 9> gcrf_to_itrf(std::int64_t day, double sec,
+                                   double dut1_s) {
+  return mat_out(star::frames::c_gcrf_to_itrf({day, sec}, dut1_s));
+}
+
+std::array<double, 9> gcrf_to_moonpa(double phi, double theta, double psi) {
+  return mat_out(star::frames::c_gcrf_to_moonpa(phi, theta, psi));
+}
+
+py::tuple mars_elements(std::int64_t day, double sec) {
+  const star::frames::MarsElements e =
+      star::frames::mars_elements_iau2015({day, sec});
+  return py::make_tuple(e.alpha0_rad, e.delta0_rad, e.w_rad);
+}
+
+std::array<double, 9> gcrf_to_marsfixed(std::int64_t day, double sec) {
+  return mat_out(star::frames::c_gcrf_to_marsfixed({day, sec}));
 }
 
 py::dict run_and_summarize(const star::RunConfig& cfg,
@@ -212,4 +327,77 @@ PYBIND11_MODULE(_core, m) {
         "first UTC date a leap second not in the table could take effect - "
         "and entries. The Python layer warns on post-expiry epochs; the "
         "core never reads the clock (D-2).");
+
+  // Rotation kernel (FR-3, D-7). Quaternions are scalar-first (w, x, y, z)
+  // Hamilton quaternions; DCMs are row-major 9-element lists mapping frame
+  // A to frame B (v_B = C v_A).
+  m.def("quat_multiply", &quat_multiply, py::arg("pw"), py::arg("px"),
+        py::arg("py"), py::arg("pz"), py::arg("qw"), py::arg("qx"),
+        py::arg("qy"), py::arg("qz"),
+        "Hamilton product p (x) q, scalar-first components (D-7). "
+        "Composition: q_a2c = quat_multiply(*q_a2b, *q_b2c).");
+  m.def("quat_conjugate", &quat_conjugate, py::arg("w"), py::arg("x"),
+        py::arg("y"), py::arg("z"),
+        "Quaternion conjugate (w, -x, -y, -z); the inverse for unit "
+        "quaternions.");
+  m.def("quat_normalize", &quat_normalize, py::arg("w"), py::arg("x"),
+        py::arg("y"), py::arg("z"),
+        "q / |q|; raises ValueError for a zero or non-finite quaternion.");
+  m.def("quat_transform", &quat_transform, py::arg("w"), py::arg("x"),
+        py::arg("y"), py::arg("z"), py::arg("vx"), py::arg("vy"),
+        py::arg("vz"),
+        "Coordinates of vector v in frame B given q_a2b: v_B tuple.");
+  m.def("quat_to_dcm", &quat_to_dcm, py::arg("w"), py::arg("x"), py::arg("y"),
+        py::arg("z"),
+        "DCM C_A^B (row-major, 9 elements) of the unit frame-transformation "
+        "quaternion q_a2b.");
+  m.def("dcm_to_quat", &dcm_to_quat, py::arg("dcm"),
+        "Scalar-first quaternion of a proper rotation DCM via Shepperd's "
+        "method; the returned w is >= 0.");
+  m.def("dcm_from_euler321", &dcm_from_euler321, py::arg("a1"), py::arg("a2"),
+        py::arg("a3"),
+        "3-2-1 sequence DCM: C = R1(a3) R2(a2) R3(a1), angles [rad] in "
+        "application order.");
+  m.def("dcm_from_euler313", &dcm_from_euler313, py::arg("a1"), py::arg("a2"),
+        py::arg("a3"),
+        "3-1-3 sequence DCM: C = R3(a3) R1(a2) R3(a1), angles [rad] in "
+        "application order.");
+  m.def("euler321_from_dcm", &euler321_from_dcm, py::arg("dcm"),
+        "3-2-1 angles (a1, a2, a3) of a DCM; a2 in [-pi/2, pi/2]; at exact "
+        "gimbal lock a1 = 0 by convention (see star/rotation.hpp).");
+  m.def("euler313_from_dcm", &euler313_from_dcm, py::arg("dcm"),
+        "3-1-3 angles (a1, a2, a3) of a DCM; a2 in [0, pi]; at exact lock "
+        "a1 = 0 by convention.");
+
+  // Reference frames (FR-3). Epochs are two-part TAI (day, sec) as in the
+  // time functions above.
+  m.def("cip_cio_06b", &cip_cio_06b, py::arg("day"), py::arg("sec"),
+        "CIP coordinates X, Y and CIO locator s [rad], IAU 2006/2000B, at "
+        "the two-part TAI epoch.");
+  m.def("nutation_00b", &nutation_00b, py::arg("tt_centuries"),
+        "IAU 2000B nutation (dpsi, deps) [rad] at TT Julian centuries since "
+        "J2000.");
+  m.def("era_00", &era_00, py::arg("day"), py::arg("sec"),
+        py::arg("dut1_s") = 0.0,
+        "Earth rotation angle [rad] at UT1 = UTC + dut1_s (constant "
+        "user-supplied dUT1, default 0 per FR-3).");
+  m.def("gcrf_to_cirs", &gcrf_to_cirs, py::arg("day"), py::arg("sec"),
+        "GCRS -> CIRS matrix (bias-precession-nutation + CIO locator), "
+        "row-major 9 elements.");
+  m.def("gcrf_to_itrf", &gcrf_to_itrf, py::arg("day"), py::arg("sec"),
+        py::arg("dut1_s") = 0.0,
+        "C_GCRF->ITRF = R3(ERA) * C_GCRF->CIRS (row-major 9 elements). "
+        "Polar motion neglected (~0.3 urad, bound documented in the frames "
+        "chapter); constant dut1_s, default 0.");
+  m.def("gcrf_to_moonpa", &gcrf_to_moonpa, py::arg("phi"), py::arg("theta"),
+        py::arg("psi"),
+        "C_GCRF->MoonPA = R3(psi) R1(theta) R3(phi) from the DE 3-1-3 "
+        "libration Euler angles [rad] (Park et al. 2021).");
+  m.def("mars_elements", &mars_elements, py::arg("day"), py::arg("sec"),
+        "Mars IAU 2015 rotational elements (alpha0, delta0, W) [rad] at the "
+        "epoch's TDB (Archinal et al. 2018).");
+  m.def("gcrf_to_marsfixed", &gcrf_to_marsfixed, py::arg("day"),
+        py::arg("sec"),
+        "C_GCRF->MarsFixed = R3(W) R1(pi/2-delta0) R3(pi/2+alpha0) at the "
+        "epoch's TDB (row-major 9 elements).");
 }
