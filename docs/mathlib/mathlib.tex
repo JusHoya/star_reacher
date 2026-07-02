@@ -1,0 +1,67 @@
+% star_reacher mathematical model library (FR-29).
+% Build: latexmk -pdf -halt-on-error -interaction=nonstopmode mathlib.tex
+% Stock TeX Live packages only, so the pinned CI TeX Live and any local
+% distribution produce the same document.
+\documentclass[11pt]{report}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{siunitx}
+\usepackage[hidelinks]{hyperref}
+% biblatex is loaded after hyperref per the biblatex package documentation.
+\usepackage[backend=biber,style=numeric,sorting=nyt]{biblatex}
+\addbibresource{references.bib}
+
+% \starversion is overwritten at build time by version.tex, which .latexmkrc
+% regenerates from `git describe --always` so the PDF names its exact source
+% revision without manual bookkeeping. The fallback keeps the document
+% buildable outside a git checkout.
+\providecommand{\starversion}{unknown}
+\InputIfFileExists{version.tex}{}{}
+
+% \testid marks a validation-evidence test identifier. scripts/lint_chapters.py
+% greps chapter sources for this macro, so every identifier it wraps is
+% machine-checked to exist in the test tree (the FR-29 accretion gate).
+% \detokenize keeps underscores in test identifiers printable in text mode.
+\newcommand{\testid}[1]{\texttt{\detokenize{#1}}}
+
+% Semantic math helpers so the conventions ratified in Chapter 1 are applied
+% uniformly by every chapter instead of being re-spelled ad hoc.
+\newcommand{\vv}[1]{\bm{#1}}                     % physical vector
+\newcommand{\mat}[1]{\bm{#1}}                    % matrix
+\newcommand{\dcm}[2]{\mat{C}_{#1}^{#2}}          % DCM mapping frame #1 to frame #2
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\quatmul}{\otimes}                   % Hamilton quaternion product
+\newcommand{\skewm}[1]{\left[#1\right]_{\times}} % skew-symmetric cross-product matrix
+\newcommand{\quat}[1]{\bar{#1}}                  % quaternion
+
+\title{\texttt{star\_reacher} Mathematical Model Library}
+\author{Melvin Hoyer III}
+% The version string replaces a calendar date so that two builds of the same
+% revision are textually identical (supports the SOURCE_DATE_EPOCH
+% reproducible-build goal of FR-29).
+\date{Version \texttt{\starversion}}
+
+\begin{document}
+
+% Distinct page-numbering schemes per front-matter block keep hyperref
+% destination names unique (the report-class title page resets the page
+% counter, which would otherwise duplicate the "page.1" destination).
+\pagenumbering{Alph}
+\maketitle
+\pagenumbering{roman}
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+
+\input{chapters/notation}
+\input{chapters/twobody}
+
+\printbibliography[heading=bibintoc,title={Bibliography}]
+
+\end{document}

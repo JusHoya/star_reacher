@@ -1,0 +1,53 @@
+# Packaging for star-reacher (D-1: scikit-build-core wheel over a CMake-built
+# pybind11 core). The compiled module installs as star_reacher._core inside
+# the pure-Python package at python/star_reacher.
+
+[build-system]
+# pybind11 >= 3.0 is required: it is the first line with Python 3.13+/3.14
+# support, and local development runs Python 3.14.
+requires = ["scikit-build-core>=0.11", "pybind11>=3.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "star-reacher"
+# Version is kept in sync with CMakeLists.txt project(VERSION) manually
+# (Phase 1 contract: both files carry this note).
+version = "0.1.0"
+description = "Deterministic six-degree-of-freedom space-mission simulator: C++17/Eigen core, Python analysis frontend"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Melvin Hoyer III" }]
+# Phase 1 runtime is numpy only (D-12 allowed-list discipline): matplotlib
+# and jplephem enter with the phases that need them, never earlier.
+dependencies = ["numpy>=1.26"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.urls]
+Repository = "https://github.com/JusHoya/star_reacher"
+
+[project.scripts]
+star = "star_reacher.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.scikit-build]
+# Pin settings semantics to the declared build requirement so a newer
+# scikit-build-core cannot silently change behavior.
+minimum-version = "build-system.requires"
+# Persistent build dir: rebuilds after small core edits stay incremental
+# instead of re-fetching and recompiling Eigen and pybind11 from scratch.
+build-dir = "build/skbuild-{wheel_tag}"
+# Wheels always compile the core with the release-mode determinism flags
+# (D-10); Debug wheels are not a supported configuration.
+cmake.build-type = "Release"
+# The pure-Python package is authored under python/; the compiled _core is
+# install()ed into it by CMake at wheel-assembly time.
+wheel.packages = ["python/star_reacher"]

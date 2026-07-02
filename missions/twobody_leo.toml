@@ -1,0 +1,38 @@
+# Reference mission: two-body point-mass propagation of a near-circular LEO
+# orbit. This is the Phase 1 determinism gate case (`star run` double-run
+# SHA-256 bit-identity) and the README quickstart mission.
+#
+# Provenance: representative values chosen by the author. The position
+# magnitude 6778137.0 m is the WGS-84 equatorial radius (6378137 m) plus a
+# 400 km altitude; the speed 7668.6 m/s approximates the circular speed
+# sqrt(gm/r) with gm = 3.986004418e14 m^3/s^2 (IERS Conventions 2010,
+# TN No. 36), giving a near-circular orbit. The 5400 s duration covers just
+# under one orbital period (2*pi*sqrt(a^3/gm) is about 5553 s).
+
+schema_version = 1
+
+[mission]
+name = "twobody-leo"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 5400.0
+
+[run]
+seed = 20260101
+
+[integrator]
+type = "rk4"
+dt_s = 0.1
+
+[spacecraft]
+mass_kg = 150.0
+
+[initial_state.cartesian]
+r_m = [6778137.0, 0.0, 0.0]
+v_mps = [0.0, 7668.6, 0.0]
+frame = "GCRF"
+
+[environment]
+central_body = "earth"
+
+[logging]
+truth_rate_hz = 10

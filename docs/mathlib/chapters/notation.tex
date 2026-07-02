@@ -1,0 +1,262 @@
+% Chapter 1 — Notation and conventions. This chapter is the authoritative
+% statement of decision D-7 and of every notational rule the remaining
+% chapters, the source code, the log format, and the APIs must follow.
+\chapter{Notation and Conventions}
+\label{ch:notation}
+
+\section{Scope and authority}
+
+This chapter is normative for the entire project. Every quantity that appears
+in this document, in the source code, in the SRLOG binary log, and in any
+public API follows the conventions defined here. Where an external reference
+uses a different convention, the transcription into this project's convention
+is stated explicitly at the point of use. The attitude conventions in
+Section~\ref{sec:notation:quaternion} ratify project decision D-7.
+
+\section{Reference frames}
+\label{sec:notation:frames}
+
+Frames are denoted by single calligraphic letters used as sub- and
+superscripts on vectors and direction-cosine matrices. The frames used across
+the project are listed in Table~\ref{tab:notation:frames}. In Phase~1 only the
+GCRF is exercised; the remaining frames are named now so that channel and API
+labels are stable, and each is defined rigorously in the chapter of the phase
+that introduces it.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Project reference frames.}
+  \label{tab:notation:frames}
+  \begin{tabular}{clp{7.2cm}}
+    \toprule
+    Symbol & Frame & Definition and status \\
+    \midrule
+    $I$ & GCRF &
+      Geocentric Celestial Reference Frame: Earth-centered, kinematically
+      non-rotating, axes aligned with the International Celestial Reference
+      System per the IERS Conventions (2010)~\cite{iers2010}. The Phase~1
+      integration and logging frame. \\
+    $E$ & Earth-fixed &
+      Rotating terrestrial frame reached from the GCRF through the CIO-based
+      transformation chain of IERS Conventions (2010) Chapter~5. Defined in
+      the Phase~2 frames chapter. \\
+    $L$ & Moon principal-axis &
+      Lunar body-fixed principal-axis frame realized from the DE440 libration
+      angles~\cite{park2021}. Defined in the Phase~2 frames chapter. \\
+    $M$ & Mars-fixed &
+      Mars body-fixed frame from the IAU 2015 rotational elements. Defined in
+      the Phase~2 frames chapter, where its defining reference is cited. \\
+    $B$ & Body &
+      Vehicle structural frame, $+X$ forward. Defined in the Phase~4 vehicle
+      chapter. In Phase~1 the body frame exists only as the target frame of
+      the logged placeholder attitude quaternion. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Vectors, matrices, and the DCM convention}
+\label{sec:notation:dcm}
+
+Physical vectors are set in bold italic, $\vv{r}$, and matrices in bold
+upright-italic capitals, $\mat{C}$. The coordinates of a vector resolved in
+frame $A$ are written $\vv{r}^{A}$. The skew-symmetric cross-product matrix of
+$\vv{a} = [a_1, a_2, a_3]^{\mathsf T}$ is
+\begin{equation}
+  \skewm{\vv{a}} =
+  \begin{bmatrix}
+    0 & -a_3 & a_2 \\
+    a_3 & 0 & -a_1 \\
+    -a_2 & a_1 & 0
+  \end{bmatrix},
+  \qquad
+  \skewm{\vv{a}}\,\vv{b} = \vv{a} \times \vv{b}.
+  \label{eq:notation:skew}
+\end{equation}
+
+A direction-cosine matrix (DCM) written $\dcm{A}{B}$ \emph{maps frame $A$ to
+frame $B$}; that is, it transforms the coordinates of a vector from frame $A$
+to frame $B$:
+\begin{equation}
+  \vv{v}^{B} = \dcm{A}{B}\,\vv{v}^{A}.
+  \label{eq:notation:dcmdef}
+\end{equation}
+DCMs are orthonormal, so the inverse transformation is the transpose,
+$\bigl(\dcm{A}{B}\bigr)^{-1} = \bigl(\dcm{A}{B}\bigr)^{\mathsf T} =
+\dcm{B}{A}$, and successive transformations compose by left multiplication:
+\begin{equation}
+  \dcm{A}{C} = \dcm{B}{C}\,\dcm{A}{B}.
+  \label{eq:notation:dcmcomp}
+\end{equation}
+
+\section{Quaternion convention (D-7)}
+\label{sec:notation:quaternion}
+
+\subsection{Hamilton quaternions, scalar-first}
+
+The project uses \emph{Hamilton} quaternions: the basis elements satisfy
+$i^2 = j^2 = k^2 = ijk = -1$, and hence $ij = k$. Writing a quaternion as a
+scalar part $q_w$ and a vector part $\vv{q}_v = [q_x, q_y, q_z]^{\mathsf T}$,
+the Hamilton product of $\quat{p}$ and $\quat{q}$ is
+\begin{equation}
+  \quat{p} \quatmul \quat{q} =
+  \begin{bmatrix}
+    p_w q_w - \vv{p}_v \cdot \vv{q}_v \\
+    p_w \vv{q}_v + q_w \vv{p}_v + \vv{p}_v \times \vv{q}_v
+  \end{bmatrix}.
+  \label{eq:notation:hamiltonproduct}
+\end{equation}
+The alternative (often called JPL) convention, which flips the sign of the
+cross-product term, is \emph{not} used anywhere in this project; the
+distinction between the two conventions is surveyed by Markley and
+Crassidis~\cite{markley2014}.
+
+Quaternion components are ordered \textbf{scalar-first} in \emph{all}
+documentation, logs, and APIs:
+\begin{equation}
+  \quat{q} = [\,q_w,\; q_x,\; q_y,\; q_z\,],
+  \qquad
+  \text{identity} = [\,1,\; 0,\; 0,\; 0\,].
+  \label{eq:notation:scalarfirst}
+\end{equation}
+Attitude quaternions are unit quaternions, $\norm{\quat{q}} = 1$, and the
+inverse of a unit quaternion is its conjugate,
+$\quat{q}^{-1} = \quat{q}^{*} = [\,q_w, -q_x, -q_y, -q_z\,]$.
+
+\subsection{The attitude quaternion \texorpdfstring{$\quat{q}_{i2b}$}{q\_i2b}}
+
+The logged and exchanged attitude quaternion is $\quat{q}_{i2b}$, the frame
+transformation \emph{from the inertial frame $I$ (GCRF) to the body frame
+$B$}. Embedding a vector as the pure quaternion
+$\tilde{\vv{v}} = [\,0, \vv{v}\,]$, coordinates transform by conjugation:
+\begin{equation}
+  \tilde{\vv{v}}^{B}
+    = \quat{q}_{i2b}^{-1} \quatmul \tilde{\vv{v}}^{I} \quatmul \quat{q}_{i2b}.
+  \label{eq:notation:sandwich}
+\end{equation}
+Equivalently, the DCM corresponding to $\quat{q}_{i2b}$ is
+\begin{equation}
+  \dcm{I}{B}(\quat{q})
+    = \bigl(q_w^2 - \vv{q}_v \cdot \vv{q}_v\bigr)\,\mat{I}_3
+      + 2\,\vv{q}_v \vv{q}_v^{\mathsf T}
+      - 2\,q_w \skewm{\vv{q}_v},
+  \label{eq:notation:quat2dcm}
+\end{equation}
+which is the attitude-matrix form given by Markley and
+Crassidis~\cite{markley2014}, transcribed here to the scalar-first component
+ordering of equation~\eqref{eq:notation:scalarfirst}. Under
+equations~\eqref{eq:notation:hamiltonproduct}
+and~\eqref{eq:notation:sandwich}, frame transformations compose in
+left-to-right chaining order,
+\begin{equation}
+  \quat{q}_{i2c} = \quat{q}_{i2b} \quatmul \quat{q}_{b2c},
+  \qquad
+  \dcm{I}{B}(\quat{p} \quatmul \quat{q})
+    = \dcm{I}{B}(\quat{q})\,\dcm{I}{B}(\quat{p}),
+  \label{eq:notation:quatcomp}
+\end{equation}
+consistent with the DCM composition rule of
+equation~\eqref{eq:notation:dcmcomp}. Quaternion kinematics and rigid-body
+attitude dynamics are specified in the attitude-dynamics chapter that lands
+with the vehicle phase; Phase~1 logs only the fixed identity quaternion.
+
+\subsection{Mandatory note: mapping to \texttt{Eigen::Quaterniond}}
+\label{sec:notation:eigen}
+
+The C++ core represents quaternions with
+\texttt{Eigen::Quaterniond}~\cite{eigenweb}, whose component ordering differs
+between its constructor and its internal storage. This mismatch is the single
+most likely source of attitude-convention defects, so the mapping is spelled
+out here and is binding on all core and binding code:
+
+\begin{itemize}
+  \item The value constructor takes the scalar \emph{first}:
+    \texttt{Eigen::Quaterniond(w, x, y, z)}.
+  \item The internal coefficient storage, exposed by \texttt{.coeffs()},
+    orders the scalar \emph{last}: \texttt{[x, y, z, w]}.
+\end{itemize}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Component mapping between the project convention and
+    \texttt{Eigen::Quaterniond}.}
+  \label{tab:notation:eigenmap}
+  \begin{tabular}{lccc}
+    \toprule
+    Component & Project / SRLOG / API index & Eigen accessor &
+      \texttt{coeffs()} index \\
+    \midrule
+    $q_w$ (scalar) & 0 & \texttt{.w()} & 3 \\
+    $q_x$          & 1 & \texttt{.x()} & 0 \\
+    $q_y$          & 2 & \texttt{.y()} & 1 \\
+    $q_z$          & 3 & \texttt{.z()} & 2 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Consequences, stated as rules:
+\begin{enumerate}
+  \item Serialization code must never copy \texttt{.coeffs()} verbatim into a
+    log record or API buffer; every externally visible quaternion is emitted
+    scalar-first via the named accessors, per
+    Table~\ref{tab:notation:eigenmap}.
+  \item Eigen's \texttt{operator*} on vectors and
+    \texttt{.toRotationMatrix()} implement the \emph{active} rotation
+    $\vv{v} \mapsto \quat{q} \quatmul \tilde{\vv{v}} \quatmul
+    \quat{q}^{-1}$. Applied to $\quat{q}_{i2b}$, therefore,
+    \texttt{.toRotationMatrix()} returns $\dcm{B}{I}$ --- the \emph{transpose}
+    of the frame transformation in
+    equation~\eqref{eq:notation:quat2dcm}. Code that needs $\dcm{I}{B}$
+    conjugates first or transposes the result, and says so in a comment.
+\end{enumerate}
+
+\section{Units}
+\label{sec:notation:units}
+
+All quantities are SI throughout the core, the logs, and the APIs; no
+non-SI unit crosses any interface. In this document, numerical values with
+units are typeset with the \texttt{siunitx} package, for example
+$\mu_\oplus = \qty{3.986004418e14}{\metre\cubed\per\second\squared}$, the
+geocentric gravitational constant (TCB-compatible value) of the IERS
+Conventions (2010)~\cite{iers2010}. Configuration keys and log channel names
+carry their unit as a suffix (\texttt{thrust\_vac\_N}, \texttt{r\_m},
+\texttt{v\_mps}, \texttt{w\_b\_radps}, \texttt{mass\_kg}, \texttt{t\_s}) so
+that a wrong unit is visible at the point of use. Angles are radians in code
+and logs; degrees appear only in human-facing configuration keys explicitly
+suffixed \texttt{\_deg}.
+
+Epochs in configuration files are UTC ISO-8601 strings. The internal
+timescale (TAI, decision D-6) and all timescale conversions are defined in
+the Phase~2 time-systems chapter.
+
+\section{Symbols}
+\label{sec:notation:symbols}
+
+Table~\ref{tab:notation:symbols} lists the symbols used project-wide.
+Chapter-local symbols are defined where they first appear.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Project-wide symbols.}
+  \label{tab:notation:symbols}
+  \begin{tabular}{clc}
+    \toprule
+    Symbol & Meaning & Unit \\
+    \midrule
+    $t$ & simulation time since the mission epoch & \unit{\second} \\
+    $\vv{r}$ & position vector & \unit{\metre} \\
+    $\vv{v}$ & velocity vector & \unit{\metre\per\second} \\
+    $\vv{a}$ & acceleration vector & \unit{\metre\per\second\squared} \\
+    $\quat{q}_{i2b}$ & attitude quaternion, GCRF to body & 1 \\
+    $\vv{\omega}^{B}$ & angular velocity of $B$ w.r.t.\ $I$, in $B$ & \unit{\radian\per\second} \\
+    $m$ & spacecraft mass & \unit{\kilogram} \\
+    $G$ & universal gravitational constant & \unit{\metre\cubed\per\kilogram\per\second\squared} \\
+    $\mu$ & gravitational parameter $GM$ of the central body & \unit{\metre\cubed\per\second\squared} \\
+    $\dcm{A}{B}$ & DCM mapping frame $A$ to frame $B$ & 1 \\
+    $\mat{I}_3$ & $3 \times 3$ identity matrix & 1 \\
+    $\vv{h}$ & specific angular momentum $\vv{r} \times \vv{v}$ & \unit{\metre\squared\per\second} \\
+    $\varepsilon$ & specific orbital energy & \unit{\metre\squared\per\second\squared} \\
+    $a$ & semi-major axis & \unit{\metre} \\
+    $T$ & orbital period & \unit{\second} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
