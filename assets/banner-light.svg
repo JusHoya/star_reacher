@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 340" role="img" aria-label="star_reacher — a small, deterministic 6DOF space-mission simulator">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F8F7FC"/>
+      <stop offset="1" stop-color="#EEEBF9"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7C63E0"/>
+      <stop offset="1" stop-color="#6E56CF"/>
+    </linearGradient>
+    <linearGradient id="star" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F0B84E"/>
+      <stop offset="1" stop-color="#DB9B2E"/>
+    </linearGradient>
+    <radialGradient id="starglow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#E0A73C" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#E0A73C" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="pglow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#8B7AE0" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#8B7AE0" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="1" y="1" width="1278" height="338" rx="18" fill="url(#bg)" stroke="#E1DCF3" stroke-width="1"/>
+
+  <!-- starfield -->
+  <g fill="#6E56CF">
+    <circle cx="96" cy="86" r="1.5" fill-opacity="0.42"/>
+    <circle cx="132" cy="252" r="1.2" fill-opacity="0.36"/>
+    <circle cx="274" cy="214" r="1.6" fill-opacity="0.36"/>
+    <circle cx="214" cy="272" r="1.3" fill-opacity="0.32"/>
+    <circle cx="70" cy="150" r="1.2" fill-opacity="0.30"/>
+    <circle cx="288" cy="150" r="1.1" fill-opacity="0.30"/>
+  </g>
+
+  <!-- an inclined orbit around a planet, and a trajectory reaching for a star -->
+  <g fill="none" stroke="#6E56CF">
+    <ellipse cx="168" cy="188" rx="104" ry="52" transform="rotate(-28 168 188)" stroke-opacity="0.26" stroke-width="1.5"/>
+    <circle cx="168" cy="188" r="92" stroke-opacity="0.13" stroke-width="1.5"/>
+  </g>
+
+  <!-- reach trajectory: planet -> star -->
+  <path d="M176 168 C 196 120, 224 96, 249 93" fill="none" stroke="url(#accent)" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="1 7"/>
+
+  <!-- planet -->
+  <circle cx="168" cy="188" r="34" fill="url(#pglow)"/>
+  <circle cx="168" cy="188" r="19" fill="url(#accent)"/>
+
+  <!-- spacecraft node on the trajectory -->
+  <circle cx="211" cy="113" r="4.5" fill="#F8F7FC" stroke="url(#accent)" stroke-width="2"/>
+
+  <!-- target star being reached -->
+  <circle cx="250" cy="92" r="26" fill="url(#starglow)"/>
+  <path d="M250 74 L255 87 L268 92 L255 97 L250 110 L245 97 L232 92 L245 87 Z" fill="url(#star)"/>
+  <circle cx="250" cy="92" r="3.2" fill="#FFFFFF"/>
+
+  <text x="332" y="112" font-family="ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, monospace" font-size="19" letter-spacing="3" fill="#8175B5">DETERMINISTIC · 6DOF · SCRUTINIZED PHYSICS</text>
+
+  <text x="330" y="196" font-family="'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif" font-size="84" font-weight="700" letter-spacing="-1">
+    <tspan fill="#1B1830">star_</tspan><tspan fill="url(#accent)">reacher</tspan>
+  </text>
+
+  <text x="333" y="244" font-family="'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif" font-size="26" font-weight="400" fill="#5B5570">A small, deterministic 6DOF space-mission simulator with a scrutinized physics core.</text>
+
+  <text x="333" y="284" font-family="ui-monospace, 'Cascadia Code', Consolas, monospace" font-size="18" fill="#6E56CF">TOML &#8594; C++/Eigen core &#8594; SRLOG&#160;&#160;·&#160;&#160;bit-identical from a Raspberry Pi&#160;5 to a workstation</text>
+</svg>
