@@ -15,3 +15,8 @@ schema_version = 1
 module = "cpp/src/models/twobody.cpp"
 chapter = "docs/mathlib/chapters/twobody.tex"
 label = "ch:twobody"
+
+[[chapter]]
+module = "cpp/src/ephemeris.cpp"
+chapter = "docs/mathlib/chapters/ephemeris.tex"
+label = "ch:ephemeris"

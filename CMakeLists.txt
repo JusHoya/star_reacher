@@ -100,6 +100,7 @@ configure_file(cpp/src/version.cpp.in
 # Core library
 # ---------------------------------------------------------------------------
 add_library(star_core STATIC
+  cpp/src/ephemeris.cpp
   cpp/src/models/twobody.cpp
   cpp/src/rng.cpp
   cpp/src/run.cpp
@@ -134,6 +135,7 @@ if(STAR_BUILD_TESTING)
   enable_testing()
   add_executable(star_tests
     cpp/tests/test_main.cpp
+    cpp/tests/test_ephemeris.cpp
     cpp/tests/test_rng.cpp
     cpp/tests/test_srlog.cpp
     cpp/tests/test_twobody.cpp)

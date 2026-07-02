@@ -1,0 +1,78 @@
+# Provenance manifest for the ephemeris golden set in this directory
+# (FR-22 layer 1: uncited golden = lint failure; schema documented in
+# tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "ephemeris"
+date = "2026-07-02"
+generation = """
+All files are written by tests/golden/ephemeris/generate.py, which runs the
+`star data fetch de440s` pipeline (download of de440s.bsp and
+moon_pa_de440_200625.bpc from JPL with SHA-256 pins, then a verbatim -
+never refit - repack of the 2020-2060 Chebyshev records into the SREPH v1
+container), excerpts the records containing the test epochs, evaluates the
+excerpt with the Python reference evaluator (the executable specification of
+cpp/src/ephemeris.cpp), cross-checks every value against jplephem's
+independent evaluation of the same kernels, and fetches geometric ICRF state
+vectors from the JPL Horizons API for every repacked quantity. Regenerating
+is `python tests/golden/ephemeris/generate.py` (network required; the
+committed outputs are consumed offline).
+"""
+
+[[file]]
+name = "excerpt_de440s.sreph"
+source = "de440s.bsp (SHA-256 c1c7feeab882263fc493a9d5a5b2ddd71b54826cdf65d8d17a76126b260a49f2) and moon_pa_de440_200625.bpc (SHA-256 60cd55aa401ea2ea97360636f567554bfe4e37bb829f901b4460a455dfaf783f), JPL SSD / NAIF distribution"
+citation = "Park, Folkner, Williams, and Boggs, 'The JPL Planetary and Lunar Ephemerides DE440 and DE441', The Astronomical Journal 161:105, 2021"
+generation = "build_excerpt() in generate.py: SREPH v1 mini-segments holding the verbatim DE440 Chebyshev records that contain the test epochs (plus each boundary's left neighbor); format per docs/formats/sreph_v1.md"
+date = "2026-07-02"
+tolerance = "not applicable (input fixture; committed binary excerpt is the Phase 2 exception recorded in tests/golden/README.md)"
+
+[[file]]
+name = "state_bitlevel.toml"
+source = "Python reference evaluator (star_reacher.data_fetch.evaluate_segment) over excerpt_de440s.sreph"
+citation = "coefficients: Park et al. 2021 (DE440); evaluation: standard Chebyshev recurrence, see the ephemeris chapter of docs/mathlib"
+generation = "generate.py; every value cross-checked against jplephem at generation time to < 0.01 m position, < 1e-08 m/s velocity, < 1e-10 rad angle, < 1e-19 rad/s rate (measured worst case 1.4e-4 m, 1.7e-11 m/s, 9.1e-13 rad, 8.5e-22 rad/s)"
+date = "2026-07-02"
+tolerance = "exact (binary64 bit equality): the C++ evaluator implements the identical operation sequence under the D-10 no-FMA/no-fast-math flags, so any bit difference is an implementation divergence"
+
+[[file]]
+name = "horizons_vectors.toml"
+source = "JPL Horizons API (https://ssd.jpl.nasa.gov/api/horizons.api), geometric ICRF vectors, TDB epochs; raw transcripts in horizons/<quantity>.txt"
+citation = "Giorgini et al., JPL Horizons on-line ephemeris system (ssd.jpl.nasa.gov/horizons); Horizons major-body source ephemeris DE441 per the committed transcripts; DE440/DE441 relationship per Park et al. 2021 (AJ 161:105)"
+generation = "horizons_query() in generate.py; VEC_TABLE=2, VEC_CORR=NONE, REF_SYSTEM=ICRF, REF_PLANE=FRAME, OUT_UNITS=KM-S, TLIST of exact TDB-midnight Julian dates"
+date = "2026-07-02"
+tolerance = "per-case gate_m field: < 1 m position at every epoch for sun/emb/venus_bary/mars_bary/jupiter_bary/earth (Phase 2 exit criterion 2); < 10 m DE441-envelope for moon and moon_geocentric, because Horizons serves the Moon from DE441 whose lunar orbit differs from DE440 by ~2-10 m across this span by design (Park et al. 2021 Section 6) - the authoritative < 1 mm DE440 lunar gate is moon_de440_jplephem.toml"
+
+[[file]]
+name = "moon_de440_jplephem.toml"
+source = "jplephem 2.24 evaluation of de440s.bsp segments 301/3 and 399/3 (SHA-256 c1c7feeab882263fc493a9d5a5b2ddd71b54826cdf65d8d17a76126b260a49f2)"
+citation = "Park et al. 2021 (DE440); kernel from the JPL SSD planets/bsp distribution"
+generation = "JplCheck.state_m() in generate.py at the 21 lunar test epochs; geocentric Moon composed as (301/3) - (399/3)"
+date = "2026-07-02"
+tolerance = "< 1e-3 m position at every epoch: same DE440 coefficients evaluated by an independent implementation, so any excess is a repack or evaluator defect (measured worst case 1.4e-4 m, pure summation-order rounding)"
+
+[[file]]
+name = "horizons/<quantity>.txt (8 files)"
+source = "JPL Horizons API responses, saved verbatim with the exact request URL prepended"
+citation = "as horizons_vectors.toml"
+generation = "horizons_query() in generate.py; these transcripts are the primary evidence for horizons_vectors.toml, including the '{source: DE441}' target lines the lunar gate documentation relies on"
+date = "2026-07-02"
+tolerance = "not applicable (evidence transcripts, not consumed by tests)"
+
+[[file]]
+name = "librations_jplephem.toml"
+source = "jplephem 2.24 PCK evaluation of moon_pa_de440_200625.bpc (SHA-256 60cd55aa401ea2ea97360636f567554bfe4e37bb829f901b4460a455dfaf783f)"
+citation = "Park et al. 2021 (DE440 lunar orientation); kernel from the NAIF generic_kernels/pck distribution"
+generation = "JplCheck.librations() in generate.py at the libration test epochs"
+date = "2026-07-02"
+tolerance = "abs 1e-10 rad on angles, 1e-19 rad/s on rates: same coefficients evaluated with a different summation order; measured worst case 9.1e-13 rad / 8.5e-22 rad/s, so the bounds carry two-plus orders of margin while still failing on any wrong record or coefficient"
+
+[[file]]
+name = "full_span_validation.md"
+source = "full repack (data/de440s_2020_2060.sreph) vs the horizons_vectors.toml states"
+citation = "as horizons_vectors.toml"
+generation = "generate.py full-span pass; the committed table records the max observed position error per quantity"
+date = "2026-07-02"
+tolerance = "< 1 m at every epoch and quantity (Phase 2 exit criterion 2)"
