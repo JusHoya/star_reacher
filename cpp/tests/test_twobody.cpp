@@ -1,12 +1,15 @@
 // Two-body model tests: analytic circular-orbit benchmark (FR-22 layer 3)
 // and energy/angular-momentum property invariants (FR-22 layer 2). Test IDs
 // are cited by the math-library validation table; do not rename them.
+// Propagation goes through the shared fixed-step RK4 (star/integrate.hpp)
+// with the model's right-hand side, the same path run_twobody uses.
 #include <cmath>
 #include <cstdint>
 
 #include <Eigen/Dense>
 
 #include "star/constants.hpp"
+#include "star/integrate.hpp"
 #include "star/models/twobody.hpp"
 #include "vendor/doctest.h"
 
@@ -14,13 +17,15 @@ namespace {
 
 constexpr double kMu = star::constants::GM_EARTH_M3_PER_S2;
 
-star::models::TwoBodyState circular_state(double a_m) {
+void circular_state(double a_m, double* y) {
   // Circular orbit in the xy-plane: r = a x_hat, v = sqrt(mu/a) y_hat
   // (Vallado, two-body relative motion: circular speed v = sqrt(mu/r)).
-  star::models::TwoBodyState s;
-  s.r_m = Eigen::Vector3d(a_m, 0.0, 0.0);
-  s.v_mps = Eigen::Vector3d(0.0, std::sqrt(kMu / a_m), 0.0);
-  return s;
+  y[0] = a_m;
+  y[1] = 0.0;
+  y[2] = 0.0;
+  y[3] = 0.0;
+  y[4] = std::sqrt(kMu / a_m);
+  y[5] = 0.0;
 }
 
 }  // namespace
@@ -52,15 +57,23 @@ TEST_CASE("twobody_circular_orbit_analytic") {
   const double dt = 0.1;
   const std::int64_t steps = std::llround(period_s / dt);
 
-  star::models::TwoBodyState s = circular_state(a);
+  auto rhs = [](double t, const double* y, double* ydot) {
+    star::models::twobody_rhs(kMu, t, y, ydot);
+  };
+  const star::integrate::RhsRef f(rhs);
+  star::integrate::Rk4 rk4(6);
+
+  double y[6];
+  circular_state(a, y);
   for (std::int64_t i = 0; i < steps; ++i) {
-    s = star::models::rk4_step(kMu, s, dt);
+    rk4.step(f, static_cast<double>(i) * dt, y, dt, y);
   }
 
   const double t_end = static_cast<double>(steps) * dt;
   const Eigen::Vector3d r_analytic(a * std::cos(n * t_end),
                                    a * std::sin(n * t_end), 0.0);
-  const double err_m = (s.r_m - r_analytic).norm();
+  const Eigen::Map<const Eigen::Vector3d> r_num(y);
+  const double err_m = (r_num - r_analytic).norm();
   CAPTURE(err_m);
   CHECK(err_m < 1.0);  // contract bound; see derivation above
 }
@@ -86,16 +99,25 @@ TEST_CASE("twobody_energy_momentum_drift") {
   const double period_s = star::constants::TWO_PI / n;
   const std::int64_t steps = std::llround(3.0 * period_s / dt);
 
-  star::models::TwoBodyState s = circular_state(a);
-  const double eps0 = 0.5 * s.v_mps.squaredNorm() - kMu / s.r_m.norm();
-  const double h0 = s.r_m.cross(s.v_mps).norm();
+  auto rhs = [](double t, const double* y, double* ydot) {
+    star::models::twobody_rhs(kMu, t, y, ydot);
+  };
+  const star::integrate::RhsRef f(rhs);
+  star::integrate::Rk4 rk4(6);
+
+  double y[6];
+  circular_state(a, y);
+  const Eigen::Map<const Eigen::Vector3d> r(y);
+  const Eigen::Map<const Eigen::Vector3d> v(y + 3);
+  const double eps0 = 0.5 * v.squaredNorm() - kMu / r.norm();
+  const double h0 = r.cross(v).norm();
 
   double max_eps_rel = 0.0;
   double max_h_rel = 0.0;
   for (std::int64_t i = 0; i < steps; ++i) {
-    s = star::models::rk4_step(kMu, s, dt);
-    const double eps = 0.5 * s.v_mps.squaredNorm() - kMu / s.r_m.norm();
-    const double h = s.r_m.cross(s.v_mps).norm();
+    rk4.step(f, static_cast<double>(i) * dt, y, dt, y);
+    const double eps = 0.5 * v.squaredNorm() - kMu / r.norm();
+    const double h = r.cross(v).norm();
     max_eps_rel = std::max(max_eps_rel, std::fabs((eps - eps0) / eps0));
     max_h_rel = std::max(max_h_rel, std::fabs((h - h0) / h0));
   }
