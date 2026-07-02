@@ -1,0 +1,72 @@
+# Provenance manifest for the reference-frame golden vectors in this
+# directory (FR-22 layer 1: uncited golden = lint failure; schema documented
+# in tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "frames"
+date = "2026-07-02"
+generation = """
+All five value files are written by tests/golden/frames/generate.py.
+Earth-orientation values are generated with ERFA (pyerfa 2.0.1.5, ERFA
+2.0.1), the reference implementation of the IAU SOFA algorithms, by exactly
+the composition cpp/src/frames.cpp implements (IAU 2006/2000B, CIO based,
+polar motion neglected): dpsi,deps = erfa.nut00b(tt); rbpn =
+erfa.pn06(tt,dpsi,deps)[-1]; x,y = erfa.bpn2xy(rbpn); s =
+erfa.s06(tt,x,y); rc2i = erfa.c2ixys(x,y,s); era = erfa.era00(ut1);
+C = Rz(era) rc2i, with UT1 = UTC + constant dUT1. The script also carries a
+pure-Python mirror of the transcribed series tables that the C++ core
+compiles; at generation time the mirror is validated against
+erfa.nut00b/s06/pfw06/obl06/era00 at every golden epoch plus 300 seeded
+pseudo-random epochs spanning 2020-2060 (observed maxima: dpsi/deps/era
+0.0, x 1.7e-18, y 1.3e-16, s 3.0e-19 rad; matrix elements 2.2e-16).
+Epochs past ERFA's built-in leap table draw its "dubious year" warning;
+ERFA then assumes TAI-UTC stays 37 s, which is exactly the bundled
+leap-second table's documented post-expiry assumption, so those values
+remain valid cross-checks. TAI epochs and the TDB argument reuse the
+time-system reference implementation (tests/golden/time/generate.py,
+imported directly). pyerfa is a golden-generation dev tool only and is not
+a runtime dependency. Regenerating is
+`python tests/golden/frames/generate.py`; output is byte-deterministic.
+"""
+
+[[file]]
+name = "earth_chain.toml"
+source = "ERFA 2.0.1 via pyerfa 2.0.1.5: nut00b/pn06/bpn2xy/s06/c2ixys/era00 chain composed in generate.py (chain_erfa); time plumbing via erfa.dtf2d/utctai/taitt/utcut1"
+citation = "IAU 2006/2000B CIO-based transformation per IERS Conventions (2010), Chapter 5; IAU 2000B nutation per McCarthy, D. D. & Luzum, B. J., Cel. Mech. Dyn. Astron. 85, 37-49 (2003); IAU 2006 precession (Fukushima-Williams parameterization) per Capitaine, N., Wallace, P. T. & Chapront, J., Astron. Astrophys. 412, 567-586 (2003) and Wallace, P. T. & Capitaine, N., Astron. Astrophys. 459, 981-985 (2006); ERA per Capitaine, N., Guinot, B. & McCarthy, D. D., Astron. Astrophys. 355, 398-405 (2000)"
+generation = "chain_erfa() in generate.py at 14 epochs spanning 2020-2060 (both endpoints, dyadic fractional seconds, three nonzero constant-dUT1 cases)"
+date = "2026-07-02"
+tolerance = "matrix elements c00..c22: abs 1e-11 (Phase 2 exit criterion 1); chain components dpsi, deps, x, y, s, era: abs 1e-12 rad (the C++ core performs the same operation sequence, so residuals are libm and two-part-time plumbing only, observed at the 1e-15 level; 1e-12 leaves three orders of margin while still failing on any series transcription error at or above 0.01 mas). tai_day exact, tai_sec binary64 bit equality (identical to the time-golden discipline)."
+
+[[file]]
+name = "cookbook_2006_2000a.toml"
+source = "Published worked example transcribed verbatim from the IAU SOFA cookbook 'SOFA Tools for Earth Attitude' (C edition), section 5.5 'IAU 2006/2000A, CIO based, using classical angles': input Earth-orientation parameters, X, Y, s, ERA, and the printed 'celestial to terrestrial matrix (no polar motion)'"
+citation = "IAU SOFA Board, 'SOFA Tools for Earth Attitude' (SOFA cookbook), worked example for 2007 April 05 12:00:00.0 UTC with UT1-UTC = -0.072073685 s, dX06 = +0.1750 mas, dY06 = -0.2259 mas; model-difference bound per McCarthy & Luzum (2003) (IAU 2000B pole within ~1 mas of IAU 2000A, 1995-2050)"
+generation = "COOKBOOK_* constants in generate.py (verbatim transcription); the 2000B-chain-vs-published element delta is measured at generation time (observed 2.316e-9) and must stay within tol_matrix"
+date = "2026-07-02"
+tolerance = "tol_matrix = 8e-9 abs per matrix element: the documented IAU 2000B-vs-2000A model difference (~1 mas CIP error ~ 4.8e-9) plus the cookbook's applied dX06/dY06 CIP corrections (0.29 mas combined), with margin over the observed 2.316e-9. Deliberately NOT the 1e-11 ERFA-agreement gate - this file anchors the chain to published human-readable values, not to model identity. pub_era_deg at abs 5e-14 rad (print quantization 1e-12 deg plus UT1 plumbing); pub_x/pub_y at abs 1e-8 rad (includes the uncorrected dX06/dY06 and the 2000B-vs-2000A pole difference); pub_s_arcsec at abs 1e-9 arcsec of print quantization plus model difference, i.e. 1e-8 arcsec bound."
+
+[[file]]
+name = "moon_pa.toml"
+source = "ERFA rotation primitives (erfa.rz/rx) composing R3(psi) R1(theta) R3(phi) in generate.py, cross-checked against an independent NumPy element-formula evaluation (observed max spread 1.11e-16)"
+citation = "Lunar principal-axis frame realized from the DE440 libration Euler angles (3-1-3: phi, theta, psi) per Park, R. S., Folkner, W. M., Williams, J. G. & Boggs, D. H., The JPL Planetary and Lunar Ephemerides DE440 and DE441, Astron. J. 161, 105 (2021); rotation-matrix convention per the IAU SOFA Vector/Matrix library"
+generation = "MOON_CASES in generate.py: committed angle sets with representative DE440 libration magnitudes plus 3-1-3-degenerate geometry (the ephemeris evaluator that supplies real angles is a separate workstream)"
+date = "2026-07-02"
+tolerance = "consuming doctest compares the C++ C_GCRF->MoonPA against c00..c22 at abs 5e-16 per element (third rounding of the same composition; generation-time cross-check spread 1.11e-16)"
+
+[[file]]
+name = "mars_iau.toml"
+source = "generate.py mars_elements_mirror(): independent evaluation of the published Mars rotational-element polynomials; matrix assembled from ERFA rotation primitives and cross-checked against an independent NumPy composition and the explicit pole unit vector (cos d cos a, cos d sin a, sin d)"
+citation = "Archinal, B. A., et al., Report of the IAU Working Group on Cartographic Coordinates and Rotational Elements: 2015, Cel. Mech. Dyn. Astron. 130, 22 (2018), Mars entries, post-erratum values as distributed in NAIF pck00011.tpc (BODY499_POLE_RA/POLE_DEC/PM and BODY499_NUT_PREC_* with BODY4_NUT_PREC_ANGLES); time argument TDB days/centuries from J2000.0 (JD 2451545.0 TDB) per the report, realized through the D-6 truncated TDB series"
+generation = "mars_elements_mirror() + ERFA rz/rx assembly in generate.py at 6 epochs spanning 2020-2060; TDB two-part JD folded exactly as star::time::tdb_jd folds it"
+date = "2026-07-02"
+tolerance = "alpha0, delta0, w: abs 1e-13 rad (the C++ core evaluates the same polynomials in the same fixed order from the same TDB argument; residuals are libm sin/cos only, well below 1e-14; 1e-13 fails on any coefficient transcription error at or above 1e-9 deg); matrix elements c00..c22: abs 1e-14 (same composition, third rounding)"
+
+[[file]]
+name = "series_terms.toml"
+source = "The transcribed series tables themselves, emitted from the generate.py literals after functional validation against ERFA (see [golden] generation)"
+citation = "IAU 2000B luni-solar nutation series per McCarthy & Luzum (2003) with the Luzum (2001) planetary-bias offsets; s(X,Y) series and IAU 2006 precession/obliquity polynomials per IERS Conventions (2010) Chapter 5 and Capitaine, Wallace & Chapront (2003); fundamental-argument polynomials per IERS Conventions (2003/2010); all coefficients transcribed verbatim from the ERFA 2.0.1 reference source (liberfa/erfa: nut00b.c, s06.c, pfw06.c, obl06.c, fal03.c-fapa03.c, era00.c), which implements those publications; ERA constants per Capitaine, Guinot & McCarthy (2000)"
+generation = "NUT00B_TERMS, S06_*, FW_*, OBL06, FA_*, ERA_C0/C1 literals in generate.py, emitted as decimal shortest-repr strings"
+date = "2026-07-02"
+tolerance = "exact (binary64 bit equality after strtod: the C++ compiled tables in cpp/src/frames_series.hpp must equal every value; shortest-repr decimal strings round-trip exactly). This is the transcription-equality bridge between the Python-validated tables and the compiled core."

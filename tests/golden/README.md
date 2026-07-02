@@ -65,3 +65,19 @@ this policy.
   `time_utc_tai_tt_golden`, `time_tdb_series_golden`, and
   `time_leap_table_golden` (and by the Python binding tests). See
   `time/manifest.toml` for provenance and tolerances.
+- `rotations/` — quaternion→DCM and Euler-sequence (3-2-1, 3-1-3) golden
+  vectors (FR-3, D-7), each matrix produced by two independent
+  constructions (ERFA rotation primitives and NumPy closed forms) that must
+  agree at generation time; consumed by the doctest cases
+  `rotation_quat_dcm_golden` and `rotation_euler_golden` (and by the Python
+  binding tests). See `rotations/manifest.toml` for provenance and
+  tolerances.
+- `frames/` — the composed IAU 2006/2000B GCRF→ITRF chain at 14 epochs
+  spanning 2020–2060 (ERFA-generated), the published SOFA cookbook
+  earth-attitude worked example, Moon principal-axis and Mars IAU 2015
+  frame constructions, and the transcribed nutation/s(X,Y) series tables
+  (FR-3); consumed by the doctest cases `frames_erfa_chain_golden`,
+  `frames_sofa_cookbook_crosscheck`, `frames_moon_pa_golden`,
+  `frames_mars_iau_golden`, and `frames_series_transcription` (and by the
+  Python binding tests). See `frames/manifest.toml` for provenance and
+  tolerances.
