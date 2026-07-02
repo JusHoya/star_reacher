@@ -56,3 +56,11 @@ this policy.
   `rng_pcg64_golden`, and `rng_box_muller_golden` (and by the Python
   cross-validation tests). See `rng/manifest.toml` for provenance and
   tolerances.
+
+## Phase 2 contents
+
+- `integrators/` — reference eccentric-orbit definition, analytic Kepler
+  checkpoint states, and analytic apsis passage times consumed by the
+  integrator/event acceptance suites (doctest `test_integrate.cpp` and
+  `test_events.cpp`, pytest `test_integrators.py`). See
+  `integrators/manifest.toml` for provenance and tolerances.

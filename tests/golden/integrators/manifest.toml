@@ -1,0 +1,41 @@
+# Provenance manifest for the integrator/event golden vectors in this
+# directory (FR-22 layer 1: uncited golden = lint failure; schema documented
+# in tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "integrators"
+date = "2026-07-02"
+generation = """
+Both value files are written by tests/golden/integrators/generate.py, a pure
+Python (math module only) implementation of classical elliptic two-body
+propagation, independent of the C++ core. The reference orbit is defined
+once as a pair of binary64 vectors (r0, v0) obtained from classical elements
+(a = 8000 km, e = 0.15, i = 30 deg, RAAN = 40 deg, argp = 60 deg,
+nu0 = 120 deg) via the standard COE-to-RV conversion; every other committed
+value is derived from those doubles by solving Kepler's equation with
+Newton's method to machine precision. Regeneration runs self-checks before
+writing: Kepler residuals < 1e-13, specific-energy and |h| invariance of all
+checkpoint states < 1e-12 relative, one-period closure < 1e-6 m, and apsis
+radius/r.v consistency. Regenerating is
+`python tests/golden/integrators/generate.py`; output is byte-deterministic
+on a given platform (libm may shift the last ulp across platforms, which the
+consuming tests absorb inside the tolerances recorded below).
+"""
+
+[[file]]
+name = "kepler_orbit.toml"
+source = "generate.py reference implementation (pure Python floats)"
+citation = "Vallado, Fundamentals of Astrodynamics and Applications, 4th ed., ch. 2 (Kepler's equation, Kepler's problem, COE-to-RV); mu from IERS Conventions (2010), TN No. 36, Table 1.1 (3.986004418e14 m^3/s^2, same value as star/constants.hpp); max |d4r/dt4| by 5-point central finite differences on the analytic solution (delta = 8 s, ~4 significant digits)"
+generation = "coe_to_rv() once for the definition case; EllipticOrbit.state_at() for the 8 checkpoints at t = j*(T/8); EllipticOrbit.max_fourth_derivative() for max_r4_mps4"
+date = "2026-07-02"
+tolerance = "checkpoint states vs the C++ reference propagator: |dr| <= 1e-6 m, |dv| <= 1e-9 m/s (two independent implementations of the same closed-form solution agree to ~1e-8 m; the bound gives two orders of margin over libm spread while still catching any algorithmic deviation). max_r4_mps4 is a bound input, consumed with an explicit 1.5x headroom factor by the dense-output test."
+
+[[file]]
+name = "apsis_times.toml"
+source = "generate.py reference implementation (pure Python floats)"
+citation = "Periapsis at mean anomaly M = 0 (mod 2 pi), apoapsis at M = pi (mod 2 pi), t = (target - M0)/n; Vallado, Fundamentals of Astrodynamics and Applications, 4th ed., ch. 2"
+generation = "EllipticOrbit.apsis_times() over (0, 3.2 T] from the kepler_orbit.toml definition state"
+date = "2026-07-02"
+tolerance = "event-framework apsis times vs these analytic times: |dt| < 1e-6 s (Phase 2 exit criterion 5). The committed times themselves are exact to ~ulp(t) ~ 4e-12 s given the committed (r0, v0)."
