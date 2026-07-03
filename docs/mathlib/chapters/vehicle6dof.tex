@@ -120,7 +120,7 @@ with the acceleration composed in the fixed order
 where $\vv{a}_{\mathrm{env}}$ is the composed environmental acceleration of
 Chapter~\ref{ch:environment} (central-body gravity, third bodies, SRP, and
 orbital drag as configured), $m$ is the current composite mass
-(Chapter~\ref{ch:massprops}), and $\dcm{B}{I} = \dcm{I}{B}^{\mathsf T}$
+(Chapter~\ref{ch:massprops}), and $\dcm{B}{I} = {\dcm{I}{B}}^{\mathsf T}$
 rotates the summed body force into the integration frame. The thrust and
 aerodynamic forces are functions of the current position and velocity
 (back-pressure thrust through the atmospheric pressure at the geodetic
@@ -148,7 +148,7 @@ form)
   \vv{r}^{I} = \dcm{E}{I}\,\vv{r}^{E},
   \label{eq:vehicle6dof:padstate}
 \end{equation}
-with $\dcm{E}{I} = \dcm{I}{E}^{\mathsf T}$ the transpose of the Earth-fixed
+with $\dcm{E}{I} = {\dcm{I}{E}}^{\mathsf T}$ the transpose of the Earth-fixed
 rotation of Chapter~\ref{ch:frames}. The pad co-rotates with the planet, so
 its inertial velocity is exactly
 $\vv{v}^{I} = \vv{\omega}_{\oplus}^{I} \times \vv{r}^{I}$, with
@@ -193,7 +193,7 @@ body axes as the columns $\dcm{B}{I} = [\hat{\vv{x}}\;\hat{\vv{y}}\;
   \qquad
   \hat{\vv{z}} = \hat{\vv{x}} \times \hat{\vv{y}},
   \qquad
-  \quat{q}_{i2b} = \mathrm{quat}\bigl(\dcm{B}{I}^{\mathsf T}\bigr),
+  \quat{q}_{i2b} = \mathrm{quat}\bigl({\dcm{B}{I}}^{\mathsf T}\bigr),
   \label{eq:vehicle6dof:attitude}
 \end{equation}
 using the Shepperd extraction of Chapter~\ref{ch:rotations}. The logged body
