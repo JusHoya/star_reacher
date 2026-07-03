@@ -1,0 +1,113 @@
+# Scripted pad-to-LEO ascent of the electron-class two-stage launch vehicle
+# (Phase 4, FR-14). Open-loop pitch program, no GNC in the loop: the vehicle
+# lifts off from a co-rotating geodetic launch pad, flies the WS-C-validated
+# pitch-over, stages, and terminates on the orbit-insertion event when the
+# osculating perigee rises through 180 km.
+#
+# provenance "representative": the launch site is a round southern-hemisphere
+# coastal pad; the pitch table is the class-representative program recorded in
+# vehicles/electron_class.toml. See the run's resolved_vehicle.toml for the
+# exact vehicle echo. The target apoapsis is the tuned 6DOF insertion apoapsis
+# (see the phase report); EC-6 gates final perigee >= 180 km and apoapsis
+# within 5 % of this target.
+
+schema_version = 1
+vehicle = "vehicles/electron_class.toml"
+
+[mission]
+name = "ascent-leo"
+epoch_utc = "2026-03-01T00:00:00Z"
+duration_s = 700.0
+# Tuned 6DOF insertion apoapsis (the run terminates on the orbit-insertion
+# event at ~387 s with the achieved 183 x 398 km orbit); EC-6 gates final
+# perigee >= 180 km and apoapsis within 5 % of this target.
+target_apoapsis_alt_m = 398000.0
+
+[run]
+seed = 20260301
+
+[integrator]
+type = "rk4"
+dt_s = 0.1
+
+[environment]
+central_body = "earth"
+
+[logging]
+truth_rate_hz = 10
+
+[initial_state.geodetic]
+lat_deg = -39.0
+lon_deg = 177.9
+alt_m = 10.0
+
+# --- event sequence: ignite, release, pitch over, stage, insert ------------
+
+[[sequence]]
+name = "ignite_s1"
+trigger = "elapsed"
+t_s = 0.0
+action = "ignite_engine"
+stage = "stage1"
+engine = "s1_cluster"
+
+[[sequence]]
+name = "release"
+trigger = "elapsed"
+t_s = 2.0
+action = "pad_release"
+
+[[sequence]]
+name = "pitch"
+trigger = "after_event"
+event = "release"
+offset_s = 0.0
+action = "pitch_program"
+azimuth_deg = 90.0
+# Vertical rise, gravity turn through stage 1, then a slight below-horizontal
+# hold in stage 2 that nulls the residual climb (flight-path angle -> 0 at
+# burnout) so the insertion perigee reaches the 180 km gate. Tuned in the
+# 6DOF run path (see the phase report); the vehicle physics is unchanged.
+pitch_t_s = [0.0, 10.0, 25.0, 60.0, 121.0, 200.0, 300.0, 430.0]
+pitch_deg = [90.0, 90.0, 75.0, 40.0, 32.0, 12.0, -5.0, -25.0]
+
+[[sequence]]
+name = "meco"
+trigger = "elapsed"
+t_s = 121.0
+action = "cutoff_engine"
+stage = "stage1"
+engine = "s1_cluster"
+
+[[sequence]]
+name = "sep1"
+trigger = "after_event"
+event = "meco"
+offset_s = 2.0
+action = "separate_stage"
+stage = "stage1"
+
+[[sequence]]
+name = "ignite_s2"
+trigger = "after_event"
+event = "sep1"
+offset_s = 2.0
+action = "ignite_engine"
+stage = "stage2"
+engine = "s2_vacuum"
+
+[[sequence]]
+name = "drop_fairing"
+trigger = "condition"
+condition = "altitude_above"
+altitude_m = 110000.0
+action = "jettison"
+stage = "stage2"
+item = "fairing"
+
+[[sequence]]
+name = "insertion"
+trigger = "condition"
+condition = "perigee_above"
+perigee_alt_m = 180000.0
+action = "terminate"

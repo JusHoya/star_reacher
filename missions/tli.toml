@@ -1,0 +1,88 @@
+# Trans-lunar injection of the restartable kick stage (Phase 4, FR-14). The
+# stage starts in a ~200 km circular LEO parking orbit in the Moon's orbital
+# plane, performs a single prograde TLI burn, coasts on the transfer ellipse,
+# and terminates when it crosses into the Moon's sphere of influence (the
+# Earth->Moon SOI-transition event). The initial state and burn are targeted
+# (Hohmann phasing against the committed DE440 excerpt; see the phase report)
+# so the coast passes the Moon at a ~25000 km perilune.
+#
+# The burn uses the prograde_hold steering mode so the finite ~350 s burn stays
+# aligned with the velocity (a fixed inertial attitude would lose most of the
+# Delta-v as the velocity rotates through the burn). EC-6 gates the logged
+# SOI-transition event and a perilune altitude within 10 % of the target below;
+# the perilune is the osculating periapsis about the Moon of the SOI-entry
+# state (patched-conic). The kick stage's ~3.28 km/s capability reaches this
+# with margin (the burn spends ~450 of its 460 kg of propellant).
+#
+# provenance "representative": the parking state and burn are targeting
+# outputs, not a real mission plan; the vehicle numbers are round
+# class-representative values (vehicles/kick_stage.toml).
+
+schema_version = 1
+vehicle = "vehicles/kick_stage.toml"
+
+[mission]
+name = "tli"
+epoch_utc = "2025-12-28T12:00:00Z"
+duration_s = 600000.0
+target_perilune_alt_m = 25000000.0
+
+[run]
+seed = 20251229
+
+[integrator]
+type = "rk4"
+dt_s = 1.0
+
+[environment]
+central_body = "earth"
+third_bodies = ["sun", "moon"]
+ephemeris = "tests/golden/ephemeris/excerpt_de440s_crosstool.sreph"
+
+[logging]
+truth_rate_hz = 1
+# The interesting dynamics are the ~350 s burn; the rest is a multi-day coast,
+# so the by-source force/mass/env groups are disabled here to keep the log
+# small (truth + the SOI-transition event suffice for the EC-6 gate). The
+# ascent mission exercises the FR-16 vehicle groups at full 1 Hz.
+forces_rate_hz = 0
+mass_rate_hz = 0
+env_rate_hz = 0
+
+# ~200 km circular parking orbit in the Moon's orbital plane, phased so a
+# prograde burn sends the transfer apogee to the Moon's arrival position.
+[initial_state.cartesian]
+r_m = [-210050.24179909486, -5789733.272986997, -3115566.3874095837]
+v_mps = [7777.0265666240575, -325.65612627938054, 80.85072431528374]
+frame = "GCRF"
+
+# --- event sequence: steer prograde, burn, coast to the lunar SOI -----------
+
+[[sequence]]
+name = "steer"
+trigger = "elapsed"
+t_s = 0.0
+action = "prograde_hold"
+
+[[sequence]]
+name = "tli_burn"
+trigger = "elapsed"
+t_s = 0.0
+action = "ignite_engine"
+stage = "kick"
+engine = "main"
+
+[[sequence]]
+name = "meco"
+trigger = "elapsed"
+t_s = 353.0
+action = "cutoff_engine"
+stage = "kick"
+engine = "main"
+
+[[sequence]]
+name = "soi_moon"
+trigger = "condition"
+condition = "soi_transition"
+body = "moon"
+action = "terminate"
