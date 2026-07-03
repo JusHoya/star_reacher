@@ -36,11 +36,11 @@ Assumptions:
   \item \textbf{Leap-second knowledge horizon.} The bundled table encodes
     the published TAI$-$UTC step history through the step effective
     2017-01-01 ($\Delta AT = \qty{37}{\second}$) and is verified against
-    IERS Bulletin~C~70 (July 2025), which announced that no leap second is
-    introduced at the end of December 2025~\cite{iersbc70}. The first UTC
+    IERS Bulletin~C~71 (January 2026), which announced that no leap second
+    is introduced at the end of June 2026~\cite{iersbc71}. The first UTC
     date at which a leap second \emph{not} present in the table could take
-    effect is therefore 2026-07-01 (the end-of-June-2026 insertion
-    opportunity, which Bulletin~C~70 does not rule out).
+    effect is therefore 2027-01-01 (the end-of-December-2026 insertion
+    opportunity, which Bulletin~C~71 does not rule out).
   \item \textbf{Positive leap seconds only.} Every leap second since 1972
     has been an insertion; the table holds only $+1$ steps and the
     conversion logic renders only inserted seconds (second $60$). A
@@ -56,7 +56,7 @@ Assumptions:
 \end{enumerate}
 
 Domain of validity: UTC epochs from 1972-01-01 onward; full leap-second
-accuracy through 2026-06-30; TDB$-$TT within the D-6 budget of
+accuracy through 2026-12-31; TDB$-$TT within the D-6 budget of
 $\qty{30}{\micro\second}$ over 1600--2200 (section~\ref{sec:time:derivation}).
 
 Out-of-domain behavior, matching the code exactly:
@@ -67,7 +67,7 @@ Out-of-domain behavior, matching the code exactly:
     \texttt{std::domain\_error} (surfaced in Python as
     \texttt{ValueError}). An invalid instant is never silently normalized,
     because normalizing would shift the epoch by up to one second.
-  \item Calendar input on or after the table expiry (2026-07-01) is
+  \item Calendar input on or after the table expiry (2027-01-01) is
     \emph{accepted} with the last tabulated offset
     ($\Delta AT = \qty{37}{\second}$). The core exposes the table version
     and expiry programmatically and the Python frontend emits a warning for
@@ -90,7 +90,7 @@ TAI day spans exactly \qty{86400}{\second}. Coordinated Universal Time
 \end{equation}
 where $\Delta AT$ is the tabulated leap-second offset, constant between
 steps that take effect at UTC midnights announced by IERS
-Bulletin~C~\cite{iersbc70}. Terrestrial Time is defined with a constant
+Bulletin~C~\cite{iersbc71}. Terrestrial Time is defined with a constant
 offset from TAI (IAU 1991 Resolution A4, as stated by
 Kaplan~\cite{kaplan2005}):
 \begin{equation}
@@ -248,9 +248,9 @@ about \qty{1.2}{\milli\metre} of position).
     $\qty{1.5e-11}{\second}$ otherwise.
   \item \textbf{Leap-second table.} The 28-entry TAI$-$UTC step history is
     a \texttt{constexpr} array cited at its definition (IERS Bulletin~C
-    series, verified through Bulletin~C~70~\cite{iersbc70}), scanned with a
+    series, verified through Bulletin~C~71~\cite{iersbc71}), scanned with a
     fixed-order loop (branch-stable, D-10). The table version string and
-    expiry date (2026-07-01) are exposed programmatically
+    expiry date (2027-01-01) are exposed programmatically
     (\texttt{leap\_table\_info}) so the Python frontend can warn on
     post-expiry epochs; the warning lives in Python because the core never
     reads the clock (D-2).
@@ -307,7 +307,7 @@ recorded in \texttt{tests/golden/time/manifest.toml}.
       (D-6 budget). \\
     \testid{time_leap_table_golden} &
       All 28 table steps and the day before each vs.\ the published
-      history; expiry metadata (2026-07-01); post-expiry lookups return
+      history; expiry metadata (2027-01-01); post-expiry lookups return
       \qty{37}{\second}. \\
     \testid{time_leap_second_roundtrip} &
       Bit-exact UTC round trip before, inside, and after the inserted
@@ -347,7 +347,7 @@ recorded in \texttt{tests/golden/time/manifest.toml}.
       Two-part arithmetic resolves \qty{1}{\nano\second} at 2060 through
       the bindings. \\
     \testid{test_time_epoch_expiry_warning} &
-      Mission epochs on or after 2026-07-01 (by UTC calendar date,
+      Mission epochs on or after 2027-01-01 (by UTC calendar date,
       including offset time zones) warn and still validate; earlier epochs
       do not warn. \\
     \bottomrule
@@ -360,7 +360,7 @@ recorded in \texttt{tests/golden/time/manifest.toml}.
 This chapter relies on Kaplan, USNO Circular No.~179~\cite{kaplan2005} for
 the time-scale relationships, the J2000 definition, and the truncated TDB
 series; on Fairhead and Bretagnon~\cite{fairhead1990} for the underlying
-analytical TDB$-$TT model; on the IERS Bulletin~C series~\cite{iersbc70}
+analytical TDB$-$TT model; on the IERS Bulletin~C series~\cite{iersbc71}
 for the leap-second history and its verification horizon; on Fliegel and
 Van Flandern~\cite{fliegel1968} for the calendar algorithms; and on the IAU
 SOFA cookbook~\cite{sofacookbook} for the published worked example anchoring

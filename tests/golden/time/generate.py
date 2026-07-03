@@ -181,7 +181,7 @@ def tdb_minus_tt(day: int, sec: float) -> float:
 # the published SOFA cookbook anchor; the 2015 and 2016 leap seconds
 # (before, during, mid, and after the inserted second); >= 10 epochs
 # spanning 2020-2060 including the leap-table expiry boundary
-# (2026-07-01, first instant not covered by IERS Bulletin C 70).
+# (2027-01-01, first instant not covered by IERS Bulletin C 71).
 EPOCHS = [
     ("sofa_cookbook_2007_04_05", (2007, 4, 5, 12, 0, 0.0)),
     ("leap_2015_in_leap", (2015, 6, 30, 23, 59, 60.5)),
@@ -191,8 +191,8 @@ EPOCHS = [
     ("leap_2017_first_second_after", (2017, 1, 1, 0, 0, 0.0)),
     ("epoch_2020_01_01", (2020, 1, 1, 0, 0, 0.0)),
     ("epoch_2023_06_15", (2023, 6, 15, 12, 34, 56.25)),
-    ("expiry_2026_06_30_last_covered", (2026, 6, 30, 23, 59, 59.0)),
-    ("expiry_2026_07_01_first_uncovered", (2026, 7, 1, 0, 0, 0.0)),
+    ("expiry_2026_12_31_last_covered", (2026, 12, 31, 23, 59, 59.0)),
+    ("expiry_2027_01_01_first_uncovered", (2027, 1, 1, 0, 0, 0.0)),
     ("epoch_2030_01_01", (2030, 1, 1, 0, 0, 0.0)),
     ("epoch_2035_03_20", (2035, 3, 20, 6, 30, 0.5)),
     ("epoch_2040_07_04", (2040, 7, 4, 18, 0, 0.0)),

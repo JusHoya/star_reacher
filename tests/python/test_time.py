@@ -134,7 +134,7 @@ def test_time_leap_roundtrip_bindings():
     core = _core_or_fail()
     info = core.leap_table_info()
     assert info["entries"] == 28
-    assert tuple(info["expiry_utc"]) == (2026, 7, 1)
+    assert tuple(info["expiry_utc"]) == (2027, 1, 1)
     assert "Bulletin C" in info["version"]
 
     for c in _load_cases("leap_history.toml"):
@@ -218,7 +218,7 @@ def test_time_epoch_expiry_warning(tmp_path):
     # the expiry date in UTC must warn even though its local date is earlier.
     offset_epoch = tmp_path / "offset.toml"
     offset_epoch.write_text(
-        _mission_text("2026-06-30T22:30:00-05:00"), encoding="utf-8"
+        _mission_text("2026-12-31T22:30:00-05:00"), encoding="utf-8"
     )
     with pytest.warns(UserWarning, match="leap-second table"):
         validate_mission_file(offset_epoch)

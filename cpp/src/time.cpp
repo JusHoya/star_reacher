@@ -27,8 +27,8 @@ struct LeapEntry {
 // TAI - UTC step history since 1972 (the constant-offset UTC era; the
 // pre-1972 "rubber second" era is out of domain). Source: IERS Earth
 // Orientation Centre, Bulletin C series (leap-second announcements),
-// verified through Bulletin C 70 (July 2025), which announced no leap
-// second at the end of December 2025 and TAI-UTC = 37 s until further
+// verified through Bulletin C 71 (January 2026), which announced no leap
+// second at the end of June 2026 and TAI-UTC = 37 s until further
 // notice. Golden cross-check against ERFA eraDat:
 // tests/golden/time/leap_history.toml.
 constexpr LeapEntry kLeapTable[] = {
@@ -44,15 +44,16 @@ constexpr std::int32_t kLeapEntries =
     static_cast<std::int32_t>(sizeof(kLeapTable) / sizeof(kLeapTable[0]));
 
 // First UTC calendar date at which a leap second not present in the table
-// could take effect: Bulletin C 70 rules out the end-of-December-2025
-// opportunity, so the next unruled insertion point is the end of June 2026.
-constexpr std::int32_t kExpiryYear = 2026;
-constexpr std::int32_t kExpiryMonth = 7;
+// could take effect: Bulletin C 71 rules out the end-of-June-2026
+// opportunity, so the next unruled insertion point is the end of
+// December 2026.
+constexpr std::int32_t kExpiryYear = 2027;
+constexpr std::int32_t kExpiryMonth = 1;
 constexpr std::int32_t kExpiryDay = 1;
 
 constexpr const char* kLeapTableVersion =
-    "IERS Bulletin C history, verified through Bulletin C 70 (July 2025): "
-    "TAI-UTC = 37 s, no leap second at the end of December 2025";
+    "IERS Bulletin C history, verified through Bulletin C 71 (January 2026): "
+    "TAI-UTC = 37 s, no leap second at the end of June 2026";
 
 // Gregorian date -> whole days since 2000-01-01, via the integer Julian Day
 // Number algorithm of Fliegel & Van Flandern (Commun. ACM 11(10), 1968)

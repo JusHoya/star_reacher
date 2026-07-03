@@ -122,6 +122,75 @@ def build_srlog(
     )
 
 
+# SREPH v1 magic (docs/formats/sreph_v1.md section 2): ASCII SREPH, then the
+# NUL + CRLF tripwire shared with SRLOG.
+SREPH_MAGIC = b"SREPH\x00\r\n"
+
+
+def build_sreph(
+    segments: list[dict],
+    *,
+    major: int = 1,
+    minor: int = 0,
+) -> bytes:
+    """Serialize segment dicts to SREPH v1 bytes (docs/formats/sreph_v1.md).
+
+    Packed against the format document's byte layout directly, independent
+    of both the repack writer (``data_fetch.write_sreph``) and the C++
+    loader, so a defect in either cannot be masked by a mirrored defect
+    here. Each segment dict carries ``name``, ``target``, ``center``,
+    ``kind``, ``init_tdb_s``, ``intlen_s``, and ``records``: a list of
+    records, each a list of exactly 3 per-component coefficient lists in
+    ascending Chebyshev order.
+    """
+    header_size = 96
+    dir_entry_size = 64
+    directory = bytearray()
+    blocks = bytearray()
+    base = header_size + dir_entry_size * len(segments)
+    for seg in segments:
+        records = seg["records"]
+        n_coeffs = len(records[0][0])
+        block = bytearray()
+        for record in records:
+            if len(record) != 3:
+                raise ValueError("SREPH records carry exactly 3 components")
+            for component in record:
+                block += struct.pack(f"<{n_coeffs}d", *component)
+        directory += struct.pack(
+            "<16sIIIIddIIQ",
+            seg["name"].encode("ascii"),
+            seg["target"],
+            seg["center"],
+            seg["kind"],
+            n_coeffs,
+            seg["init_tdb_s"],
+            seg["intlen_s"],
+            len(records),
+            0,  # reserved, = 0 per the format
+            base + len(blocks),
+        )
+        blocks += block
+    span_start = max(s["init_tdb_s"] for s in segments)
+    span_end = min(
+        s["init_tdb_s"] + len(s["records"]) * s["intlen_s"] for s in segments
+    )
+    # The two 32-byte source-kernel digests are in-band provenance that
+    # readers never interpret; synthesized files carry zero digests.
+    header = struct.pack(
+        "<8sHHIdd32s32s",
+        SREPH_MAGIC,
+        major,
+        minor,
+        len(segments),
+        span_start,
+        span_end,
+        bytes(32),
+        bytes(32),
+    )
+    return header + bytes(directory) + bytes(blocks)
+
+
 def truth_record(
     t_s: float,
     r_m: tuple[float, float, float] = (6778137.0, 0.0, 0.0),
