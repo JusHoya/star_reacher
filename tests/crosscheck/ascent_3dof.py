@@ -38,17 +38,20 @@ Independent modelling choices (all first-principles / published):
   mass flow mdot = throttle*F_vac / (g0*Isp_vac) and a linear ignition spool. The
   pitch program sets the thrust direction as a pitch angle above the horizontal
   of the launch-site local geographic frame taken at liftoff and held fixed in
-  inertial space thereafter (open-loop launch-frame attitude). This is the only
-  reading of the open-loop program that reaches orbit: the instantaneous-local-
-  horizontal reading falls ~40 km short of the perigee gate, so it cannot be the
-  program the vehicle's own capability note says reaches LEO. There is no
-  attitude dynamics - thrust lies exactly along the commanded direction, which is
-  the defining simplification of a 3DOF point-mass ascent and the principal
-  physical difference from the 6DOF (whose body attitude tracks the command
-  through finite-authority TVC and rigid-body rotation).
-- Sequencing: propellant depletes by the summed mdot; a spent stage's dry mass
-  plus its propellant residual is dropped at the sequenced separation time; the
-  fairing is dropped at its geodetic-altitude trigger.
+  inertial space thereafter (open-loop launch-frame attitude). The 6DOF
+  prescribes attitude the same way in this ascent -- in pitch_program mode it
+  sets the attitude directly to the commanded pitch direction in that same frozen
+  launch frame, with no attitude controller, so the body axis (its thrust line)
+  equals the command exactly and this oracle's thrust direction matches it. This
+  frozen-frame reading is also the only one that reaches orbit: the
+  instantaneous-local-horizontal reading falls ~40 km short of the perigee gate,
+  so it cannot be the program the vehicle's capability note says reaches LEO.
+- Sequencing: propellant depletes by the summed mdot; stage thrust is cut
+  instantly at the commanded MECO time (the 6DOF instead tails thrust off over
+  the ~1 s engine spool time at cutoff, the principal benign difference between
+  the two point-mass codes; see the manifest); a spent stage's dry mass plus its
+  propellant residual is dropped at the sequenced separation time; the fairing is
+  dropped at its geodetic-altitude trigger.
 
 The public entry point is :func:`run_ascent`, returning an :class:`AscentResult`.
 """

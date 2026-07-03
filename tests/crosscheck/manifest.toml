@@ -35,24 +35,43 @@ Both trajectories are interpolated to the same exact osculating perigee of
 exact by construction and apogee reflects only the true insertion-energy
 difference.
 
-Insertion target. The mission inserts into an ECCENTRIC 180 x 3444 km orbit, not
-a near-circular LEO. This is deliberate and follows from a diagnosis of the
-residual 3DOF-vs-6DOF disagreement. The atmospheric phase (to MECO, t <= 121 s)
-reproduces the 6DOF to < 0.1 km in altitude and matched specific energy, so the
-independent drag-only aerodynamics is faithful and is NOT the source of the
-disagreement. The disagreement accumulates entirely in the exo-atmospheric
-stage-2 phase, where the 6DOF's body axis (its thrust line) sits ~3 deg above
-the commanded pitch (attitude-control lag of a falling pitch command on the
-statically-unstable, TVC-stabilized airframe), while a point-mass oracle flies
-the command exactly. That ~3 deg is a genuine 3DOF-vs-6DOF attitude-dynamics
-difference no point-mass model can carry; it leaves a ~0.3 % semi-major-axis
-(insertion-energy) difference. A near-circular insertion amplifies that 0.3 % by
-2*a/apogee ~ 33x into ~9 % of apogee altitude; an eccentric 180 x 3444 km
-insertion has amplification ~6x, so the same ~0.3 % energy difference maps to
-< 2 % of apogee altitude. The vehicle has the propellant margin for the higher,
-eccentric orbit (Tsiolkovsky on the ~130 kg stage-2 residual of the original
-near-circular profile gives several hundred m/s). Only the mission pitch table
-and apoapsis target change; the vehicle physics is untouched.
+Attitude is prescribed open-loop in this ascent. In pitch_program mode the 6DOF
+sets the vehicle attitude directly to the commanded pitch direction in the frozen
+launch-site frame (up/east/north at liftoff); there is no attitude controller, no
+TVC loop, and no rigid-body attitude integration, so the body axis (its thrust
+line) equals the command exactly. The independent 3DOF flies that same
+frozen-frame command, so the two thrust directions agree (consistent with the
+stage-1 match below; a real few-degree thrust-direction difference would destroy
+it). The ~3 deg between the body axis and the CURRENT local horizontal that a
+naive readout shows is a frame-geometry effect -- the launch-frame horizontal
+rotates away from the local horizontal by the downrange central angle plus Earth
+rotation over the flight -- not a body-vs-command offset.
+
+Source of the residual gap. The atmospheric phase (to MECO, t <= 121 s)
+reproduces the 6DOF to < 0.1 km in altitude with matched specific energy, so the
+independent drag-only aerodynamics is faithful. Gravity is exact point mass in
+both (the logged gravity magnitude equals mu/r^2 to 1e-6), the integrator is
+converged in both (the 6DOF's rk4 dt = 0.1 s accounts for only ~0.06 % of
+semi-major axis versus a finer step), and stage-2 thrust magnitude and mass agree
+to 0.01 kN and 0.3 kg. The residual ~0.3 % semi-major-axis (insertion-energy)
+difference is the engine-cutoff transient: the 6DOF tails stage-1 thrust off over
+the ~1 s engine spool time at MECO (its logged thrust is full 234 kN at t = 121.0
+and zero at t = 122.0), delivering extra impulse, while this oracle cuts thrust
+instantly at the commanded MECO time. Diagnostic confirmation: adding a 1.0 s
+stage-1 cutoff ramp (the vehicle's declared spool_time_s) to the 3DOF raises its
+apogee from 3370.7 km to 3427.5 km, converging on the 6DOF (+0.33 %); a 0.5 s
+ramp gives 3422.4 km (+0.19 %). The oracle keeps the instant-cutoff point-mass
+model deliberately -- it is a legitimate, simpler independent choice, and the
+resulting difference is small and fully attributed.
+
+Insertion target. That ~0.3 % semi-major-axis difference, harmless in itself, is
+amplified into apogee altitude by 2*a/apogee: ~33x for a near-circular insertion
+(~9 % of apogee), but only ~6x for an eccentric 180 x 3444 km insertion, so the
+same ~0.3 % energy difference maps to < 2 % of apogee altitude. The mission
+therefore inserts into that eccentric orbit rather than a near-circular LEO. The
+vehicle has the propellant margin (Tsiolkovsky on the ~130 kg stage-2 residual of
+the original near-circular profile gives several hundred m/s). Only the mission
+pitch table and apoapsis target change; the vehicle physics is untouched.
 
 Measured agreement (3DOF at dt = 0.02 s vs the 6DOF black box, both at exact
 perigee 180.000 km): apogee altitude -1.33 % (3370.7 vs 3416.1 km), perigee
