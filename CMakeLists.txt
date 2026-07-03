@@ -111,6 +111,7 @@ add_library(star_core STATIC
   cpp/src/models/environment.cpp
   cpp/src/models/gravity.cpp
   cpp/src/models/massprops.cpp
+  cpp/src/models/propulsion.cpp
   cpp/src/models/srp.cpp
   cpp/src/models/thirdbody.cpp
   cpp/src/models/twobody.cpp
@@ -158,6 +159,7 @@ if(STAR_BUILD_TESTING)
     cpp/tests/test_frames.cpp
     cpp/tests/test_gravity.cpp
     cpp/tests/test_massprops.cpp
+    cpp/tests/test_propulsion.cpp
     cpp/tests/test_rng.cpp
     cpp/tests/test_rotation.cpp
     cpp/tests/test_srlog.cpp
