@@ -45,3 +45,8 @@ label = "ch:rotations"
 module = "cpp/src/frames.cpp"
 chapter = "docs/mathlib/chapters/frames.tex"
 label = "ch:frames"
+
+[[chapter]]
+module = "cpp/src/models/gravity.cpp"
+chapter = "docs/mathlib/chapters/gravity.tex"
+label = "ch:gravity"

@@ -114,13 +114,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_data = sub.add_parser(
         "data",
-        help="manage fetched datasets (Phase 2: 'fetch de440s')",
+        help="manage fetched datasets (de440s ephemeris, FR-5 gravity fields)",
         description=(
-            "Dataset management (D-8). 'star data fetch de440s' downloads the JPL "
-            "DE440s SPK and the DE440 lunar principal-axis PCK with SHA-256 "
-            "verification and repacks the 2020-2060 Chebyshev segments into "
-            "data/de440s_2020_2060.sreph for the C++ core. Idempotent: with the "
-            "files already present it verifies checksums instead of re-downloading."
+            "Dataset management (D-8, FR-5). 'star data fetch de440s' downloads "
+            "the JPL DE440s SPK and the DE440 lunar principal-axis PCK with "
+            "SHA-256 verification and repacks the 2020-2060 Chebyshev segments "
+            "into data/de440s_2020_2060.sreph for the C++ core. 'star data fetch "
+            "egm2008 | grgm1200a | mro120f' downloads the published Earth, Moon, "
+            "or Mars spherical-harmonic coefficient file with SHA-256 "
+            "verification and repacks it (truncated to the FR-5 degree: 70x70, "
+            "120x120, 80x80) into a data/<dataset>_n<degree>.srgrav binary for "
+            "the C++ core. All fetches are idempotent: with the files already "
+            "present they verify checksums instead of re-downloading."
         ),
     )
     data_sub = p_data.add_subparsers(dest="data_command", required=True, metavar="{fetch}")
@@ -130,8 +135,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_fetch.add_argument(
         "dataset",
-        choices=["de440s"],
-        help="dataset to fetch (Phase 2: de440s only)",
+        choices=["de440s", "egm2008", "grgm1200a", "mro120f"],
+        help="dataset to fetch",
     )
     p_fetch.add_argument(
         "--data-dir",

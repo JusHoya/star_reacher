@@ -100,3 +100,21 @@ this policy.
   `frames_mars_iau_golden`, and `frames_series_transcription` (and by the
   Python binding tests). See `frames/manifest.toml` for provenance and
   tolerances.
+
+## Phase 3 contents
+
+- `gravity/` — FR-5 spherical-harmonic gravity golden set: committed
+  coefficient excerpts of Earth EGM2008 (20×20; also serves the 8×8
+  cross-tool case by runtime truncation), Moon GRGM1200A (50×50), and Mars
+  MRO120F (20×20), each in a full-precision CSV form and a binary SRGRAV v1
+  form (the committed-binary exception documented above, marked `binary` in
+  `.gitattributes`), plus independently synthesized pyshtools point
+  accelerations at the 20 Phase 3 exit-criterion-1 states. Consumed by the
+  doctest cases `GRAV-XTOOL-20`, `GRAV-J2-SECULAR`,
+  `gravity_pointmass_tier`, `gravity_j2_tier_closed_form`,
+  `gravity_pole_regularity`, `gravity_truncation_consistency`,
+  `gravity_srgrav_error_paths`, and by
+  `tests/python/test_gravity_data.py`. See `gravity/manifest.toml` for
+  provenance and tolerances; the manifest doubles as the committed fetch
+  record (source URLs, SHA-256 pins, and full-degree repack hashes) for the
+  git-ignored `data/` gravity files.
