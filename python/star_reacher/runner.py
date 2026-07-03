@@ -43,6 +43,159 @@ class RunResult:
     summary: dict
 
 
+def _flatten_inertia(m) -> list:
+    """Row-major flatten of a 3x3 inertia list (the core carries 9 doubles)."""
+    return [float(m[i][j]) for i in range(3) for j in range(3)]
+
+
+def _read_aero_csv(path):
+    """Parse a validated Mach-table CSV into parallel column lists.
+
+    The FR-9 CSV structure (header ``mach,ca,cnalpha_per_rad,xcp_m``, ``#``
+    comments, strictly increasing Mach) is already checked by the vehicle
+    validator; this reads the columns the core aero model needs.
+    """
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    content = [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
+    mach, ca, cnalpha, xcp = [], [], [], []
+    for ln in content[1:]:  # content[0] is the validated header row
+        parts = [c.strip() for c in ln.split(",")]
+        mach.append(float(parts[0]))
+        ca.append(float(parts[1]))
+        cnalpha.append(float(parts[2]))
+        xcp.append(float(parts[3]))
+    return mach, ca, cnalpha, xcp
+
+
+def _build_vehicle_config(core, vres: dict):
+    """Translate a resolved vehicle dict into the bound VehicleConfig (D-2)."""
+    vc = core.VehicleConfig()
+    stages = []
+    for st in vres["stage"]:
+        sc = core.StageCfg()
+        sc.name = st["name"]
+        sc.dry_mass_kg = float(st["dry_mass_kg"])
+        sc.dry_cg_m = tuple(float(x) for x in st["dry_cg_m"])
+        sc.dry_inertia_kgm2 = _flatten_inertia(st["dry_inertia_kgm2"])
+        tank_names = [t["name"] for t in st.get("tank", [])]
+        tanks = []
+        for t in st.get("tank", []):
+            tc = core.TankCfg()
+            tc.radius_m = float(t["radius_m"])
+            tc.length_m = float(t["length_m"])
+            tc.position_m = tuple(float(x) for x in t["position_m"])
+            tc.propellant_mass_kg = float(t["propellant_mass_kg"])
+            tc.density_kgpm3 = float(t["density_kgpm3"])
+            tanks.append(tc)
+        sc.tanks = tanks
+        engines = []
+        for e in st.get("engine", []):
+            ec = core.EngineCfg()
+            ec.name = e["name"]
+            ec.feeds_tank_index = (
+                tank_names.index(e["feeds_tank"]) if e["feeds_tank"] in tank_names else -1
+            )
+            ec.thrust_vac_N = float(e["thrust_vac_N"])
+            ec.isp_vac_s = float(e["isp_vac_s"])
+            ec.exit_area_m2 = float(e["exit_area_m2"])
+            ec.position_m = tuple(float(x) for x in e["position_m"])
+            ec.axis = tuple(float(x) for x in e["axis"])
+            ec.gimbal_max_deg = float(e["gimbal_max_deg"])
+            ec.gimbal_rate_dps = float(e["gimbal_rate_dps"])
+            ec.throttle_min = float(e["throttle_min"])
+            ec.throttle_max = float(e["throttle_max"])
+            ec.spool_time_s = float(e["spool_time_s"])
+            ec.ignitions = int(e["ignitions"])
+            engines.append(ec)
+        sc.engines = engines
+        rcs = []
+        for r in st.get("rcs", []):
+            rc = core.RcsCfg()
+            rc.name = r["name"]
+            rc.thrust_N = float(r["thrust_N"])
+            rc.min_impulse_bit_Ns = float(r["min_impulse_bit_Ns"])
+            rc.thruster_positions_m = [tuple(float(x) for x in p) for p in r["thruster_positions_m"]]
+            rc.thruster_directions = [tuple(float(x) for x in d) for d in r["thruster_directions"]]
+            rcs.append(rc)
+        sc.rcs = rcs
+        wheels = []
+        for w in st.get("wheel", []):
+            wc = core.WheelCfg()
+            wc.name = w["name"]
+            wc.axis = tuple(float(x) for x in w["axis"])
+            wc.max_torque_Nm = float(w["max_torque_Nm"])
+            wc.max_momentum_Nms = float(w["max_momentum_Nms"])
+            wheels.append(wc)
+        sc.wheels = wheels
+        jett = []
+        for j in st.get("jettison", []):
+            jc = core.JettisonCfg()
+            jc.name = j["name"]
+            jc.mass_kg = float(j["mass_kg"])
+            jc.cg_m = tuple(float(x) for x in j["cg_m"])
+            jc.inertia_kgm2 = _flatten_inertia(j["inertia_kgm2"])
+            jett.append(jc)
+        sc.jettison = jett
+        stages.append(sc)
+    vc.stages = stages
+    aero = []
+    for a in vres.get("aero", []):
+        ac = core.AeroCfg()
+        ac.config = a["config"]
+        ac.ref_area_m2 = float(a["ref_area_m2"])
+        ac.ref_diameter_m = float(a["ref_diameter_m"])
+        ac.cmq_per_rad = float(a.get("cmq_per_rad", 0.0))
+        mach, ca, cnalpha, xcp = _read_aero_csv(a["mach_table_csv"])
+        ac.mach = mach
+        ac.ca = ca
+        ac.cnalpha_per_rad = cnalpha
+        ac.xcp_m = xcp
+        aero.append(ac)
+    vc.aero = aero
+    return vc
+
+
+def _build_sequence(core, seq: list):
+    """Translate the resolved [[sequence]] entries into bound SequenceEntry."""
+    out = []
+    for e in seq:
+        se = core.SequenceEntry()
+        se.name = e["name"]
+        se.trigger = e["trigger"]
+        se.action = e["action"]
+        if e["trigger"] == "elapsed":
+            se.t_s = float(e["t_s"])
+        elif e["trigger"] == "after_event":
+            se.event = e["event"]
+            se.offset_s = float(e["offset_s"])
+        elif e["trigger"] == "condition":
+            se.condition = e["condition"]
+            if "altitude_m" in e:
+                se.altitude_m = float(e["altitude_m"])
+            if "perigee_alt_m" in e:
+                se.perigee_alt_m = float(e["perigee_alt_m"])
+            if "body" in e:
+                se.body = e["body"]
+        if "stage" in e:
+            se.stage = e["stage"]
+        if "engine" in e:
+            se.engine = e["engine"]
+        if "item" in e:
+            se.item = e["item"]
+        if "azimuth_deg" in e:
+            se.azimuth_deg = float(e["azimuth_deg"])
+        if "pitch_t_s" in e:
+            se.pitch_t_s = [float(x) for x in e["pitch_t_s"]]
+        if "pitch_deg" in e:
+            se.pitch_deg = [float(x) for x in e["pitch_deg"]]
+        if "frame" in e:
+            se.frame = e["frame"]
+        if "omega_dps" in e:
+            se.omega_dps = tuple(float(x) for x in e["omega_dps"])
+        out.append(se)
+    return out
+
+
 def run_mission(mission_path, outdir=None, force=False, command_line=None, strict=False) -> RunResult:
     """Validate, resolve, hash, propagate, and write the run artifacts.
 
@@ -58,21 +211,16 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None, stric
     if errors:
         raise MissionValidationError(errors)
 
-    # The Phase 4 vehicle/sequence surface validates fully (above, before any
-    # core call), but its 6DOF propagation path lands with the Phase 4 core
-    # integration; running it against the point-mass core would silently
-    # ignore the vehicle, which the no-silent-degradation rule forbids.
-    if (
+    # Path selection. A mission with a vehicle file, an event [[sequence]], or a
+    # geodetic launch state takes the Phase 4 6DOF path (run_vehicle); a mission
+    # that uses any Phase 3 environment surface takes the composed-environment
+    # path (run_env); anything else takes the byte-frozen Phase 1 two-body path
+    # (run), whose output is pinned by the committed determinism record.
+    is_vehicle = (
         "vehicle" in resolved
         or "sequence" in resolved
         or "geodetic" in resolved["initial_state"]
-    ):
-        raise RunnerError(
-            f"{mission_path}: the mission validated cleanly, but it uses the "
-            f"Phase 4 vehicle/sequence surface (vehicle file, [[sequence]], or "
-            f"geodetic launch state), whose 6DOF propagation path is not "
-            f"available in this build"
-        )
+    )
 
     config_bytes = canonical_bytes(resolved)
     config_sha = hashlib.sha256(config_bytes).hexdigest()
@@ -90,37 +238,39 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None, stric
 
     env = resolved["environment"]
     integ = resolved["integrator"]
-
     initial = resolved["initial_state"]
-    if "cartesian" in initial:
-        r0 = tuple(initial["cartesian"]["r_m"])
-        v0 = tuple(initial["cartesian"]["v_mps"])
-    else:
-        # gm comes from the core so the gravitational parameter has exactly
-        # one home (contract section 3); the conversion is pure NumPy.
-        r_vec, v_vec = keplerian_to_cartesian(
-            initial["keplerian"], core.gm(env["central_body"])
-        )
-        r0 = tuple(float(x) for x in r_vec)
-        v0 = tuple(float(x) for x in v_vec)
 
     cfg = core.RunConfig()
     cfg.epoch_utc = resolved["mission"]["epoch_utc"]
     cfg.duration_s = resolved["mission"]["duration_s"]
     cfg.integrator = integ["type"]
     cfg.central_body = env["central_body"]
-    cfg.r0_m = r0
-    cfg.v0_mps = v0
     cfg.mass_kg = resolved["spacecraft"]["mass_kg"]
     cfg.master_seed = resolved["run"]["seed"]
     cfg.truth_rate_hz = resolved["logging"]["truth_rate_hz"]
     cfg.config_sha256 = config_sha
     cfg.oracle = False
 
-    # Path selection: a mission that uses none of the Phase 3 surface takes
-    # the byte-frozen Phase 1 two-body path, whose output is pinned by the
-    # committed determinism record (tests/golden/determinism/
-    # cross_platform.toml); anything else takes the composed-environment path.
+    if "cartesian" in initial:
+        cfg.r0_m = tuple(float(x) for x in initial["cartesian"]["r_m"])
+        cfg.v0_mps = tuple(float(x) for x in initial["cartesian"]["v_mps"])
+        cfg.initial_form = "cartesian"
+    elif "keplerian" in initial:
+        # gm comes from the core so the gravitational parameter has exactly
+        # one home (contract section 3); the conversion is pure NumPy.
+        r_vec, v_vec = keplerian_to_cartesian(
+            initial["keplerian"], core.gm(env["central_body"])
+        )
+        cfg.r0_m = tuple(float(x) for x in r_vec)
+        cfg.v0_mps = tuple(float(x) for x in v_vec)
+        cfg.initial_form = "keplerian"
+    else:  # geodetic launch (FR-14): the core builds the pad state
+        geo = initial["geodetic"]
+        cfg.initial_form = "geodetic"
+        cfg.launch_lat_deg = float(geo["lat_deg"])
+        cfg.launch_lon_deg = float(geo["lon_deg"])
+        cfg.launch_alt_m = float(geo["alt_m"])
+
     env_features = ("gravity", "third_bodies", "srp", "drag", "ephemeris")
     new_path = (
         integ["type"] != "rk4"
@@ -128,10 +278,10 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None, stric
         or any(key in env for key in env_features)
     )
 
-    if new_path:
+    if is_vehicle or new_path:
         # The core never parses text (D-2): the ISO epoch is converted here,
-        # through the bound leap-table conversion, into the two-part TAI
-        # epoch the environment model propagates from.
+        # through the bound leap-table conversion, into the two-part TAI epoch
+        # the environment/vehicle models propagate from.
         moment = datetime.fromisoformat(
             resolved["mission"]["epoch_utc"]
         ).astimezone(timezone.utc)
@@ -172,13 +322,50 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None, stric
     else:
         cfg.dt_s = integ["dt_s"]
 
+    resolved_vehicle_toml = None
+    if is_vehicle:
+        # Re-validate the vehicle file to recover its resolved nested dict (the
+        # mission resolved config carries only the vehicle path + hash). The
+        # vehicle SHA-256 is already folded into config_sha256, so the vehicle
+        # is covered without double-hashing.
+        from star_reacher.vehicle import canonical_vehicle_toml, validate_vehicle_file
+
+        vres, verrs, _vwarns = validate_vehicle_file(
+            resolved["vehicle"]["path"], strict=strict
+        )
+        if vres is None:
+            # Unreachable in practice: mission validation already validated the
+            # vehicle. Surfaced as a runtime failure rather than silently.
+            raise RunnerError(
+                f"{resolved['vehicle']['path']}: vehicle re-validation failed: "
+                + "; ".join(verrs)
+            )
+        cfg.vehicle = _build_vehicle_config(core, vres)
+        cfg.sequence = _build_sequence(core, resolved.get("sequence", []))
+        # Vehicle channel groups at 1 Hz by default (FR-16), so depletion,
+        # staging jumps, and the per-source force breakdown are inspectable; a
+        # mission [logging] entry can lower a rate or set 0 to disable a group
+        # (e.g. a multi-day coast that would otherwise write a very large log).
+        log_cfg = resolved["logging"]
+        cfg.forces_rate_hz = log_cfg.get("forces_rate_hz", 1)
+        cfg.mass_rate_hz = log_cfg.get("mass_rate_hz", 1)
+        cfg.env_rate_hz = log_cfg.get("env_rate_hz", 1)
+        resolved_vehicle_toml = canonical_vehicle_toml(vres)
+
     out.mkdir(parents=True, exist_ok=True)
     # Exactly the hashed bytes, so the file re-hashes to config_sha256.
     (out / "resolved_config.json").write_bytes(config_bytes)
+    if resolved_vehicle_toml is not None:
+        (out / "resolved_vehicle.toml").write_text(
+            resolved_vehicle_toml, encoding="utf-8"
+        )
 
-    summary = core.run_env(cfg, str(srlog_path)) if new_path else core.run(
-        cfg, str(srlog_path)
-    )
+    if is_vehicle:
+        summary = core.run_vehicle(cfg, str(srlog_path))
+    elif new_path:
+        summary = core.run_env(cfg, str(srlog_path))
+    else:
+        summary = core.run(cfg, str(srlog_path))
 
     srlog_sha = hashlib.sha256(srlog_path.read_bytes()).hexdigest()
 

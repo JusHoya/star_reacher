@@ -4,9 +4,9 @@
 Includes the subprocess-level proof of Phase 4 exit criterion 1's "nonzero
 exit" clause: deleting a required key from a starter vehicle makes `star run`
 of a mission referencing it exit 2, naming that exact key in the DX-2 format.
-Subprocess fan-out is deliberately small and serial. No compiled core is
-required: the runner refuses the Phase 4 propagation surface before the core
-import, so the guard tests behave identically with and without the core.
+Subprocess fan-out is deliberately small and serial. The validation tests
+need no compiled core; the two CLI propagation tests exit 0 with the compiled
+core (run_vehicle) and exit 1 with the core-missing hint without it.
 """
 
 import os
@@ -603,18 +603,29 @@ def test_cli_mutated_vehicle_exits_2_naming_the_exact_key(tmp_path):
     assert "No default applied; run aborted." in proc.stderr
 
 
-def test_cli_valid_vehicle_mission_refuses_propagation_with_exit_1(tmp_path):
-    # A valid Phase 4 mission validates, then the runner refuses to feed it
-    # to the point-mass core (exit 1, runtime tier). Identical with and
-    # without the compiled core: the refusal precedes the core import.
+def test_cli_valid_vehicle_mission_propagates_with_exit_0(tmp_path):
+    # A valid Phase 4 vehicle mission now propagates through run_vehicle (the
+    # Phase 4 6DOF path): the default mission is a coasting smallsat in LEO
+    # (vehicle reference, cartesian initial state, no sequence). Requires the
+    # compiled core; on a core-less checkout the CLI exits 1 with the
+    # actionable core-missing hint instead.
     mission = tmp_path / "mission.toml"
     mission.write_text(_mission_text(), encoding="utf-8")
-    proc = _run_cli("run", str(mission), "-o", str(tmp_path / "out"))
-    assert proc.returncode == 1
-    assert "validated cleanly" in proc.stderr
-    assert "not available in this build" in proc.stderr
-    # Nothing was written: the refusal comes before any output.
-    assert not (tmp_path / "out").exists()
+    out = tmp_path / "out"
+    proc = _run_cli("run", str(mission), "-o", str(out), cwd=str(REPO_ROOT))
+    try:
+        from star_reacher import _core  # noqa: F401
+
+        have_core = True
+    except ImportError:
+        have_core = False
+    if have_core:
+        assert proc.returncode == 0, proc.stderr
+        assert (out / "run.srlog").is_file()
+        assert (out / "resolved_vehicle.toml").is_file()
+    else:
+        assert proc.returncode == 1
+        assert "_core is not built" in proc.stderr
 
 
 def test_cli_strict_promotes_vehicle_warnings_to_exit_2(tmp_path):
@@ -636,7 +647,13 @@ def test_cli_strict_promotes_vehicle_warnings_to_exit_2(tmp_path):
 
     advisory = _run_cli("run", str(mission), "-o", str(tmp_path / "out"), cwd=str(REPO_ROOT))
     # Without --strict the warning is advisory (stderr) and the mission is
-    # valid; the run then stops at the Phase 4 propagation refusal (exit 1).
-    assert advisory.returncode == 1
+    # valid, so it propagates through run_vehicle (exit 0 with the compiled
+    # core; exit 1 with the core-missing hint on a core-less checkout).
+    try:
+        from star_reacher import _core  # noqa: F401
+
+        have_core = True
+    except ImportError:
+        have_core = False
+    assert advisory.returncode == (0 if have_core else 1)
     assert "thrust-to-weight" in advisory.stderr
-    assert "not available in this build" in advisory.stderr

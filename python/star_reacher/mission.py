@@ -75,6 +75,9 @@ Actions:
   (pitch above the local horizontal, [-90, 90], linearly interpolated,
   held at the end values outside the table). Geodetic missions only.
 - ``attitude_hold`` -- hold the attitude at the event inertially fixed.
+- ``prograde_hold`` -- velocity-pointing open-loop steering: body +X tracks
+  the current inertial velocity each control cycle, so a finite burn stays
+  prograde (used by the trans-lunar injection burn).
 - ``rate_command`` -- open-loop rate: ``frame`` ("gcrf" | "body"),
   ``omega_dps`` (vec3).
 - ``terminate`` -- end the run early (duration_s stays the hard ceiling).
@@ -144,6 +147,7 @@ _ACTIONS = {
     "jettison": ("stage", "item"),
     "pitch_program": ("azimuth_deg", "pitch_t_s", "pitch_deg"),
     "attitude_hold": (),
+    "prograde_hold": (),
     "rate_command": ("frame", "omega_dps"),
     "terminate": (),
 }
@@ -1256,8 +1260,25 @@ def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dic
 
     mission = _get_table(doc, "mission", errs, required=True, hint="must define name, epoch_utc, duration_s")
     name = epoch = duration_s = None
+    # Optional acceptance targets (Phase 4). Present only in vehicle missions
+    # whose exit-criterion gate compares the achieved orbit against a
+    # mission-file target; pre-Phase-4 missions omit them and resolve
+    # byte-identically (the config-SHA reproducibility anchor).
+    target_apoapsis_alt_m = None
+    target_perilune_alt_m = None
     if mission is not None:
-        _reject_unknown(mission, "mission", {"name", "epoch_utc", "duration_s"}, errs)
+        _reject_unknown(
+            mission,
+            "mission",
+            {
+                "name",
+                "epoch_utc",
+                "duration_s",
+                "target_apoapsis_alt_m",
+                "target_perilune_alt_m",
+            },
+            errs,
+        )
         name = _req_str(mission, "mission", "name", errs, hint='non-empty string, e.g. "twobody-leo"')
         if name is not None and not name.strip():
             errs.add("mission", "name", "must be a non-empty string", hint='e.g. "twobody-leo"')
@@ -1280,6 +1301,26 @@ def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dic
         duration_s = _req_num(
             mission, "mission", "duration_s", errs, units="s", typical="60 to 604800", positive=True
         )
+        if "target_apoapsis_alt_m" in mission:
+            target_apoapsis_alt_m = _req_num(
+                mission,
+                "mission",
+                "target_apoapsis_alt_m",
+                errs,
+                units="m",
+                typical="1.5e5 to 4e5 (ascent insertion apoapsis altitude)",
+                positive=True,
+            )
+        if "target_perilune_alt_m" in mission:
+            target_perilune_alt_m = _req_num(
+                mission,
+                "mission",
+                "target_perilune_alt_m",
+                errs,
+                units="m",
+                typical="1e5 to 5e6 (trans-lunar arrival perilune altitude)",
+                positive=True,
+            )
 
     run = _get_table(doc, "run", errs, required=True, hint="must define seed")
     seed = None
@@ -1536,9 +1577,25 @@ def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dic
             )
 
     truth_rate_hz = _DEFAULT_TRUTH_RATE_HZ
-    logging_tbl = _get_table(doc, "logging", errs, required=False, hint="optional table with truth_rate_hz")
+    # v1.1 vehicle channel-group rates (FR-16): a value of 0 disables the group,
+    # any nonzero value must divide truth_rate_hz (the log decimates from the
+    # truth grid). Absent for pre-Phase-4 missions, so those resolve unchanged.
+    group_rates: dict[str, int] = {}
+    logging_tbl = _get_table(
+        doc,
+        "logging",
+        errs,
+        required=False,
+        hint="optional table with truth_rate_hz and the vehicle-group rates "
+        "forces_rate_hz, mass_rate_hz, env_rate_hz",
+    )
     if logging_tbl is not None:
-        _reject_unknown(logging_tbl, "logging", {"truth_rate_hz"}, errs)
+        _reject_unknown(
+            logging_tbl,
+            "logging",
+            {"truth_rate_hz", "forces_rate_hz", "mass_rate_hz", "env_rate_hz"},
+            errs,
+        )
         if "truth_rate_hz" in logging_tbl:
             value = logging_tbl["truth_rate_hz"]
             if not _is_int(value) or value < 1:
@@ -1552,6 +1609,30 @@ def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dic
                 truth_rate_hz = None
             else:
                 truth_rate_hz = value
+        for gkey in ("forces_rate_hz", "mass_rate_hz", "env_rate_hz"):
+            if gkey not in logging_tbl:
+                continue
+            gval = logging_tbl[gkey]
+            if not _is_int(gval) or gval < 0:
+                errs.add(
+                    "logging",
+                    gkey,
+                    f"expected an integer >= 0 (0 disables the group), got {gval!r}",
+                    units="Hz",
+                    typical="0 to truth_rate_hz",
+                )
+            elif gval > 0 and truth_rate_hz is not None and truth_rate_hz % gval != 0:
+                errs.add(
+                    "logging",
+                    gkey,
+                    f"must be 0 or an exact divisor of truth_rate_hz "
+                    f"({truth_rate_hz}), got {gval!r}; vehicle groups decimate "
+                    f"from the truth grid",
+                    units="Hz",
+                    typical="0 to truth_rate_hz",
+                )
+            else:
+                group_rates[gkey] = gval
 
     # Pass 4: cross-field checks, run only on fields that survived passes 2-3.
     if duration_s is not None and dt_s is not None:
@@ -1617,15 +1698,20 @@ def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dic
         spacecraft_resolved["cd_a_over_m_m2pkg"] = cd_a_over_m
     if cr_a_over_m is not None:
         spacecraft_resolved["cr_a_over_m_m2pkg"] = cr_a_over_m
+    mission_resolved = {"name": name, "epoch_utc": epoch, "duration_s": duration_s}
+    if target_apoapsis_alt_m is not None:
+        mission_resolved["target_apoapsis_alt_m"] = target_apoapsis_alt_m
+    if target_perilune_alt_m is not None:
+        mission_resolved["target_perilune_alt_m"] = target_perilune_alt_m
     resolved = {
         "schema_version": SCHEMA_VERSION,
-        "mission": {"name": name, "epoch_utc": epoch, "duration_s": duration_s},
+        "mission": mission_resolved,
         "run": {"seed": seed},
         "integrator": integrator_resolved,
         "spacecraft": spacecraft_resolved,
         "initial_state": initial_state_resolved,
         "environment": environment_resolved,
-        "logging": {"truth_rate_hz": truth_rate_hz},
+        "logging": {"truth_rate_hz": truth_rate_hz, **group_rates},
     }
     # Phase 4 keys enter the resolved config only when the mission uses them,
     # so pre-Phase-4 missions keep their byte-identical resolution and hash.
