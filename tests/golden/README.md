@@ -118,3 +118,19 @@ this policy.
   provenance and tolerances; the manifest doubles as the committed fetch
   record (source URLs, SHA-256 pins, and full-degree repack hashes) for the
   git-ignored `data/` gravity files.
+- `thirdbody/` — Battin f(q) third-body reference accelerations (FR-6,
+  Phase 3 exit criterion 7): 10 committed states with the naive
+  two-vector-difference acceleration evaluated in extended precision
+  (mpmath, 60 digits), including the flagged near-alignment state where the
+  naive double-precision evaluation loses ≥ 6 significant digits; consumed
+  by the doctest cases `thirdbody_battin_extended_reference_golden` and
+  `thirdbody_naive_cancellation_digit_loss`. See `thirdbody/manifest.toml`
+  for provenance and tolerances.
+- `srp/` — cannonball SRP accelerations and conical-shadow illumination
+  fractions (FR-7): every branch of the apparent-disk overlap model (full
+  sun, umbra, three penumbra depths, annular, off-axis annular, partial
+  lunar occultation, Moon-occulter umbra) plus SRP acceleration states
+  with the exact-zero umbra case and a Mars-distance inverse-square check,
+  all mpmath-generated (60 digits); consumed by the doctest cases
+  `srp_shadow_fraction_golden` and `srp_cannonball_accel_golden`. See
+  `srp/manifest.toml` for provenance and tolerances.

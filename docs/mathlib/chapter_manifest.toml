@@ -50,3 +50,13 @@ label = "ch:frames"
 module = "cpp/src/models/gravity.cpp"
 chapter = "docs/mathlib/chapters/gravity.tex"
 label = "ch:gravity"
+
+[[chapter]]
+module = "cpp/src/models/thirdbody.cpp"
+chapter = "docs/mathlib/chapters/thirdbody.tex"
+label = "ch:thirdbody"
+
+[[chapter]]
+module = "cpp/src/models/srp.cpp"
+chapter = "docs/mathlib/chapters/srp.tex"
+label = "ch:srp"

@@ -1,0 +1,40 @@
+# Provenance manifest for the third-body golden vectors in this directory
+# (FR-22 layer 1: uncited golden = lint failure; schema documented in
+# tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "thirdbody"
+date = "2026-07-02"
+generation = """
+states.toml is written by tests/golden/thirdbody/generate.py (mpmath 1.3.0,
+CPython 3.14.0, 60 significant decimal digits). Each committed reference
+acceleration is the naive two-vector difference
+a = gm*((s-r)/|s-r|^3 - s/|s|^3) evaluated in extended precision from the
+exact binary64 inputs and rounded once to binary64 - the
+implementation-independent reference of Phase 3 exit criterion 7. The
+Battin f(q) formulation under test is algebraically identical to this
+formula (the identity is derived in math-library chapter ch:thirdbody), so
+agreement checks only floating-point behavior, which is the property the
+criterion gates. At generation time two double-precision mirrors are
+evaluated against the pre-rounding reference and their observed errors
+recorded per case: the Battin mirror (statement-for-statement the C++
+implementation; observed max 3.420e-16 over the 10 states, gate 1e-12) and
+the naive mirror (statement-for-statement the doctest's digit-loss
+evaluation; observed 1.373e-10 at the flagged near-alignment state, i.e.
+6.14 of binary64's ~15.95 significant decimal digits lost, gate 1e-10).
+Both mirrors use only IEEE-754 basic operations (+, -, *, /, sqrt), so
+under the project's strict floating-point flags (D-10) the recorded values
+are bit-portable across compilers and architectures. Regenerating is
+`python tests/golden/thirdbody/generate.py`; output is byte-deterministic
+and does not re-run the case-10 search (see states.toml entry below).
+"""
+
+[[file]]
+name = "states.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the naive two-vector difference from the exact binary64 inputs, rounded once to binary64; double-precision Battin and naive mirrors evaluated for the recorded observed-error fields"
+citation = "Naive differential form and the cancellation-safe f(q) reformulation per Battin, R. H., An Introduction to the Mathematics and Methods of Astrodynamics, Revised Edition, AIAA Education Series (1999), and Vallado, D. A., Fundamentals of Astrodynamics and Applications, 4th ed. (2013), third-body perturbation treatment; derivation reproduced in full in math-library chapter ch:thirdbody"
+generation = "cases 1-9: round-decimal representative geometries for the FR-6 body set (Sun/Moon at LEO and GEO, Venus/Jupiter at LEO, Earth and Sun from low lunar orbit); GM values are round representative magnitudes because the model takes GM from the caller and the test verifies formulation agreement on shared inputs. Case 10 (jupiter_llo_near_align, digit_loss_demo = true): committed output of generate.py --search, a deterministic random search (numpy Generator seeds 20260702 and 42) plus ulp-scale hill climb over low-lunar-orbit positions within 1.7e-3 rad of the Moon-Jupiter line, selecting the state that maximizes the double-precision naive error - i.e. a deliberately rounding-adversarial but geometrically realistic near-alignment state"
+date = "2026-07-02"
+tolerance = "consuming doctest compares the C++ Battin acceleration against a_ref_mps2 at norm-relative 1e-12 per case (Phase 3 exit criterion 7; generation-time Battin mirror max 3.420e-16, so the gate carries ~3.5 orders of margin while a formulation error shows as O(1)); at the digit_loss_demo case the doctest recomputes the naive difference in doubles with the recorded operation order and requires norm-relative error >= 1e-10 vs a_ref_mps2 (>= 6 significant digits lost; observed 1.373e-10). The binary64 rounding of the reference itself contributes <= ~1.2e-16 relative, negligible against both gates."

@@ -1,0 +1,477 @@
+% Chapter — Solar radiation pressure and conical shadow (FR-7). Follows the
+% mandatory FR-29 six-section template: purpose; assumptions and domain of
+% validity; derivation; discretization and implementation; validation
+% evidence; references. The equation labels eq:srp:pressure,
+% eq:srp:cannonball, eq:srp:appgeom, eq:srp:overlap, eq:srp:nu, and
+% eq:srp:boundaries are echoed verbatim in comments in
+% cpp/src/models/srp.cpp; eq:srp:umbracone and eq:srp:penumbracone are
+% echoed in the independent analytic reference of
+% cpp/tests/test_srp.cpp (FR-29 equation-label-to-code traceability);
+% renaming them breaks that trace.
+\chapter{Solar Radiation Pressure and Conical Shadow}
+\label{ch:srp}
+
+\section{Purpose}
+\label{sec:srp:purpose}
+
+This chapter documents the solar-radiation-pressure model (FR-7): the
+attitude-independent cannonball acceleration with ephemeris Sun distance,
+scaled by an illumination fraction $\nu \in [0, 1]$ from a dual-cone
+(umbra/penumbra) conical shadow model that any configured spherical body
+--- including the current central body --- may cast. The shadow function
+is a separately callable, separately testable component: besides scaling
+the SRP force it supplies the signed boundary functions that the
+event-detection framework of Chapter~\ref{ch:events} screens for
+eclipse-entry and -exit events (FR-12). The model is implemented in
+\texttt{cpp/src/models/srp.cpp} with its interface in
+\texttt{cpp/include/star/models/srp.hpp}; Sun and occulter positions come
+from the ephemeris evaluator of Chapter~\ref{ch:ephemeris}, and all body
+radii and the spacecraft ballistic parameter $C_R A / m$ are supplied by
+the caller.
+
+\section{Assumptions and domain of validity}
+\label{sec:srp:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Cannonball spacecraft.} The SRP force is
+    attitude-independent, characterized by the single lumped parameter
+    $C_R A / m$: an effective cross-section $A$, mass $m$, and radiation
+    pressure coefficient $C_R$ that absorbs the absorbed/reflected
+    momentum accounting ($C_R = 1$ for a perfect absorber, up to $2$ for
+    a flat specular reflector facing the Sun; a sphere with diffuse
+    reflectivity $\varepsilon$ has $C_R = 1 + \tfrac{4}{9}\varepsilon$,
+    Montenbruck and Gill~\cite{montenbruck2000}, Sec.~3.4). The N-plate
+    upgrade path of FR-7 replaces this parameterization without touching
+    the shadow model.
+  \item \textbf{Inverse-square flux from the nominal irradiance.} The
+    solar flux is $\Phi(d) = \Phi_{1\,\mathrm{au}} (\mathrm{au}/d)^{2}$
+    with the IAU 2015 Resolution B3 nominal total solar irradiance
+    $\Phi_{1\,\mathrm{au}} = \qty{1361}{\watt\per\metre\squared}$ (Pr{\v s}a
+    et al.~\cite{prsa2016}). The measured solar-cycle TSI variation is
+    $\sim \qty{1.6}{\watt\per\metre\squared}$ peak-to-peak
+    ($\sim 0.12\%$) about a minimum of
+    $\qty{1360.8 \pm 0.5}{\watt\per\metre\squared}$ (Kopp and
+    Lean~\cite{kopp2011}); using the constant nominal bounds the SRP
+    force error at the same relative level, far below the uncertainty of
+    any configured $C_R$.
+  \item \textbf{Geometric Sun position.} As in
+    Chapter~\ref{ch:thirdbody}, the Sun position is geometric (FR-23
+    light-time policy). Light-time and aberration displace the apparent
+    Sun by $\sim 10^{-4}$ of its distance, a direction error of
+    $\sim \qty{e-4}{\radian}$ and a flux error of $\sim 10^{-4}$
+    relative --- both absorbed by the $C_R$ uncertainty.
+  \item \textbf{Spherical, opaque, airless occulters.} Each occulting
+    body is a sphere of caller-supplied radius. Neglected against the
+    Earth case: oblateness (the $\sim 1/298$ flattening perturbs the
+    shadow-boundary radius by up to $\sim \qty{21}{\kilo\metre}$,
+    shifting LEO crossing times by up to a few seconds depending on
+    crossing geometry) and atmospheric refraction/extinction (which
+    softens the real penumbra by an altitude-dependent amount). These
+    are physical-fidelity bounds of the model, not of its
+    implementation; the Phase~3 criterion gates the implementation
+    against the model's own exact geometry.
+  \item \textbf{Uniform solar disk.} Solar limb darkening is neglected:
+    the penumbra illumination fraction is the uncovered \emph{area}
+    fraction of a uniformly bright disk (the standard model,
+    Montenbruck and Gill~\cite{montenbruck2000}, Sec.~3.4).
+  \item \textbf{Flat-disk overlap in the penumbra interior.} The
+    umbra/penumbra/annular \emph{boundaries} follow from exact sphere
+    tangency (Section~\ref{sec:srp:derivation}); only the partial-phase
+    \emph{interior} value of $\nu$ treats the two apparent disks as
+    planar circles of radii equal to their angular radii. For a LEO
+    spacecraft eclipsed by the Earth the occulter's angular radius
+    ($\sim \qty{1.2}{\radian}$) is large, but the solar disk
+    ($\sim \qty{4.7e-3}{\radian}$) sees the occulter limb as locally
+    straight to $\sim a_{s}/\tan a_{o} \lesssim 0.3\%$; the induced
+    $\nu$ error is below $10^{-2}$ of the penumbra transition, which
+    lasts seconds and carries $\lesssim 10^{-7}\,\mathrm{m/s^2}$ of
+    acceleration --- negligible against assumption 4.
+\end{enumerate}
+
+Domain of validity: spacecraft outside both spheres
+($\norm{\vv{r}_{\odot} - \vv{r}} > R_{\odot}$,
+$\norm{\vv{r}_{o} - \vv{r}} > R_{o}$), any occulter/Sun geometry
+including the annular case ($a_{o} < a_{s}$), occulters at any distance.
+Multiple occulting bodies are composed by the force-assembly layer
+(evaluating $\nu$ per occulter); this chapter defines the single-occulter
+function.
+
+Out-of-domain behavior, matching the code exactly: if the spacecraft is
+inside an occulting sphere, the $\arcsin$ argument is clamped to 1
+($a_{o} = \pi/2$) and the function still returns a well-defined value
+continuous with the exterior; sub-surface states are excluded by
+ground-impact eventing (FR-12), so no throw is warranted in the hot
+loop. If the spacecraft coincides with the Sun's center the direction
+$\hat{\vv{s}}$ is undefined and IEEE NaNs propagate. $\nu$ is exactly
+$1$ in full sunlight and exactly $0$ in total umbra by construction
+(returned as literal constants, not computed expressions).
+
+\section{Derivation}
+\label{sec:srp:derivation}
+
+\subsection{Radiation pressure and the cannonball acceleration}
+
+A photon flux of energy-flux density $\Phi$ carries momentum-flux
+density $\Phi / c$ (each photon of energy $E$ carries momentum $E/c$),
+so a fully absorbing surface normal to the flux experiences pressure
+$P = \Phi / c$. With the inverse-square flux of assumption 2, the
+radiation pressure at heliocentric distance $d$ is
+\begin{equation}
+  P(d) = \frac{\Phi_{1\,\mathrm{au}}}{c}
+         \left( \frac{\mathrm{au}}{d} \right)^{2}
+       = P_{1\,\mathrm{au}} \left( \frac{\mathrm{au}}{d} \right)^{2},
+  \qquad
+  P_{1\,\mathrm{au}} = \frac{\qty{1361}{\watt\per\metre\squared}}
+                            {\qty{299792458}{\metre\per\second}}
+                     \approx \qty{4.5398e-6}{\newton\per\metre\squared},
+  \label{eq:srp:pressure}
+\end{equation}
+with $c$ exact by the SI definition of the metre~\cite{bipm2019} and the
+astronomical unit exact per IAU 2012 Resolution B2~\cite{iau2012b2}. The
+cannonball force is $P C_R A$ directed along the Sun-to-spacecraft unit
+vector, giving the acceleration
+\begin{equation}
+  \boxed{\;
+  \vv{a}_{\mathrm{srp}}
+    = \nu \, P_{1\,\mathrm{au}}
+      \left( \frac{\mathrm{au}}{d} \right)^{2}
+      \frac{C_R A}{m} \, \hat{\vv{s}},
+  \qquad
+  \hat{\vv{s}} = \frac{\vv{r} - \vv{r}_{\odot}}
+                      {\norm{\vv{r} - \vv{r}_{\odot}}},
+  \quad
+  d = \norm{\vv{r} - \vv{r}_{\odot}},
+  \;}
+  \label{eq:srp:cannonball}
+\end{equation}
+where $\vv{r}$ and $\vv{r}_{\odot}$ are the spacecraft and Sun positions
+in a common frame about a common origin and $\nu$ is the illumination
+fraction derived below. \textbf{Direction convention, stated
+explicitly:} $\hat{\vv{s}}$ points \emph{from the Sun to the
+spacecraft} --- the propagation direction of the photons --- so with
+$C_R > 0$ the acceleration pushes the spacecraft away from the Sun. The
+model follows Montenbruck and Gill~\cite{montenbruck2000}, Sec.~3.4.
+
+\subsection{Apparent-disk shadow geometry}
+
+Seen from the spacecraft, the Sun and the occulting body are disks with
+apparent angular radii and angular center separation
+\begin{equation}
+  a_{s} = \arcsin \frac{R_{\odot}}{\norm{\vv{r}_{\odot} - \vv{r}}},
+  \qquad
+  a_{o} = \arcsin \frac{R_{o}}{\norm{\vv{r}_{o} - \vv{r}}},
+  \qquad
+  \theta = \angle\bigl( \vv{r}_{\odot} - \vv{r},\;
+                        \vv{r}_{o} - \vv{r} \bigr),
+  \label{eq:srp:appgeom}
+\end{equation}
+with $R_{\odot}$ the solar radius, $R_{o}$ the occulter radius, and
+$\vv{r}_{o}$ the occulter position. These angular quantities are exact
+for spheres. Four regimes follow immediately from disk containment and
+tangency:
+\begin{itemize}
+  \item $\theta \geq a_{s} + a_{o}$: the disks are disjoint --- full
+    sunlight, $\nu = 1$.
+  \item $\theta \leq a_{o} - a_{s}$ (possible only when
+    $a_{o} \geq a_{s}$): the solar disk lies entirely inside the
+    occulter's --- total umbra, $\nu = 0$.
+  \item $\theta \leq a_{s} - a_{o}$ (possible only when
+    $a_{s} > a_{o}$): the occulter's disk lies entirely inside the
+    Sun's --- annular eclipse (antumbra).
+  \item otherwise: partial overlap --- penumbra.
+\end{itemize}
+
+For the annular case the covered area is the full occulter disk, so on
+the uniform-disk assumption
+\begin{equation}
+  \nu_{\mathrm{annular}} = 1 - \left( \frac{a_{o}}{a_{s}} \right)^{2},
+  \label{eq:srp:annular}
+\end{equation}
+independent of $\theta$ while the containment lasts.
+
+For the partial case, the covered area is the lens common to two planar
+disks of radii $a_{s}$, $a_{o}$ with center separation $\theta$
+(assumption 6). Place the Sun-disk center at the origin and the
+occulter-disk center at distance $\theta$ on the axis. The two circles
+$x^{2} + y^{2} = a_{s}^{2}$ and $(x - \theta)^{2} + y^{2} = a_{o}^{2}$
+intersect on the chord at abscissa and half-height
+\begin{equation}
+  x_{c} = \frac{\theta^{2} + a_{s}^{2} - a_{o}^{2}}{2\theta},
+  \qquad
+  y_{c} = \sqrt{a_{s}^{2} - x_{c}^{2}}
+  \label{eq:srp:chord}
+\end{equation}
+(subtract the circle equations to eliminate $y^{2}$ and solve for $x$).
+The lens is the union of two circular segments, one from each disk, cut
+off by the common chord. A segment of a disk of radius $\rho$ whose
+chord lies at center distance $h$ has area $\rho^{2} \arccos(h/\rho) -
+h \sqrt{\rho^{2} - h^{2}}$ (the circular sector minus the two triangles
+between the radii and the chord). With $h = x_{c}$ for the solar disk
+and $h = \theta - x_{c}$ for the occulter disk, and
+$\sqrt{\rho^{2} - h^{2}} = y_{c}$ on the shared chord in both cases, the
+overlap area is
+\begin{equation}
+  A_{\cap} = a_{s}^{2} \arccos \frac{x_{c}}{a_{s}}
+           + a_{o}^{2} \arccos \frac{\theta - x_{c}}{a_{o}}
+           - \theta\, y_{c},
+  \label{eq:srp:overlap}
+\end{equation}
+where the two triangle contributions combined to $\theta\, y_{c}$
+($x_{c} y_{c} + (\theta - x_{c}) y_{c}$). This is the standard
+occultation formula (Montenbruck and Gill~\cite{montenbruck2000},
+Sec.~3.4); the construction above is reproduced so no step is external
+to this document. Note $x_{c}$ may be negative (chord beyond the solar
+disk center, $\arccos$ obtuse) --- the formula remains valid on
+$[-1, 1]$ arguments. Collecting all regimes, the illumination fraction
+is
+\begin{equation}
+  \boxed{\;
+  \nu(\theta, a_{s}, a_{o}) =
+  \begin{cases}
+    1, & \theta \geq a_{s} + a_{o}, \\[2pt]
+    0, & \theta \leq a_{o} - a_{s}, \\[2pt]
+    1 - \left( a_{o} / a_{s} \right)^{2},
+       & \theta \leq a_{s} - a_{o}, \\[2pt]
+    1 - A_{\cap} / \bigl( \pi a_{s}^{2} \bigr), & \text{otherwise.}
+  \end{cases}
+  \;}
+  \label{eq:srp:nu}
+\end{equation}
+$\nu$ is continuous across every regime boundary: at
+$\theta = a_{s} + a_{o}$, $x_{c} = a_{s}$ and both $\arccos$ terms and
+$y_{c}$ vanish, so $A_{\cap} = 0$ and $\nu \to 1$; at
+$\theta = a_{o} - a_{s}$, $x_{c} = -a_{s}$, $y_{c} = 0$,
+$A_{\cap} = \pi a_{s}^{2}$ and $\nu \to 0$; and at
+$\theta = a_{s} - a_{o}$, $x_{c} = a_{s}$ and
+$\theta - x_{c} = -a_{o}$, so $y_{c} = 0$,
+$A_{\cap} = \pi a_{o}^{2}$, and $\nu$ matches
+equation~\eqref{eq:srp:annular}.
+
+\subsection{Signed boundary functions for event detection}
+
+The event framework (Chapter~\ref{ch:events}) screens scalar functions
+for sign changes, so the two shadow boundaries are exposed directly:
+\begin{equation}
+  g_{u} = \theta - (a_{o} - a_{s}),
+  \qquad
+  g_{p} = \theta - (a_{s} + a_{o}).
+  \label{eq:srp:boundaries}
+\end{equation}
+$g_{u} < 0$ exactly in the total umbra ($g_{u} > 0$ everywhere when the
+geometry is annular, where no umbra exists), and $g_{p} < 0$ exactly
+where any part of the Sun is occulted ($\nu < 1$). Both are smooth in
+the spacecraft position through each boundary and cross zero
+transversally along an orbit, unlike $\nu$ itself, which is constant
+outside the penumbra and therefore useless for sign screening.
+
+\subsection{The tangent cones and the analytic timing reference}
+\label{sec:srp:cones}
+
+The disk-tangency boundaries of equation~\eqref{eq:srp:nu} coincide
+exactly, for spherical bodies, with the classical umbra and penumbra
+cones --- the construction the validation test uses as an independent
+reference. Let the occulter center sit at the origin and the Sun center
+at distance $D$ on the axis, with $R_{\odot} > R_{o}$.
+
+\textbf{Umbra cone.} The common \emph{external} tangent lines touch
+both spheres on the same side of the axis and intersect the axis at the
+apex $V_{u}$ beyond the occulter, at distance $\ell_{u}$ from the
+occulter center. Similar right triangles from the apex to each tangent
+point (legs $R_{o}$ and $R_{\odot}$, hypotenuses along the same line)
+give $\sin\alpha_{u} = R_{o}/\ell_{u} = R_{\odot}/(D + \ell_{u})$, so
+\begin{equation}
+  \ell_{u} = \frac{R_{o} D}{R_{\odot} - R_{o}},
+  \qquad
+  \sin\alpha_{u} = \frac{R_{\odot} - R_{o}}{D},
+  \label{eq:srp:umbracone}
+\end{equation}
+where $\alpha_{u}$ is the cone half-angle. A point $P$ between the
+occulter and the apex is on the cone surface exactly when the
+tangent line through it grazes both spheres; looking along that line
+toward the Sun, the ray makes angle $a_{o}$ with the occulter-center
+direction and angle $a_{s}$ with the Sun-center direction, \emph{with
+both centers on the same side of the ray}, so the center separation is
+$\theta = a_{o} - a_{s}$ --- precisely the internal disk tangency
+$g_{u} = 0$. The umbra-cone surface and the $\nu = 0$ boundary are the
+same set.
+
+\textbf{Penumbra cone.} The common \emph{internal} tangent lines cross
+the axis between the bodies at the apex $V_{p}$, at distance $\ell_{p}$
+from the occulter center toward the Sun, and graze the two spheres on
+opposite sides of the axis: $\sin\alpha_{p} = R_{o}/\ell_{p} =
+R_{\odot}/(D - \ell_{p})$, so
+\begin{equation}
+  \ell_{p} = \frac{R_{o} D}{R_{\odot} + R_{o}},
+  \qquad
+  \sin\alpha_{p} = \frac{R_{\odot} + R_{o}}{D}.
+  \label{eq:srp:penumbracone}
+\end{equation}
+From a point on this cone (behind the occulter), the grazing ray toward
+the Sun has the two centers on \emph{opposite} sides, so
+$\theta = a_{o} + a_{s}$ --- the external disk tangency $g_{p} = 0$.
+
+For a circular orbit of radius $a$ about the occulter with the Sun
+direction fixed along $+\hat{\vv{x}}$ and the orbit in a plane
+containing the Sun line, the position is $(a\cos\psi, a\sin\psi)$ and
+the umbra-cone crossing condition (distance from the axis equals the
+cone radius at that axial station, on the shadow side) reads
+$\lvert a \sin\psi \rvert = \tan\alpha_{u}\,(a\cos\psi + \ell_{u})$.
+Squaring and substituting $u = \cos\psi$ yields the quadratic
+\begin{equation}
+  a^{2} (1 + \tan^{2}\alpha_{u})\, u^{2}
+  + 2 a\, \ell_{u} \tan^{2}\alpha_{u}\, u
+  + \bigl( \ell_{u}^{2} \tan^{2}\alpha_{u} - a^{2} \bigr) = 0,
+  \label{eq:srp:conequadratic}
+\end{equation}
+whose two roots have a negative product whenever
+$\ell_{u} \tan\alpha_{u} < a$ (the cone still overlaps the orbit
+radius); the negative root is the shadow-side crossing
+($\cos\psi < 0$), and the squaring artifact (the mirror crossing on the
+sunlit side) is the positive root. Entry and exit are then
+$\psi = \arccos u$ and $2\pi - \arccos u$, converted to time by the
+orbit rate. The penumbra times follow identically with
+$\ell_{p} \to$ apex on the $+\hat{\vv{x}}$ side, i.e.\
+$\lvert a \sin\psi \rvert = \tan\alpha_{p}\,(\ell_{p} - a\cos\psi)$.
+This closed form shares no code and no formulation with
+equations~\eqref{eq:srp:appgeom}--\eqref{eq:srp:boundaries} beyond the
+sphere geometry itself, which is what makes the criterion-3 timing
+comparison meaningful.
+
+\section{Discretization and implementation}
+\label{sec:srp:implementation}
+
+There is no discretization: both functions are pointwise algebraic maps
+evaluated at integrator-requested states. Implementation notes:
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/srp.cpp}; source comments echo
+    \texttt{eq:srp:pressure}, \texttt{eq:srp:cannonball},
+    \texttt{eq:srp:appgeom}, \texttt{eq:srp:overlap},
+    \texttt{eq:srp:nu}, and \texttt{eq:srp:boundaries} verbatim. The
+    analytic cone reference (equations~\eqref{eq:srp:umbracone},
+    \eqref{eq:srp:penumbracone}, \eqref{eq:srp:conequadratic}) is
+    implemented \emph{only} in \texttt{cpp/tests/test\_srp.cpp}, echoed
+    there, so the validation reference cannot share a defect with the
+    model.
+  \item \textbf{Shared apparent geometry.} One internal helper computes
+    $(a_{s}, a_{o}, \theta)$ for the fraction and both boundary
+    functions, so the three public functions cannot disagree about the
+    geometry.
+  \item \textbf{Angle numerics.} $\theta$ is evaluated as
+    $\operatorname{atan2}(\norm{\vv{u} \times \vv{v}},
+    \vv{u} \cdot \vv{v})$, which is accurate for all separations,
+    unlike $\arccos$ of the normalized dot product, which loses
+    precision near $0$ and $\pi$ --- and eclipse geometry lives near
+    $\theta \approx a_{o}$, which for LEO is $\mathcal{O}(1)$ but must
+    resolve $\mathcal{O}(a_{s})$ differences. $\arcsin$ arguments are
+    clamped to $[0, 1]$ (out-of-domain rule above); $\arccos$ arguments
+    in equation~\eqref{eq:srp:overlap} are clamped to $[-1, 1]$ and the
+    chord height uses $\sqrt{\max(0, \cdot)}$, protecting
+    boundary-adjacent states from sub-ulp excursions outside the real
+    domain.
+  \item \textbf{Exact 0 and 1.} The full-sunlight and total-umbra
+    branches return the literals $1.0$ and $0.0$ before any area
+    arithmetic runs, so $\nu$ is bit-exact in both regimes ---
+    the property the determinism gates and the force-by-source log
+    channels rely on. The umbra case of the acceleration is exactly
+    zero because $\nu = 0$ multiplies the finite coefficient.
+  \item \textbf{Conditioning of the partial branch.} In
+    equation~\eqref{eq:srp:overlap} the occulter-disk term
+    $a_{o}^{2} \arccos\bigl((\theta - x_{c})/a_{o}\bigr)$ evaluates its
+    $\arccos$ near argument $1$ when the occulter disk is much larger
+    than the solar disk (LEO Earth shadow: $a_{o} \approx
+    \qty{1.2}{\radian}$ vs.\ $a_{s} \approx \qty{4.7e-3}{\radian}$),
+    amplifying ulp-level angle errors by $a_{o}^{2} / \bigl( \pi
+    a_{s}^{2} \sqrt{1 - ((\theta - x_{c})/a_{o})^{2}} \bigr) \sim
+    10^{6}$--$10^{7}$ after the $\pi a_{s}^{2}$ normalization. The
+    double-precision partial-phase $\nu$ therefore carries an absolute
+    error of order $10^{-9}$ at such geometries (observed worst
+    \num{1.0e-9} at the committed penumbra states), while small-occulter
+    partial and annular geometries stay at $10^{-12}$. This is retained
+    deliberately: the formula is the cited standard, the error is
+    $\sim 10^{-9}$ of the SRP force during a seconds-long transit ---
+    far below the $C_R$ knowledge of assumption 1 and the physical
+    fidelity bounds of assumptions 4--6 --- and the regime boundaries
+    and exact $0$/$1$ branches are unaffected. The golden tolerance
+    (\num{1e-8} absolute on partial values) encodes exactly this
+    bound.
+  \item \textbf{Constants.} $c$, au, $\Phi_{1\,\mathrm{au}}$,
+    $P_{1\,\mathrm{au}} = \Phi_{1\,\mathrm{au}}/c$ (a compile-time
+    quotient of the two cited constants), and $R_{\odot}$ live in
+    \texttt{cpp/include/star/constants.hpp}, each cited at its
+    definition. Occulter radii are caller-supplied (test geometry uses
+    representative Earth/Moon values; physical values are wired by the
+    force-composition layer with the rest of the body data).
+  \item \textbf{Determinism.} No per-call allocation; fixed evaluation
+    order. The libm calls ($\arcsin$, $\arccos$,
+    $\operatorname{atan2}$) are the only non-correctly-rounded
+    operations and thus the cross-platform divergence surface (D-10);
+    the golden tolerances (\texttt{tests/golden/srp/manifest.toml})
+    budget for their few-ulp spread.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:srp:validation}
+
+Table~\ref{tab:srp:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked
+to exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
+provenance and tolerances are recorded in
+\texttt{tests/golden/srp/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the SRP and shadow model (doctest,
+    \texttt{cpp/tests/test\_srp.cpp}).}
+  \label{tab:srp:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{srp_shadow_cone_timing} &
+      Phase~3 exit criterion 3: umbra entry and exit times of a
+      circular-LEO shadow crossing, root-found on
+      equation~\eqref{eq:srp:boundaries} by bisection along the analytic
+      orbit, match the closed-form cone times of
+      equation~\eqref{eq:srp:conequadratic} to
+      $< \qty{0.1}{\second}$; penumbra times likewise; and the conical
+      entry/exit differ from a cylindrical shadow's by
+      $> \qty{1}{\second}$ (expected $\approx \qty{4}{\second}$),
+      guarding against silently shipping the cylinder. \\
+    \testid{srp_shadow_fraction_golden} &
+      Equation~\eqref{eq:srp:nu} vs.\ extended-precision references at
+      11 committed geometries covering every branch: exact $1$/$0$ in
+      full sun and umbra (bit equality), penumbra depths, annular and
+      off-axis annular, partial lunar occultation, Moon-occulter umbra
+      (abs $10^{-8}$ on partial values per the conditioning bound of
+      Section~\ref{sec:srp:implementation}; observed worst
+      \num{1.0e-9}). \\
+    \testid{srp_cannonball_accel_golden} &
+      Equation~\eqref{eq:srp:cannonball} vs.\ extended-precision
+      references at 5 committed states, norm-relative $10^{-12}$,
+      including the exact-zero umbra case and an inverse-square check
+      at Mars heliocentric distance. \\
+    \testid{srp_shadow_fraction_continuity} &
+      Property test: along the reference shadow crossing, $\nu$ is $1$
+      before the penumbra, $0$ inside the umbra, strictly between $0$
+      and $1$ at the penumbra midpoint, within $[0,1]$ everywhere, and
+      changes by $< 10^{-3}$ between samples \qty{1}{\milli\second}
+      apart (continuity; the physical penumbra transit is
+      $\approx \qty{8}{\second}$). \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:srp:references}
+
+This chapter relies on Montenbruck and Gill~\cite{montenbruck2000},
+Sec.~3.4, for the cannonball SRP model and the apparent-disk occultation
+formulation; on Pr{\v s}a et al.~\cite{prsa2016} for the IAU 2015
+Resolution B3 nominal total solar irradiance and nominal solar radius;
+on Kopp and Lean~\cite{kopp2011} for the measured TSI value and its
+variability bound; on IAU 2012 Resolution B2~\cite{iau2012b2} for the
+exact astronomical unit; and on the BIPM SI brochure~\cite{bipm2019}
+for the exact speed of light. Full bibliographic details appear in the
+bibliography.

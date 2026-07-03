@@ -105,6 +105,8 @@ add_library(star_core STATIC
   cpp/src/frames.cpp
   cpp/src/integrate.cpp
   cpp/src/models/gravity.cpp
+  cpp/src/models/srp.cpp
+  cpp/src/models/thirdbody.cpp
   cpp/src/models/twobody.cpp
   cpp/src/rng.cpp
   cpp/src/rotation.cpp
@@ -149,6 +151,8 @@ if(STAR_BUILD_TESTING)
     cpp/tests/test_rng.cpp
     cpp/tests/test_rotation.cpp
     cpp/tests/test_srlog.cpp
+    cpp/tests/test_srp.cpp
+    cpp/tests/test_thirdbody.cpp
     cpp/tests/test_time.cpp
     cpp/tests/test_twobody.cpp)
   target_link_libraries(star_tests PRIVATE star_core)
