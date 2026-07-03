@@ -119,6 +119,7 @@ add_library(star_core STATIC
   cpp/src/models/srp.cpp
   cpp/src/models/thirdbody.cpp
   cpp/src/models/twobody.cpp
+  cpp/src/models/vehicle6dof.cpp
   cpp/src/rng.cpp
   cpp/src/rotation.cpp
   cpp/src/run.cpp
@@ -174,7 +175,8 @@ if(STAR_BUILD_TESTING)
     cpp/tests/test_srp.cpp
     cpp/tests/test_thirdbody.cpp
     cpp/tests/test_time.cpp
-    cpp/tests/test_twobody.cpp)
+    cpp/tests/test_twobody.cpp
+    cpp/tests/test_vehicle6dof.cpp)
   target_link_libraries(star_tests PRIVATE star_core)
   # Golden vectors are read from the source tree so the test binary needs no
   # install step or fixture copying; the path is frozen at configure time.

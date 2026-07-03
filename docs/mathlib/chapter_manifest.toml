@@ -115,3 +115,8 @@ label = "ch:actuators"
 module = "cpp/src/models/aero.cpp"
 chapter = "docs/mathlib/chapters/aero.tex"
 label = "ch:aero"
+
+[[chapter]]
+module = "cpp/src/models/vehicle6dof.cpp"
+chapter = "docs/mathlib/chapters/vehicle6dof.tex"
+label = "ch:vehicle6dof"

@@ -339,6 +339,11 @@ py::dict run_env_and_summarize(const star::RunConfig& cfg,
   return summary_dict(star::run_env(cfg, out_path));
 }
 
+py::dict run_vehicle_and_summarize(const star::RunConfig& cfg,
+                                   const std::string& out_path) {
+  return summary_dict(star::run_vehicle(cfg, out_path));
+}
+
 // ---------------------------------------------------------------------------
 // Phase 3 model surface (verify checks V014+ and the pytest suites exercise
 // the compiled models directly through these thin wrappers).
@@ -408,6 +413,106 @@ PYBIND11_MODULE(_core, m) {
       "environment propagation, SRLOG writing, time/frame/ephemeris kernel, "
       "environment force models, and named-stream RNG.";
 
+  // -- Phase 4 vehicle definition (D-2 plain data; run_vehicle only) --------
+  // Each struct mirrors a level of the resolved vehicle/sequence dict; the
+  // Python frontend fills them from the WS-C validated dicts. Bound before
+  // RunConfig so its vehicle/sequence members resolve.
+  py::class_<star::TankCfg>(m, "TankCfg")
+      .def(py::init<>())
+      .def_readwrite("radius_m", &star::TankCfg::radius_m)
+      .def_readwrite("length_m", &star::TankCfg::length_m)
+      .def_readwrite("position_m", &star::TankCfg::position_m)
+      .def_readwrite("propellant_mass_kg", &star::TankCfg::propellant_mass_kg)
+      .def_readwrite("density_kgpm3", &star::TankCfg::density_kgpm3);
+
+  py::class_<star::EngineCfg>(m, "EngineCfg")
+      .def(py::init<>())
+      .def_readwrite("name", &star::EngineCfg::name)
+      .def_readwrite("feeds_tank_index", &star::EngineCfg::feeds_tank_index)
+      .def_readwrite("thrust_vac_N", &star::EngineCfg::thrust_vac_N)
+      .def_readwrite("isp_vac_s", &star::EngineCfg::isp_vac_s)
+      .def_readwrite("exit_area_m2", &star::EngineCfg::exit_area_m2)
+      .def_readwrite("position_m", &star::EngineCfg::position_m)
+      .def_readwrite("axis", &star::EngineCfg::axis)
+      .def_readwrite("gimbal_max_deg", &star::EngineCfg::gimbal_max_deg)
+      .def_readwrite("gimbal_rate_dps", &star::EngineCfg::gimbal_rate_dps)
+      .def_readwrite("throttle_min", &star::EngineCfg::throttle_min)
+      .def_readwrite("throttle_max", &star::EngineCfg::throttle_max)
+      .def_readwrite("spool_time_s", &star::EngineCfg::spool_time_s)
+      .def_readwrite("ignitions", &star::EngineCfg::ignitions);
+
+  py::class_<star::RcsCfg>(m, "RcsCfg")
+      .def(py::init<>())
+      .def_readwrite("name", &star::RcsCfg::name)
+      .def_readwrite("thrust_N", &star::RcsCfg::thrust_N)
+      .def_readwrite("min_impulse_bit_Ns", &star::RcsCfg::min_impulse_bit_Ns)
+      .def_readwrite("thruster_positions_m",
+                     &star::RcsCfg::thruster_positions_m)
+      .def_readwrite("thruster_directions", &star::RcsCfg::thruster_directions);
+
+  py::class_<star::WheelCfg>(m, "WheelCfg")
+      .def(py::init<>())
+      .def_readwrite("name", &star::WheelCfg::name)
+      .def_readwrite("axis", &star::WheelCfg::axis)
+      .def_readwrite("max_torque_Nm", &star::WheelCfg::max_torque_Nm)
+      .def_readwrite("max_momentum_Nms", &star::WheelCfg::max_momentum_Nms);
+
+  py::class_<star::JettisonCfg>(m, "JettisonCfg")
+      .def(py::init<>())
+      .def_readwrite("name", &star::JettisonCfg::name)
+      .def_readwrite("mass_kg", &star::JettisonCfg::mass_kg)
+      .def_readwrite("cg_m", &star::JettisonCfg::cg_m)
+      .def_readwrite("inertia_kgm2", &star::JettisonCfg::inertia_kgm2);
+
+  py::class_<star::StageCfg>(m, "StageCfg")
+      .def(py::init<>())
+      .def_readwrite("name", &star::StageCfg::name)
+      .def_readwrite("dry_mass_kg", &star::StageCfg::dry_mass_kg)
+      .def_readwrite("dry_cg_m", &star::StageCfg::dry_cg_m)
+      .def_readwrite("dry_inertia_kgm2", &star::StageCfg::dry_inertia_kgm2)
+      .def_readwrite("tanks", &star::StageCfg::tanks)
+      .def_readwrite("engines", &star::StageCfg::engines)
+      .def_readwrite("rcs", &star::StageCfg::rcs)
+      .def_readwrite("wheels", &star::StageCfg::wheels)
+      .def_readwrite("jettison", &star::StageCfg::jettison);
+
+  py::class_<star::AeroCfg>(m, "AeroCfg")
+      .def(py::init<>())
+      .def_readwrite("config", &star::AeroCfg::config)
+      .def_readwrite("ref_area_m2", &star::AeroCfg::ref_area_m2)
+      .def_readwrite("ref_diameter_m", &star::AeroCfg::ref_diameter_m)
+      .def_readwrite("cmq_per_rad", &star::AeroCfg::cmq_per_rad)
+      .def_readwrite("mach", &star::AeroCfg::mach)
+      .def_readwrite("ca", &star::AeroCfg::ca)
+      .def_readwrite("cnalpha_per_rad", &star::AeroCfg::cnalpha_per_rad)
+      .def_readwrite("xcp_m", &star::AeroCfg::xcp_m);
+
+  py::class_<star::VehicleConfig>(m, "VehicleConfig")
+      .def(py::init<>())
+      .def_readwrite("stages", &star::VehicleConfig::stages)
+      .def_readwrite("aero", &star::VehicleConfig::aero);
+
+  py::class_<star::SequenceEntry>(m, "SequenceEntry")
+      .def(py::init<>())
+      .def_readwrite("name", &star::SequenceEntry::name)
+      .def_readwrite("trigger", &star::SequenceEntry::trigger)
+      .def_readwrite("t_s", &star::SequenceEntry::t_s)
+      .def_readwrite("event", &star::SequenceEntry::event)
+      .def_readwrite("offset_s", &star::SequenceEntry::offset_s)
+      .def_readwrite("condition", &star::SequenceEntry::condition)
+      .def_readwrite("altitude_m", &star::SequenceEntry::altitude_m)
+      .def_readwrite("perigee_alt_m", &star::SequenceEntry::perigee_alt_m)
+      .def_readwrite("body", &star::SequenceEntry::body)
+      .def_readwrite("action", &star::SequenceEntry::action)
+      .def_readwrite("stage", &star::SequenceEntry::stage)
+      .def_readwrite("engine", &star::SequenceEntry::engine)
+      .def_readwrite("item", &star::SequenceEntry::item)
+      .def_readwrite("azimuth_deg", &star::SequenceEntry::azimuth_deg)
+      .def_readwrite("pitch_t_s", &star::SequenceEntry::pitch_t_s)
+      .def_readwrite("pitch_deg", &star::SequenceEntry::pitch_deg)
+      .def_readwrite("frame", &star::SequenceEntry::frame)
+      .def_readwrite("omega_dps", &star::SequenceEntry::omega_dps);
+
   py::class_<star::RunConfig>(m, "RunConfig",
                               "Mission run configuration. Populate every "
                               "field from the validated, canonicalized "
@@ -445,7 +550,18 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite("atmosphere", &star::RunConfig::atmosphere)
       .def_readwrite("cd_a_over_m_m2pkg", &star::RunConfig::cd_a_over_m_m2pkg)
       .def_readwrite("hp_exponent_n", &star::RunConfig::hp_exponent_n)
-      .def_readwrite("ephemeris_path", &star::RunConfig::ephemeris_path);
+      .def_readwrite("ephemeris_path", &star::RunConfig::ephemeris_path)
+      // Phase 4 extension (consumed by run_vehicle only; run()/run_env()
+      // ignore it).
+      .def_readwrite("vehicle", &star::RunConfig::vehicle)
+      .def_readwrite("sequence", &star::RunConfig::sequence)
+      .def_readwrite("initial_form", &star::RunConfig::initial_form)
+      .def_readwrite("launch_lat_deg", &star::RunConfig::launch_lat_deg)
+      .def_readwrite("launch_lon_deg", &star::RunConfig::launch_lon_deg)
+      .def_readwrite("launch_alt_m", &star::RunConfig::launch_alt_m)
+      .def_readwrite("forces_rate_hz", &star::RunConfig::forces_rate_hz)
+      .def_readwrite("mass_rate_hz", &star::RunConfig::mass_rate_hz)
+      .def_readwrite("env_rate_hz", &star::RunConfig::env_rate_hz);
 
   m.def("run", &run_and_summarize, py::arg("config"), py::arg("out_path"),
         "Propagate the configured two-body case and write an SRLOG v1.0 file "
@@ -458,6 +574,14 @@ PYBIND11_MODULE(_core, m) {
         "Propagate the composed-environment case (Phase 3: gravity tiers, "
         "third bodies, SRP, drag; rk4 or adaptive rkf78) and write an SRLOG "
         "v1.0 file to out_path. Returns the same summary dict as run().");
+
+  m.def("run_vehicle", &run_vehicle_and_summarize, py::arg("config"),
+        py::arg("out_path"),
+        "Propagate the full 6DOF vehicle case (Phase 4: staged vehicle under "
+        "the composed environment plus its own thrust, aero, and attitude, "
+        "driven by the open-loop [[sequence]]) and write an SRLOG v1.1 file "
+        "(truth with real q/omega, forces, mass, env groups) to out_path. "
+        "Returns the same summary dict as run().");
 
   m.def("gm", &star::gm, py::arg("body"),
         "Gravitational parameter GM [m^3/s^2] of a named central body "

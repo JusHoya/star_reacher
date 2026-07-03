@@ -1,0 +1,325 @@
+% Chapter — Vehicle 6DOF composition (Phase 4). Follows the mandatory FR-29
+% six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. The equation labels eq:vehicle6dof:state,
+% eq:vehicle6dof:padstate, eq:vehicle6dof:pitchaxis, eq:vehicle6dof:attitude,
+% eq:vehicle6dof:remap, and eq:vehicle6dof:transaccel are echoed verbatim in
+% comments in cpp/src/models/vehicle6dof.cpp and cpp/src/run.cpp (FR-29
+% equation-label-to-code traceability); renaming them breaks that trace.
+\chapter{Vehicle 6DOF Composition}
+\label{ch:vehicle6dof}
+
+\section{Purpose}
+\label{sec:vehicle6dof:purpose}
+
+This chapter documents the composition layer that assembles the individual
+force, torque, and mass-property models into a full launch-to-orbit-capable
+six-degree-of-freedom vehicle run (FR-1, FR-8--FR-10, FR-12, FR-14). Every
+physical term is derived in its own chapter --- the composed environment
+(Chapter~\ref{ch:environment}), gravity-gradient torque
+(Chapter~\ref{ch:gravgrad}), rigid-body attitude dynamics
+(Chapter~\ref{ch:rigidbody}), settled-tank mass properties
+(Chapter~\ref{ch:massprops}), engine propulsion (Chapter~\ref{ch:propulsion}),
+attitude actuators (Chapter~\ref{ch:actuators}), and axisymmetric aerodynamics
+(Chapter~\ref{ch:aero}). This chapter owns only the geometry and bookkeeping
+the run path adds on top of them: the geodetic launch-pad initial state, the
+open-loop pitch-program attitude command, the fixed-order translational
+acceleration assembly, and the closed-form staging/jettison state remap. The
+load-bearing pure pieces are implemented in
+\texttt{cpp/src/models/vehicle6dof.cpp}; the stepping, control-cycle
+zero-order hold, event sequence, and logging orchestration live in
+\texttt{cpp/src/run.cpp} (\texttt{run\_vehicle}).
+
+\section{Assumptions and domain of validity}
+\label{sec:vehicle6dof:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Continuous state and control cycle.} The integrated
+    continuous state is the translational pair
+    $\vv{y} = [\vv{r}^{I},\, \vv{v}^{I}]$
+    (equation~\eqref{eq:vehicle6dof:state}), the central-body-centered GCRF
+    position and velocity of the composite center of mass, advanced with the
+    fixed-step RK4 of Chapter~\ref{ch:integrators}. Attitude
+    $(\quat{q}_{i2b},\, \vv{\omega}^{B})$, the per-tank propellant masses,
+    and the per-engine spool/gimbal/ignition states are advanced once per
+    control cycle and held constant across the cycle (D-5 zero-order hold);
+    the composite mass properties are likewise held over the cycle. For the
+    reference missions the cycle equals the RK4 step, so the intra-step
+    variation of the gravity, thrust back-pressure, and aerodynamic terms is
+    resolved while the commanded attitude, throttle, and mass are piecewise
+    constant.
+  \item \textbf{Prescribed open-loop attitude.} With no GNC component in the
+    loop (Phase~4), the attitude is prescribed each cycle by the active
+    sequence command --- pad-fixed, pitch-program, inertial-hold, or
+    rate-command --- rather than integrated from the rotational equation of
+    motion. The rigid-body attitude dynamics of Chapter~\ref{ch:rigidbody},
+    including the gravity-gradient torque of Chapter~\ref{ch:gravgrad}, are
+    validated as free dynamics at module level (exit criterion~9); the
+    closed-loop attitude-control path lands with the Phase~6 GNC workstream.
+  \item \textbf{Fixed force-summation order (D-10).} The translational
+    acceleration sums the environment acceleration (itself in the fixed
+    internal order of Chapter~\ref{ch:environment}) and then the body force
+    in the order thrust, RCS, aero; the rotational torque, when integrated,
+    sums gravity-gradient, engine gimbal, RCS, wheel reaction, and aero
+    moment in that order. The order is fixed so a run is bit-reproducible.
+  \item \textbf{Air-relative velocity for air data.} Mach number and dynamic
+    pressure use the co-rotating air-relative velocity
+    $\vv{v}_{\mathrm{rel}} = \vv{v} - \vv{\omega}_{\mathrm{planet}} \times
+    \vv{r}$ (FR-8, equation~\eqref{eq:drag:vrel}), resolved into body axes
+    and passed to the aerodynamics model of Chapter~\ref{ch:aero}; the logged
+    Mach and dynamic pressure are that model's own outputs. The logged
+    flight-path angle uses the \emph{inertial} velocity,
+    $\gamma = \arcsin\!\bigl((\vv{r}\cdot\vv{v})/(r\,v)\bigr)$, the standard
+    trajectory diagnostic; the two conventions are stated here and applied
+    consistently by \texttt{run\_vehicle}.
+  \item \textbf{Inertially fixed launch tangent frame.} The pitch-program
+    east/north/up basis is evaluated at the launch site at $t_0$ and held
+    inertially fixed for the ascent; the Earth rotates $\sim\!1.25^{\circ}$
+    over a five-minute ascent, a bounded approximation of the pad-tangent
+    frame recorded here.
+  \item \textbf{Settled propellant, mass drop on separation.} Tank mass
+    properties are the settled-cylinder forms of Chapter~\ref{ch:massprops}
+    (A-2); a separated stage is removed from the simulation (mass drop only,
+    A-4), and its discarded dynamics are not propagated.
+\end{enumerate}
+
+Domain of validity: the geodetic launch form requires an Earth central body
+and a well-conditioned attitude (the pad up-direction is nonzero by
+construction). The composed-acceleration and remap forms require a positive
+composite mass, which the mass-property composition guarantees while any body
+remains attached; a configuration that removes the last body is rejected by
+Chapter~\ref{ch:massprops}. The SOI-transition geometry is defined for the
+Earth$\to$Moon case used by the trans-lunar mission and requires the
+committed ephemeris excerpt.
+
+\section{Derivation}
+\label{sec:vehicle6dof:derivation}
+
+\subsection{Continuous state and the composed acceleration}
+
+The integrated state is
+\begin{equation}
+  \vv{y} = \bigl[\, \vv{r}^{I},\; \vv{v}^{I} \,\bigr],
+  \qquad
+  \dot{\vv{r}}^{I} = \vv{v}^{I},
+  \label{eq:vehicle6dof:state}
+\end{equation}
+with the acceleration composed in the fixed order
+\begin{equation}
+  \boxed{\;
+  \dot{\vv{v}}^{I}
+    = \vv{a}_{\mathrm{env}}(t, \vv{r}^{I}, \vv{v}^{I})
+    + \frac{1}{m}\,\dcm{B}{I}\,
+      \bigl( \vv{F}_{\mathrm{thrust}}^{B}
+           + \vv{F}_{\mathrm{rcs}}^{B}
+           + \vv{F}_{\mathrm{aero}}^{B} \bigr),
+  \;}
+  \label{eq:vehicle6dof:transaccel}
+\end{equation}
+where $\vv{a}_{\mathrm{env}}$ is the composed environmental acceleration of
+Chapter~\ref{ch:environment} (central-body gravity, third bodies, SRP, and
+orbital drag as configured), $m$ is the current composite mass
+(Chapter~\ref{ch:massprops}), and $\dcm{B}{I} = \dcm{I}{B}^{\mathsf T}$
+rotates the summed body force into the integration frame. The thrust and
+aerodynamic forces are functions of the current position and velocity
+(back-pressure thrust through the atmospheric pressure at the geodetic
+altitude, aerodynamics through the air-relative velocity), so they are
+re-evaluated at every RK4 stage; the attitude, throttle, gimbal, and mass are
+the zero-order-hold values of the cycle.
+
+\subsection{Geodetic launch-pad state}
+
+For a launch site at geodetic latitude $\phi$, east longitude $\lambda$, and
+height $h$ above the reference ellipsoid of semi-major axis $a$ and
+flattening $f = 1/(\texttt{inv\_f})$, with first eccentricity
+$e^{2} = f(2 - f)$ and prime-vertical radius of curvature
+$N = a/\sqrt{1 - e^{2}\sin^{2}\phi}$, the Earth-fixed position is the
+standard forward transform (Vallado~\cite{vallado2013}, Algorithm~51 forward
+form)
+\begin{equation}
+  \vv{r}^{E} =
+  \begin{bmatrix}
+    (N + h)\cos\phi\cos\lambda \\
+    (N + h)\cos\phi\sin\lambda \\
+    \bigl(N(1 - e^{2}) + h\bigr)\sin\phi
+  \end{bmatrix},
+  \qquad
+  \vv{r}^{I} = \dcm{E}{I}\,\vv{r}^{E},
+  \label{eq:vehicle6dof:padstate}
+\end{equation}
+with $\dcm{E}{I} = \dcm{I}{E}^{\mathsf T}$ the transpose of the Earth-fixed
+rotation of Chapter~\ref{ch:frames}. The pad co-rotates with the planet, so
+its inertial velocity is exactly
+$\vv{v}^{I} = \vv{\omega}_{\oplus}^{I} \times \vv{r}^{I}$, with
+$\vv{\omega}_{\oplus}^{I} = \omega_{\oplus}\,\hat{\vv{z}}^{E\to I}$ the Earth
+rotation vector (the third row of $\dcm{I}{E}$). Because the same
+$\vv{\omega}_{\oplus}^{I}$ forms $\vv{v}^{I}$ and later forms the
+air-relative velocity, the on-pad air-relative velocity is exactly zero, and
+the aerodynamics model of Chapter~\ref{ch:aero} returns an exactly-zero
+dynamic pressure before release (exit criterion~10). The ellipsoid-normal
+east/north/up basis is carried in the same frame for the pitch program. Two
+ascents from the same site along opposite azimuths differ in along-track
+inertial speed by $2\,\vv{v}^{I}\!\cdot\hat{\vv{e}} =
+2\,\omega_{\oplus}\,\rho$, with $\rho = \sqrt{(r^{E}_{x})^{2} +
+(r^{E}_{y})^{2}} = (N + h)\cos\phi$ the distance from the spin axis --- the
+$2\,\omega_{\oplus} R\cos\phi$ figure of exit criterion~10.
+
+\subsection{Open-loop pitch-program attitude}
+
+The commanded thrust axis (body $+X$) for a pitch-over to elevation $\theta$
+above the local horizontal at flight azimuth $A$ (east of north) is, in the
+launch-site tangent basis,
+\begin{equation}
+  \hat{\vv{d}}^{I} = \cos\theta\,
+    \bigl(\sin A\,\hat{\vv{e}}^{I} + \cos A\,\hat{\vv{n}}^{I}\bigr)
+    + \sin\theta\,\hat{\vv{u}}^{I},
+  \label{eq:vehicle6dof:pitchaxis}
+\end{equation}
+so $\theta = 90^{\circ}$ is vertical (thrust along local up) at liftoff. The
+attitude $\quat{q}_{i2b}$ is then constructed with body $+X$ along
+$\hat{\vv{d}}^{I}$, completing the triad by Gram--Schmidt of a reference
+direction against $\hat{\vv{d}}^{I}$
+(equation~\eqref{eq:vehicle6dof:attitude}); since the aerodynamics and thrust
+are axisymmetric about body $+X$, the roll orientation is a free,
+deterministic choice (Markley and Crassidis~\cite{markley2014}). Writing the
+body axes as the columns $\dcm{B}{I} = [\hat{\vv{x}}\;\hat{\vv{y}}\;
+\hat{\vv{z}}]$ with $\hat{\vv{x}} = \hat{\vv{d}}^{I}$,
+\begin{equation}
+  \hat{\vv{y}} = \frac{\hat{\vv{u}}^{I}
+    - (\hat{\vv{u}}^{I}\cdot\hat{\vv{x}})\,\hat{\vv{x}}}
+    {\norm{\hat{\vv{u}}^{I}
+    - (\hat{\vv{u}}^{I}\cdot\hat{\vv{x}})\,\hat{\vv{x}}}},
+  \qquad
+  \hat{\vv{z}} = \hat{\vv{x}} \times \hat{\vv{y}},
+  \qquad
+  \quat{q}_{i2b} = \mathrm{quat}\bigl(\dcm{B}{I}^{\mathsf T}\bigr),
+  \label{eq:vehicle6dof:attitude}
+\end{equation}
+using the Shepperd extraction of Chapter~\ref{ch:rotations}. The logged body
+rate is the finite-difference rotation carrying the cycle-start attitude into
+the next cycle's commanded attitude.
+
+\subsection{Staging and jettison state remap}
+
+At a torque-free separation the composite center of mass jumps discretely
+from body station $\vv{c}_{\mathrm{old}}^{B}$ (the full stack) to
+$\vv{c}_{\mathrm{new}}^{B}$ (the retained stack), both given by the
+closed-form composition of Chapter~\ref{ch:massprops}. The tracked
+translational state is the state of the composite CG, a material point of the
+retained body, so it is remapped by (FR-10)
+\begin{equation}
+  \boxed{\;
+  \vv{r}_{\mathrm{new}}^{I} = \vv{r}^{I} + \dcm{B}{I}\,\Delta\vv{c}^{B},
+  \qquad
+  \vv{v}_{\mathrm{new}}^{I} = \vv{v}^{I}
+    + \vv{\omega}^{I} \times \bigl(\dcm{B}{I}\,\Delta\vv{c}^{B}\bigr),
+  \;}
+  \label{eq:vehicle6dof:remap}
+\end{equation}
+with $\Delta\vv{c}^{B} = \vv{c}_{\mathrm{new}}^{B} -
+\vv{c}_{\mathrm{old}}^{B}$ and $\vv{\omega}$ unchanged (a torque-free
+separation exerts no angular impulse). Momentum conservation across the split
+is a consequence of the rigid-body decomposition rather than an added model:
+with each body's CG velocity $\vv{v}_{k}^{I} = \vv{v}^{I} +
+\vv{\omega}^{I}\times(\dcm{B}{I}(\vv{c}_{k}^{B} - \vv{c}_{\mathrm{old}}^{B}))$,
+the mass-weighted CG offsets sum to zero, so the summed linear momentum equals
+$m\,\vv{v}^{I}$ exactly, and the summed angular momentum about the composite
+CG equals $\mat{I}\vv{\omega}$ exactly by the parallel-axis theorem that the
+composition itself applies. This is the content of exit criterion~5.
+
+\section{Discretization and implementation}
+\label{sec:vehicle6dof:implementation}
+
+Implementation notes:
+\begin{enumerate}
+  \item \textbf{Modules and traceability.} The pure geometry
+    (equations~\eqref{eq:vehicle6dof:padstate}--\eqref{eq:vehicle6dof:remap})
+    lives in \texttt{cpp/src/models/vehicle6dof.cpp}, whose comments echo the
+    equation labels; \texttt{run\_vehicle} in \texttt{cpp/src/run.cpp}
+    composes it with the model modules and echoes
+    \texttt{eq:vehicle6dof:state} and \texttt{eq:vehicle6dof:transaccel}.
+  \item \textbf{Control cycle and zero-order hold.} At each cycle the run
+    fires due sequence entries, composes the attached stack in the fixed
+    FR-10 body order (fixed bodies, then one settled slug per tank, so the
+    wet mass is a stable same-order sum), forms the commanded attitude, sets
+    the zero-order-hold context, logs the decimated groups, then advances the
+    RK4 translational step (when released), depletes the tanks at the held
+    throttle, and advances the engine states.
+  \item \textbf{Mass properties.} The composite mass, CG, and inertia and
+    their time derivatives are the closed forms of
+    Chapter~\ref{ch:massprops}; the propulsion mass flow is positive
+    consumption negated into the signed tank depletion rate.
+  \item \textbf{Events.} Pad release, ignition, cutoff, staging, jettison,
+    orbit-insertion (osculating perigee rising through the target), and the
+    Earth$\to$Moon SOI transition are located at control-cycle boundaries;
+    a \texttt{terminate} action stops the run and is logged as an event.
+  \item \textbf{Determinism.} Single-threaded, fixed evaluation and
+    summation order, no allocation inside the RHS; the SRLOG v1.1 truth
+    (real $\quat{q}$, $\vv{\omega}$), forces, mass, and env groups make the
+    run bit-reproducible and its force decomposition inspectable (FR-16).
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:vehicle6dof:validation}
+
+Table~\ref{tab:vehicle6dof:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the vehicle 6DOF composition (doctest,
+    \texttt{cpp/tests/test\_vehicle6dof.cpp}).}
+  \label{tab:vehicle6dof:validation}
+  \begin{tabular}{lp{8.4cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{vehicle6dof_pad_release_exactness} &
+      Exit criterion~10: the geodetic pad inertial velocity of
+      equation~\eqref{eq:vehicle6dof:padstate} equals
+      $\vv{\omega}_{\oplus}\times\vv{r}$ to $10^{-12}$ relative; the on-pad
+      dynamic pressure is exactly zero (the aero structural zero at
+      $\norm{\vv{v}_{\mathrm{rel}}} = 0$); and the due-east/due-west
+      along-track speed difference equals
+      $2\,\omega_{\oplus}\,\rho$. \\
+    \testid{vehicle6dof_staging_cg_jump} &
+      Exit criterion~2: the composite wet mass equals the same-order sum of
+      dry and propellant masses exactly, and the staging CG jump and inertia
+      match the closed-form composition and removal
+      (equation~\eqref{eq:vehicle6dof:remap} mass properties,
+      Chapter~\ref{ch:massprops}) to $10^{-12}$ relative. \\
+    \testid{vehicle6dof_staging_momentum_conservation} &
+      Exit criterion~5: across a torque-free separation the summed linear and
+      angular momentum of the retained plus jettisoned bodies equals the
+      pre-separation total to $10^{-12}$ relative, and the tracked-state
+      remap reproduces $\vv{v} + \vv{\omega}\times\Delta\vv{r}_{cg}$ of
+      equation~\eqref{eq:vehicle6dof:remap} with $\vv{\omega}$
+      unchanged. \\
+    \testid{vehicle6dof_isp_burnout_rocket_equation} &
+      Exit criterion~3: a straight-line vacuum burn integrating the engine
+      thrust and mass flow (Chapter~\ref{ch:propulsion}) matches the
+      Tsiolkovsky burnout velocity within 1\,\%, and a $+10\,\unit{\second}$
+      Isp edit moves it by the rocket-equation-predicted
+      $\Delta\mathrm{Isp}\,g_0\ln(m_0/m_f)$ within 1\,\%. \\
+    \testid{vehicle6dof_actuator_hooks} &
+      Exit criterion~7: the RCS minimum-impulse-bit gate (zero below,
+      exact at $2\times$), reaction-wheel total-momentum conservation with a
+      saturation clamp, and the TVC gimbal ramp at exactly the configured
+      rate limit --- the actuator hooks (Chapter~\ref{ch:actuators},
+      Chapter~\ref{ch:propulsion}) the run path composes. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:vehicle6dof:references}
+
+This chapter relies on Vallado~\cite{vallado2013} for the geodetic-to-ECEF
+forward transform, on Markley and Crassidis~\cite{markley2014} for the
+attitude construction, on Battin~\cite{battin1999} for the two-body
+osculating-element relations behind the orbit-insertion condition, and on
+NIMA TR8350.2~\cite{nima2000} for the WGS84 reference ellipsoid. The composed
+physical terms are cited to their own chapters. Full bibliographic details
+appear in the bibliography.
