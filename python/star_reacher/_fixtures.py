@@ -36,6 +36,41 @@ _EVENTS_CHANNELS = [
     {"name": "detail", "dtype": "str16", "units": "", "frame": ""},
 ]
 
+# v1.1 vehicle channel groups (format doc section 3.1). The forces channel
+# set is derived from the declared source subset, so it is built by
+# forces_channels() rather than held as a template.
+_MASS_CHANNELS = [
+    {"name": "t_s", "dtype": "f64", "units": "s", "frame": ""},
+    {"name": "mass_kg", "dtype": "f64", "units": "kg", "frame": ""},
+    {"name": "cg_b_m", "dtype": "f64[3]", "units": "m", "frame": "body"},
+    {"name": "inertia_b_kgm2", "dtype": "f64[6]", "units": "kg*m^2", "frame": "body"},
+]
+_ENV_CHANNELS = [
+    {"name": "t_s", "dtype": "f64", "units": "s", "frame": ""},
+    {"name": "alt_m", "dtype": "f64", "units": "m", "frame": ""},
+    {"name": "mach", "dtype": "f64", "units": "1", "frame": ""},
+    {"name": "q_pa", "dtype": "f64", "units": "Pa", "frame": ""},
+    {"name": "rho_kgpm3", "dtype": "f64", "units": "kg/m^3", "frame": ""},
+    {"name": "fpa_rad", "dtype": "f64", "units": "rad", "frame": ""},
+]
+
+
+def forces_channels(sources: list[str]) -> list[dict]:
+    """The v1.1 forces-group channel list for a declared source subset.
+
+    One (force, torque) body-frame pair per source, in the given order
+    (format doc section 3.1). No vocabulary or order validation happens
+    here: fixtures deliberately pack whatever they are told so tests can
+    also synthesize files the writer would refuse.
+    """
+    channels = [{"name": "t_s", "dtype": "f64", "units": "s", "frame": ""}]
+    for src in sources:
+        channels.append({"name": f"f_{src}_b_n", "dtype": "f64[3]", "units": "N", "frame": "body"})
+        channels.append(
+            {"name": f"tq_{src}_b_nm", "dtype": "f64[3]", "units": "N*m", "frame": "body"}
+        )
+    return channels
+
 
 def contract_header(
     *,
@@ -46,16 +81,43 @@ def contract_header(
     config_sha256: str = "0" * 64,
     epoch_utc: str = "2026-01-01T00:00:00Z",
     extra_truth_channels: list[dict] | None = None,
+    force_sources: list[str] | None = None,
+    forces_rate_hz: int = 1,
+    mass_rate_hz: int = 0,
+    env_rate_hz: int = 0,
+    extra_groups: list[dict] | None = None,
 ) -> dict:
     """Build the contract section 2 header dict for a synthesized file.
 
     Every call deep-copies the channel templates so tests that mutate a
     returned header (e.g. to plant an unknown dtype) cannot poison the
     module-level templates for later callers.
+
+    The v1.1 vehicle groups are opt-in and appended in the fixed order the
+    format doc specifies (forces, mass, env, after truth and events):
+    ``force_sources`` enables the forces group at ``forces_rate_hz``; a
+    nonzero ``mass_rate_hz``/``env_rate_hz`` enables that group.
+    ``extra_groups`` entries are appended verbatim after everything else,
+    for unknown-group tolerance fixtures. Callers building a v1.1-shaped
+    header pass ``minor=1`` themselves; fixtures never infer version words.
     """
     truth_channels = copy.deepcopy(_TRUTH_CHANNELS)
     if extra_truth_channels:
         truth_channels.extend(copy.deepcopy(extra_truth_channels))
+    groups = [
+        {"name": "truth", "rate_hz": truth_rate_hz, "channels": truth_channels},
+        {"name": "events", "rate_hz": 0, "channels": copy.deepcopy(_EVENTS_CHANNELS)},
+    ]
+    if force_sources is not None:
+        groups.append(
+            {"name": "forces", "rate_hz": forces_rate_hz, "channels": forces_channels(force_sources)}
+        )
+    if mass_rate_hz:
+        groups.append({"name": "mass", "rate_hz": mass_rate_hz, "channels": copy.deepcopy(_MASS_CHANNELS)})
+    if env_rate_hz:
+        groups.append({"name": "env", "rate_hz": env_rate_hz, "channels": copy.deepcopy(_ENV_CHANNELS)})
+    if extra_groups:
+        groups.extend(copy.deepcopy(extra_groups))
     return {
         "format": {"name": "SRLOG", "major": major, "minor": minor},
         "producer": {"core_version": "0.1.0", "git_hash": "unknown"},
@@ -64,11 +126,20 @@ def contract_header(
         "oracle": False,
         "epoch_utc": epoch_utc,
         "central_body": "earth",
-        "groups": [
-            {"name": "truth", "rate_hz": truth_rate_hz, "channels": truth_channels},
-            {"name": "events", "rate_hz": 0, "channels": copy.deepcopy(_EVENTS_CHANNELS)},
-        ],
+        "groups": groups,
     }
+
+
+def group_index(header: dict, name: str) -> int:
+    """Record group index for ``name`` in a header built above.
+
+    Group indices depend on which optional groups a header enables, so
+    record-building tests resolve them by name instead of hard-coding.
+    """
+    for i, group in enumerate(header["groups"]):
+        if group["name"] == name:
+            return i
+    raise ValueError(f"header declares no group named {name!r}")
 
 
 def _pack_channel(dtype: str, value) -> bytes:
