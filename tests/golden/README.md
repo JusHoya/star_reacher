@@ -100,3 +100,69 @@ this policy.
   `frames_mars_iau_golden`, and `frames_series_transcription` (and by the
   Python binding tests). See `frames/manifest.toml` for provenance and
   tolerances.
+
+## Phase 3 contents
+
+- `gravity/` — FR-5 spherical-harmonic gravity golden set: committed
+  coefficient excerpts of Earth EGM2008 (20×20; also serves the 8×8
+  cross-tool case by runtime truncation), Moon GRGM1200A (50×50), and Mars
+  MRO120F (20×20), each in a full-precision CSV form and a binary SRGRAV v1
+  form (the committed-binary exception documented above, marked `binary` in
+  `.gitattributes`), plus independently synthesized pyshtools point
+  accelerations at the 20 Phase 3 exit-criterion-1 states. Consumed by the
+  doctest cases `GRAV-XTOOL-20`, `GRAV-J2-SECULAR`,
+  `gravity_pointmass_tier`, `gravity_j2_tier_closed_form`,
+  `gravity_pole_regularity`, `gravity_truncation_consistency`,
+  `gravity_srgrav_error_paths`, and by
+  `tests/python/test_gravity_data.py`. See `gravity/manifest.toml` for
+  provenance and tolerances; the manifest doubles as the committed fetch
+  record (source URLs, SHA-256 pins, and full-degree repack hashes) for the
+  git-ignored `data/` gravity files.
+- `thirdbody/` — Battin f(q) third-body reference accelerations (FR-6,
+  Phase 3 exit criterion 7): 10 committed states with the naive
+  two-vector-difference acceleration evaluated in extended precision
+  (mpmath, 60 digits), including the flagged near-alignment state where the
+  naive double-precision evaluation loses ≥ 6 significant digits; consumed
+  by the doctest cases `thirdbody_battin_extended_reference_golden` and
+  `thirdbody_naive_cancellation_digit_loss`. See `thirdbody/manifest.toml`
+  for provenance and tolerances.
+- `srp/` — cannonball SRP accelerations and conical-shadow illumination
+  fractions (FR-7): every branch of the apparent-disk overlap model (full
+  sun, umbra, three penumbra depths, annular, off-axis annular, partial
+  lunar occultation, Moon-occulter umbra) plus SRP acceleration states
+  with the exact-zero umbra case and a Mars-distance inverse-square check,
+  all mpmath-generated (60 digits); consumed by the doctest cases
+  `srp_shadow_fraction_golden` and `srp_cannonball_accel_golden`. See
+  `srp/manifest.toml` for provenance and tolerances.
+- `ephemeris/excerpt_de440s_crosstool.sreph` — a second, CONTINUOUS DE440
+  excerpt (the Phase 2 excerpt holds isolated records around discrete test
+  epochs and cannot feed a multi-day run): verbatim sun/emb/earth/moon
+  Chebyshev records covering the `missions/leo_drag_hp.toml` 7-day window
+  plus margin, cut by `ephemeris/generate_crosstool.py` and consumed by
+  that mission, `tests/python/test_crosstool_missions.py`, and the doctest
+  composition cases. Provenance in `ephemeris/manifest.toml`.
+- `crosstool/` — the replication specification for the two Phase 3
+  cross-tool missions (D-15: GMAT for the gravity-only case, Orekit for
+  the Harris–Priester drag case): exact initial conditions, epoch, frames,
+  constants, and model settings an external maintainer needs to freeze the
+  truth, plus the frozen external truth itself: the GMAT R2026a and Orekit
+  13.1.5 baseline CSVs on the exact 60 s grid, the generated gravity-field
+  inputs (`.cof`/`.gfc`) derived from the committed EGM2008 excerpt, the
+  zeroed-EOP controlled-comparison configuration files, and the as-run
+  GMAT script/startup override. Consumed by the CI gates
+  XTOOL-LEO-GRAV-GMAT and XTOOL-LEO-DRAG-OREKIT in
+  `tests/python/test_crosstool_frozen_truth.py`; regenerated only by the
+  maintainer-run `scripts/crosstool/` toolchain (CI never installs
+  GMAT/Orekit). See `crosstool/manifest.toml` for provenance, tool pins,
+  command lines, and the frozen RMS measurements.
+- `atmosphere/` — atmosphere and orbital-drag golden vectors (FR-8, FR-9):
+  USSA76 published table rows and 86–1000 km density nodes transcribed
+  from the official 1976 document with per-row page provenance, the
+  Harris–Priester min/max density coefficient table (Montenbruck & Gill;
+  transcription cross-checked against the Orekit reference implementation),
+  Mars piecewise-exponential nodes (flagged `confidence: low` per PRD A-3),
+  and mpmath-computed off-node and cannonball-drag reference values.
+  Consumed by the doctest cases `ATM-USSA76-ROWS`,
+  `ATM-USSA76-UPPER-NODES`, `ATM-HP-NODES`, `ATM-HP-OFFNODE`,
+  `ATM-MARS-NODES`, `ATM-MARS-CONT`, and `DRAG-CANNONBALL-GOLDEN`. See
+  `atmosphere/manifest.toml` for provenance and tolerances.

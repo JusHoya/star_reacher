@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.26)
 
 # Version is kept in sync with pyproject.toml [project] version manually
 # (Phase 1 contract: both files carry this note).
-project(star_reacher VERSION 0.2.0 LANGUAGES CXX)
+project(star_reacher VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -104,6 +104,14 @@ add_library(star_core STATIC
   cpp/src/events.cpp
   cpp/src/frames.cpp
   cpp/src/integrate.cpp
+  cpp/src/models/atmosphere_hp.cpp
+  cpp/src/models/atmosphere_mars.cpp
+  cpp/src/models/atmosphere_ussa76.cpp
+  cpp/src/models/drag.cpp
+  cpp/src/models/environment.cpp
+  cpp/src/models/gravity.cpp
+  cpp/src/models/srp.cpp
+  cpp/src/models/thirdbody.cpp
   cpp/src/models/twobody.cpp
   cpp/src/rng.cpp
   cpp/src/rotation.cpp
@@ -139,14 +147,20 @@ endif()
 if(STAR_BUILD_TESTING)
   enable_testing()
   add_executable(star_tests
+    cpp/tests/test_atmosphere.cpp
+    cpp/tests/test_drag.cpp
+    cpp/tests/test_environment.cpp
     cpp/tests/test_events.cpp
     cpp/tests/test_integrate.cpp
     cpp/tests/test_main.cpp
     cpp/tests/test_ephemeris.cpp
     cpp/tests/test_frames.cpp
+    cpp/tests/test_gravity.cpp
     cpp/tests/test_rng.cpp
     cpp/tests/test_rotation.cpp
     cpp/tests/test_srlog.cpp
+    cpp/tests/test_srp.cpp
+    cpp/tests/test_thirdbody.cpp
     cpp/tests/test_time.cpp
     cpp/tests/test_twobody.cpp)
   target_link_libraries(star_tests PRIVATE star_core)

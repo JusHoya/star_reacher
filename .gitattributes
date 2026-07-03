@@ -4,3 +4,13 @@
 # SREPH ephemeris containers are binary; never normalize or diff as text
 # (the committed golden excerpts under tests/golden/ephemeris/ depend on it).
 *.sreph binary
+
+# SRGRAV gravity-coefficient containers are binary for the same reason
+# (committed golden excerpts under tests/golden/gravity/).
+*.srgrav binary
+
+# Cross-tool frozen truth and external-tool input files check out with LF on
+# every platform so the SHA-256 pins recorded in
+# tests/golden/crosstool/manifest.toml stay verifiable against working-tree
+# bytes (the external tools consumed exactly these LF bytes).
+tests/golden/crosstool/* text eol=lf

@@ -11,8 +11,10 @@ Checks that need the compiled core import it lazily and FAIL, never skip,
 when it is missing: a verification pass must mean the whole surface works.
 V001-V008 cover the Phase 1 surface (determinism, SRLOG contract, RNG);
 V009-V013 cover the Phase 2 math kernel (time, rotations, frames,
-ephemeris evaluator, integrators/events) as quick variants of the full
-golden suites in ``tests/``.
+ephemeris evaluator, integrators/events); V014-V018 cover the Phase 3
+environment models (gravity tiers, third body, shadow/SRP, atmospheres)
+and the composed perturbed-run path, as quick variants of the full golden
+suites in ``tests/``.
 """
 
 from __future__ import annotations
@@ -679,6 +681,348 @@ def _check_v013(ctx: dict) -> None:
             )
 
 
+# --------------------------------------------------------------------------
+# Phase 3 checks (V014-V018): environment force models and the composed
+# perturbed-run path. Self-contained on a bare wheel: fields and ephemerides
+# are synthesized in memory (star_reacher.data_fetch.write_srgrav,
+# star_reacher._fixtures.build_sreph); reference values are inlined with
+# citations, never read from tests/golden/ or data/.
+# --------------------------------------------------------------------------
+
+
+def _synthetic_j2_field(tmpdir: Path) -> tuple[Path, float, float, float]:
+    """Write a J2-only SRGRAV field; returns (path, gm, ref_radius, c20bar).
+
+    C-bar(2,0) = -4.84165143790815e-4 is the EGM2008 fully normalized zonal
+    (Pavlis et al. 2012, as distributed by ICGEM); GM and R are the IERS
+    TN36 GM and the EGM2008 reference radius. The field is synthesized here
+    (never read from the source tree) - the check compares the compiled
+    Pines evaluation against the independent closed-form J2 acceleration.
+    """
+    import numpy as _np
+
+    from star_reacher import data_fetch as df
+
+    gm = 3.986004418e14
+    radius = 6378136.3
+    c20 = -4.84165143790815e-4
+    n_max = 2
+    cbar = _np.zeros((n_max + 1, n_max + 1))
+    sbar = _np.zeros((n_max + 1, n_max + 1))
+    cbar[0, 0] = 1.0
+    cbar[2, 0] = c20
+    field = df.GravityCoefficients(
+        name="V014J2",
+        gm_m3ps2=gm,
+        ref_radius_m=radius,
+        n_max=n_max,
+        m_max=n_max,
+        tide_system="tide_free",
+        cbar=cbar,
+        sbar=sbar,
+        source_sha256="00" * 32,
+    )
+    path = tmpdir / "v014_j2.srgrav"
+    df.write_srgrav(path, field)
+    return path, gm, radius, c20
+
+
+def _check_v014(ctx: dict) -> None:
+    core = import_core()
+    with tempfile.TemporaryDirectory() as td:
+        path, gm, radius, c20 = _synthetic_j2_field(Path(td))
+        # J2 = -sqrt(5) * C-bar(2,0): degree-2 zonal denormalization
+        # (4-pi geodesy normalization N(2,0) = sqrt(5); ch:gravity).
+        j2 = -math.sqrt(5.0) * c20
+        for r_bf in ((7000.0e3, 0.0, 0.0), (4000.0e3, 3000.0e3, 5000.0e3)):
+            got = core.gravity_accel(str(path), "j2", -1, -1, r_bf)
+            # Closed-form point-mass + J2 acceleration in the body-fixed
+            # frame (Vallado, Fundamentals of Astrodynamics and
+            # Applications, 4th ed., Sect. 8.7.1 / eq:gravity:potential):
+            #   a = -GM/r^3 * r + a_J2,
+            #   a_J2 = -(3/2) J2 (GM/r^2)(R/r)^2 *
+            #          [(1-5(z/r)^2) x/r, (1-5(z/r)^2) y/r, (3-5(z/r)^2) z/r]
+            x, y, z = r_bf
+            r = math.sqrt(x * x + y * y + z * z)
+            k = -1.5 * j2 * (gm / r**2) * (radius / r) ** 2
+            zr2 = (z / r) ** 2
+            expected = [
+                -gm / r**3 * x + k * (1.0 - 5.0 * zr2) * (x / r),
+                -gm / r**3 * y + k * (1.0 - 5.0 * zr2) * (y / r),
+                -gm / r**3 * z + k * (3.0 - 5.0 * zr2) * (z / r),
+            ]
+            norm = math.sqrt(sum(e * e for e in expected))
+            err = math.sqrt(sum((g - e) ** 2 for g, e in zip(got, expected)))
+            # An independent formulation agrees to roundoff; a Pines
+            # recursion or tier-wiring defect shows at O(J2) ~ 1e-3.
+            if err > 1e-12 * norm:
+                raise CheckFailure(
+                    f"J2-tier acceleration at {r_bf} differs from the closed "
+                    f"form by {err / norm:.3e} relative (gate 1e-12)"
+                )
+        # Point-mass tier: exactly the -GM/r^3 law to a few ulp.
+        r_bf = (7000.0e3, 0.0, 0.0)
+        got = core.gravity_accel(str(path), "pointmass", -1, -1, r_bf)
+        expected0 = -gm / (7000.0e3) ** 2
+        if abs(got[0] - expected0) > 1e-13 * abs(expected0) or got[1] != 0.0 or got[2] != 0.0:
+            raise CheckFailure(
+                f"point-mass tier at {r_bf} gave {list(got)}, expected "
+                f"[{expected0!r}, 0.0, 0.0]"
+            )
+
+
+# Battin f(q) third-body reference states, transcribed from the committed
+# golden tests/golden/thirdbody/states.toml (cases sun_leo_align and
+# sun_leo_perpendicular): the naive two-vector-difference acceleration
+# evaluated by mpmath at 60 significant digits from the exact binary64
+# inputs, rounded once to binary64 (provenance and the 1e-12 norm-relative
+# gate in tests/golden/thirdbody/manifest.toml; formulation per Battin 1999).
+_V015_CASES = [
+    (
+        "sun_leo_align",
+        "0x1.cc6546bb37958p+66",
+        ("0x1.9db4640000000p+22", "0x0.0p+0", "0x0.0p+0"),
+        ("0x1.16a5d2d360000p+37", "0x0.0p+0", "0x0.0p+0"),
+        ("0x1.207e0fa5e17c6p-21", "0x0.0p+0", "0x0.0p+0"),
+    ),
+    (
+        "sun_leo_perpendicular",
+        "0x1.cc6546bb37958p+66",
+        ("0x0.0p+0", "0x1.9db4640000000p+22", "0x0.0p+0"),
+        ("0x1.16a5d2d360000p+37", "0x0.0p+0", "0x0.0p+0"),
+        ("-0x1.413806bfc9877p-36", "-0x1.20790aa2ffad1p-22", "0x0.0p+0"),
+    ),
+]
+
+
+def _check_v015(ctx: dict) -> None:
+    core = import_core()
+    for name, gm_hex, r_sc_hex, r_third_hex, a_ref_hex in _V015_CASES:
+        gm = float.fromhex(gm_hex)
+        r_sc = [float.fromhex(h) for h in r_sc_hex]
+        r_third = [float.fromhex(h) for h in r_third_hex]
+        a_ref = [float.fromhex(h) for h in a_ref_hex]
+        got = core.thirdbody_accel(gm, r_sc, r_third)
+        norm = math.sqrt(sum(a * a for a in a_ref))
+        err = math.sqrt(sum((g - a) ** 2 for g, a in zip(got, a_ref)))
+        if err > 1e-12 * norm:
+            raise CheckFailure(
+                f"{name}: Battin acceleration differs from the extended-"
+                f"precision reference by {err / norm:.3e} relative (gate 1e-12, "
+                f"Phase 3 exit criterion 7)"
+            )
+
+
+# Conical-shadow reference geometries, transcribed from the committed golden
+# tests/golden/srp/shadow_fraction.toml (cases full_sun_subsolar,
+# umbra_anti_sun, penumbra_mid; mpmath-generated, provenance and tolerance
+# derivations in tests/golden/srp/manifest.toml). Sun and occulter share the
+# LEO Earth-shadow geometry: |r_sun| ~ 1 au, R_sun the IAU 2015 nominal
+# solar radius, R_occ the WGS84 equatorial radius.
+_V016_SUN = ("0x1.16a5d2d360000p+37", "0x0.0p+0", "0x0.0p+0")
+_V016_RSUN = "0x1.4bbc510000000p+29"
+_V016_ROCC = "0x1.854a640000000p+22"
+_V016_CASES = [
+    # (name, r_sc hex triple, expected nu hex, exact)
+    ("full_sun_subsolar", ("0x1.9db4640000000p+22", "0x0.0p+0", "0x0.0p+0"), "0x1.0p+0", True),
+    ("umbra_anti_sun", ("-0x1.9db4640000000p+22", "0x0.0p+0", "0x0.0p+0"), "0x0.0p+0", True),
+    (
+        "penumbra_mid",
+        ("-0x1.17ff80d40d10ap+21", "0x1.854beb345949dp+22", "0x0.0p+0"),
+        "0x1.0034c7cbe1cadp-1",
+        False,
+    ),
+]
+
+
+def _check_v016(ctx: dict) -> None:
+    core = import_core()
+    r_sun = [float.fromhex(h) for h in _V016_SUN]
+    radius_sun = float.fromhex(_V016_RSUN)
+    radius_occ = float.fromhex(_V016_ROCC)
+    origin = [0.0, 0.0, 0.0]
+    for name, r_sc_hex, nu_hex, exact in _V016_CASES:
+        r_sc = [float.fromhex(h) for h in r_sc_hex]
+        nu_ref = float.fromhex(nu_hex)
+        nu = core.shadow_fraction(r_sc, r_sun, radius_sun, origin, radius_occ)
+        if exact:
+            # The piecewise model returns the constants exactly outside the
+            # penumbra (determinism demands bit-exact 0/1; srp manifest).
+            if nu != nu_ref:
+                raise CheckFailure(f"{name}: nu = {nu!r}, expected exactly {nu_ref!r}")
+        elif abs(nu - nu_ref) > 1e-8:
+            # 1e-8 abs: the srp manifest's cross-platform libm bound for
+            # large-occulter penumbra geometry (observed worst 1.0e-9).
+            raise CheckFailure(
+                f"{name}: nu = {nu!r} differs from {nu_ref!r} by "
+                f"{abs(nu - nu_ref):.3e} (gate 1e-8 abs)"
+            )
+    # In total umbra the cannonball SRP acceleration is exactly zero.
+    a_umbra = core.srp_accel(0.02, 0.0, [float.fromhex(h) for h in _V016_CASES[1][1]], r_sun)
+    if list(a_umbra) != [0.0, 0.0, 0.0]:
+        raise CheckFailure(f"srp_accel with nu = 0 gave {list(a_umbra)}, expected exact zeros")
+
+
+def _check_v017(ctx: dict) -> None:
+    core = import_core()
+    # USSA76 sea level: rho = 1.2250 kg/m^3 (U.S. Standard Atmosphere 1976,
+    # Table I, z = 0), print precision (4 significant figures, Phase 3 exit
+    # criterion 4).
+    rho0 = core.ussa76_density(0.0)
+    if abs(rho0 - 1.2250) > 0.5e-4:
+        raise CheckFailure(f"USSA76 sea-level density {rho0!r}, published 1.2250 kg/m^3")
+    # Harris-Priester at the 500 km node pinned to the bulge minimum
+    # (cos_psi = -1) and maximum (cos_psi = +1): the committed
+    # Montenbruck & Gill Sect. 3.5.2 table values 3.916e-13 / 2.042e-12
+    # kg/m^3, exact at a node by construction (atmosphere manifest,
+    # ATM-HP-NODES discipline).
+    rho_min = core.hp_density(500000.0, -1.0, 4.0)
+    rho_max = core.hp_density(500000.0, 1.0, 4.0)
+    if rho_min != 3.916e-13:
+        raise CheckFailure(f"HP rho_min(500 km) = {rho_min!r}, table 3.916e-13")
+    if rho_max != 2.042e-12:
+        raise CheckFailure(f"HP rho_max(500 km) = {rho_max!r}, table 2.042e-12")
+    # Above the 1000 km table ceiling HP is exactly zero (Orekit-compatible).
+    if core.hp_density(1100000.0, 0.5, 4.0) != 0.0:
+        raise CheckFailure("HP density above 1000 km is not exactly zero")
+    # Mars piecewise-exponential 40 km node: committed node value (NASA
+    # Glenn curve-fit derivation, PRD A-3 confidence low; bit-exact at a
+    # node per tests/golden/atmosphere/manifest.toml, ATM-MARS-NODES).
+    rho_mars = core.mars_density(40000.0)
+    ref_mars = float.fromhex("0x1.43f814fd34db9p-11")
+    if rho_mars != ref_mars:
+        raise CheckFailure(f"Mars density at 40 km node = {rho_mars!r}, committed {ref_mars!r}")
+
+
+_V018_MISSION = """\
+schema_version = 1
+
+[mission]
+name = "verify-v018-{tag}"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = {duration}
+
+[run]
+seed = 20260118
+
+[integrator]
+{integrator}
+
+[spacecraft]
+mass_kg = 500.0
+cd_a_over_m_m2pkg = 0.0044
+cr_a_over_m_m2pkg = 0.02
+
+[initial_state.cartesian]
+r_m = [6878000.0, 0.0, 0.0]
+v_mps = [0.0, 7350.0, 2000.0]
+frame = "GCRF"
+
+[environment]
+central_body = "earth"
+ephemeris = "{ephemeris}"
+third_bodies = ["sun", "moon"]
+
+[environment.gravity]
+model = "harmonic"
+field = "{field}"
+degree = 2
+order = 0
+
+[environment.srp]
+
+[environment.drag]
+atmosphere = "harris_priester"
+hp_exponent_n = 4.0
+
+[logging]
+truth_rate_hz = 1
+"""
+
+_V018_RKF78 = """type = "rkf78"
+rtol = 1e-9
+atol_pos_m = 1e-4
+atol_vel_mps = 1e-7
+h_init_s = 30.0
+h_max_s = 30.0"""
+
+_V018_RK4 = """type = "rk4"
+dt_s = 1.0"""
+
+
+def _v018_synthetic_ephemeris(tmpdir: Path) -> Path:
+    """A short constant-position Chebyshev ephemeris covering the epoch.
+
+    Segment layout matches the DE440 repack (sun/emb SSB-centered, earth/
+    moon EMB-centered, kind 0 in km); the constant positions are
+    representative magnitudes (Sun at the SSB, EMB at ~1 au, real-scale
+    EMB offsets) so the third-body, SRP, and bulge geometry are physically
+    sensible. The check gates DETERMINISM of the composed run, not
+    astronomy - the real-ephemeris physics is gated by the golden suites.
+    """
+    core = import_core()
+    day, sec = core.utc_to_tai(2026, 1, 1, 0, 0, 0.0)
+    jd1, jd2 = core.tdb_jd(day, sec)
+    tdb_s = ((jd1 - 2451545.0) + jd2) * 86400.0
+    init = tdb_s - 86400.0
+    intlen = 3.0 * 86400.0
+
+    def const_record(x_km: float, y_km: float, z_km: float) -> list:
+        return [[[x_km, 0.0, 0.0], [y_km, 0.0, 0.0], [z_km, 0.0, 0.0]]]
+
+    segments = [
+        {"name": "sun", "target": 10, "center": 0, "kind": 0,
+         "init_tdb_s": init, "intlen_s": intlen,
+         "records": const_record(0.0, 0.0, 0.0)},
+        {"name": "emb", "target": 3, "center": 0, "kind": 0,
+         "init_tdb_s": init, "intlen_s": intlen,
+         "records": const_record(-1.4959787e8, 0.0, 0.0)},
+        {"name": "earth", "target": 399, "center": 3, "kind": 0,
+         "init_tdb_s": init, "intlen_s": intlen,
+         "records": const_record(4671.0, 0.0, 0.0)},
+        {"name": "moon", "target": 301, "center": 3, "kind": 0,
+         "init_tdb_s": init, "intlen_s": intlen,
+         "records": const_record(-379700.0, 0.0, 0.0)},
+    ]
+    path = tmpdir / "v018.sreph"
+    path.write_bytes(_fixtures.build_sreph(segments))
+    return path
+
+
+def _check_v018(ctx: dict) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        field_path, _gm, _radius, _c20 = _synthetic_j2_field(tdp)
+        eph_path = _v018_synthetic_ephemeris(tdp)
+        for tag, integ, duration, records in (
+            ("rkf78", _V018_RKF78, "300.0", 301),
+            ("rk4", _V018_RK4, "120.0", 121),
+        ):
+            mission = tdp / f"v018_{tag}.toml"
+            mission.write_text(
+                _V018_MISSION.format(
+                    tag=tag,
+                    duration=duration,
+                    integrator=integ,
+                    ephemeris=eph_path.as_posix(),
+                    field=field_path.as_posix(),
+                ),
+                encoding="utf-8",
+            )
+            r1 = run_mission(mission, tdp / f"{tag}_run1")
+            r2 = run_mission(mission, tdp / f"{tag}_run2")
+            if r1.srlog_sha256 != r2.srlog_sha256:
+                raise CheckFailure(
+                    f"{tag}: perturbed double-run SHA-256 mismatch: "
+                    f"{r1.srlog_sha256} != {r2.srlog_sha256}"
+                )
+            if r1.summary["truth_records"] != records:
+                raise CheckFailure(
+                    f"{tag}: truth record count {r1.summary['truth_records']} "
+                    f"!= {records}"
+                )
+
+
 _CHECKS = [
     ("V001", "two-body double-run SHA-256 bit-identity", _check_v001),
     ("V002", "minor-version-forward read (v1.999 file with one added channel)", _check_v002),
@@ -693,13 +1037,18 @@ _CHECKS = [
     ("V011", "GCRF->ITRF at golden epoch vs ERFA elements + orthonormality", _check_v011),
     ("V012", "SREPH loader + Chebyshev evaluator on synthesized file", _check_v012),
     ("V013", "two-body invariant drift and apsis events (quick tier)", _check_v013),
+    ("V014", "gravity tiers vs closed-form J2 on a synthesized field", _check_v014),
+    ("V015", "Battin third body vs extended-precision references", _check_v015),
+    ("V016", "conical shadow exact 0/1, penumbra value, umbra SRP zero", _check_v016),
+    ("V017", "USSA76/Harris-Priester/Mars density spot values", _check_v017),
+    ("V018", "perturbed-run double-run SHA-256 bit-identity (rkf78 + rk4)", _check_v018),
 ]
 
 
 def run_checks(quick: bool = False) -> int:
     """Run every acceptance check, print one line each, return the exit code.
 
-    ``quick`` is accepted for CLI symmetry: through Phase 2 the quick tier
+    ``quick`` is accepted for CLI symmetry: through Phase 3 the quick tier
     and the full tier run the identical check set (every check is budgeted
     for the < 60 s quick gate); the split becomes meaningful when later
     phases add long-running checks.

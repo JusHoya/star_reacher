@@ -1,0 +1,262 @@
+% Chapter — Composed environment force model (Phase 3 integration layer).
+% Follows the mandatory FR-29 six-section template: purpose; assumptions
+% and domain of validity; derivation (here: composition and plumbing, with
+% the physics cited to the per-model chapters); discretization and
+% implementation; validation evidence; references. The equation label
+% eq:env:sum is echoed in cpp/src/models/environment.cpp.
+\chapter{Composed Environment Force Model}
+\label{ch:environment}
+
+\section{Purpose}
+\label{sec:env:purpose}
+
+This chapter documents the Phase~3 force-composition layer
+(\texttt{cpp/src/models/environment.cpp}): the point-mass translational
+equations of motion about one central body (Earth, Moon, or Mars) under
+the FR-5..FR-9 environment models. No physics is derived here --- every
+term's derivation, domain, and golden-vector evidence live in the
+per-model chapters (gravity, Chapter~\ref{ch:gravity}; third body,
+Chapter~\ref{ch:thirdbody}; SRP and shadow, Chapter~\ref{ch:srp};
+atmospheres, Chapters~\ref{ch:ussa76}, \ref{ch:harrispriester},
+and~\ref{ch:marsatmosphere}; drag, Chapter~\ref{ch:drag}). What is
+normative here, and nowhere else, is the \emph{composition}: the fixed
+summation order, the frame and time plumbing each term is evaluated
+through, the ephemeris body composition, the constants each term is wired
+to, and the documented approximations those choices introduce.
+
+\section{Assumptions and domain of validity}
+\label{sec:env:domain}
+
+\begin{enumerate}
+  \item \textbf{Point-mass spacecraft.} The state is $(\vv{r}, \vv{v})$
+    in the GCRF-oriented frame centered at the configured central body;
+    attitude dynamics land in Phase~4. SRP and drag use the mass-normalized
+    cannonball products $C_R A / m$ and $C_D A / m$ from the minimal
+    \texttt{[spacecraft]} block.
+  \item \textbf{One central body per run.} SOI-event origin re-centering
+    (FR-3) is not part of Phase~3; a mission is Earth-, Moon-, or
+    Mars-centered for its whole duration.
+  \item \textbf{Inherited frame bounds.} Earth-fixed rotations use the
+    IAU 2006/2000B CIO chain with polar motion neglected and constant
+    $\Delta$UT1 $= 0$ (bounds in Chapter~\ref{ch:frames}); the Moon
+    principal-axis frame interpolates the DE440 libration angles; the
+    Mars frame uses the IAU~2015 rotational
+    elements~\cite{archinal2018}.
+  \item \textbf{Mars system barycenter.} DE440 stores the Mars
+    \emph{system} barycenter. Using it as the Mars body center offsets
+    the origin by the Phobos/Deimos barycenter displacement, bounded by
+    the mass ratios ($\lesssim 2\times10^{-4}$~\unit{\metre}); the Mars
+    system GM (GM4) is used consistently for both the central point-mass
+    tier and the Mars third body.
+  \item \textbf{Documented composition approximations} (each marked at
+    its site below): the multi-occulter illumination product, the USSA76
+    ceiling rule, and the Mars drag altitude datum.
+\end{enumerate}
+
+\section{Composition}
+\label{sec:env:composition}
+
+The total acceleration is the fixed-order sum (D-10: fixed
+force-summation order, single-threaded)
+\begin{equation}
+  \label{eq:env:sum}
+  \vv{a} \;=\; \vv{a}_{\mathrm{grav}}
+  \;+\; \sum_{b\,\in\,\mathcal{B}} \vv{a}_{3,b}
+  \;+\; \vv{a}_{\mathrm{SRP}}
+  \;+\; \vv{a}_{\mathrm{drag}},
+\end{equation}
+with the third-body set $\mathcal{B}$ summed in the canonical order Sun,
+Earth, Moon, Venus, Mars, Jupiter (the enabled subset, never the central
+body). The Python validator records the enabled set in this same order in
+the resolved configuration, so the summation order is visible in the
+reproducibility anchor.
+
+\paragraph{(a) Central-body gravity.} The \texttt{pointmass} tier applies
+$\vv{a} = -\mu\,\vv{r}/r^3$ (Chapter~\ref{ch:twobody}) with $\mu$ from the
+single constants home: the IERS value for Earth~\cite{iers2010} and the
+DE440 header values for Moon and Mars~\cite{park2021}. The \texttt{j2} and
+\texttt{harmonic} tiers rotate the position into the body-fixed frame,
+evaluate the Pines model of Chapter~\ref{ch:gravity} on the loaded SRGRAV
+field (whose own self-consistent $GM$/$R$/coefficient triple is used, per
+that chapter), and rotate the acceleration back:
+$\vv{a} = \mat{C}^{\mathsf{T}}\,
+\vv{a}_{\mathrm{bf}}(\mat{C}\,\vv{r})$ with
+$\mat{C} = \dcm{\mathrm{GCRF}}{\mathrm{bf}}$ from Chapter~\ref{ch:frames}.
+
+\paragraph{(b) Third bodies.} Each enabled perturber contributes the
+Battin $f(q)$ differential acceleration of Chapter~\ref{ch:thirdbody},
+with the perturber position relative to the central body composed from
+the trimmed DE440 ephemeris (Chapter~\ref{ch:ephemeris}) by exact segment
+arithmetic --- never refit: SSB-relative bodies difference through the
+central body's SSB position (e.g.\ the geocentric Sun is
+$\vv{r}_{\mathrm{sun}} - (\vv{r}_{\mathrm{emb}} +
+\vv{r}_{\mathrm{earth}})$); the Earth--Moon pair differences the
+EMB-relative segments directly (the validated
+\texttt{moon\_geocentric} composition). GM values are the DE440 header
+constants (Table~\ref{tab:env:gm}), so each acceleration is consistent
+with the DE440 positions it is evaluated at.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Third-body gravitational parameters: DE440 header values
+    (constants block of the pinned \texttt{de440s.bsp}; published in
+    Park et al.~\cite{park2021}), the single home
+    \texttt{star/constants.hpp}. Mars and Jupiter are system GMs,
+    matching the barycenter segments.}
+  \label{tab:env:gm}
+  \begin{tabular}{ll}
+    \hline
+    Body & $GM$ [\unit{\metre\cubed\per\second\squared}] \\
+    \hline
+    Sun & $1.32712440041279419\times10^{20}$ \\
+    Earth & $3.98600435507\times10^{14}$ \\
+    Moon & $4.902800118\times10^{12}$ \\
+    Venus & $3.24858592\times10^{14}$ \\
+    Mars system & $4.2828375816\times10^{13}$ \\
+    Jupiter system & $1.267127641\times10^{17}$ \\
+    \hline
+  \end{tabular}
+\end{table}
+
+The DE440 Earth GM ($3.98600435507\times10^{14}$) differs from the IERS
+TN36 central-body value ($3.986004418\times10^{14}$) by 7 parts in
+$10^{9}$. This split is deliberate: the IERS value is the Phase~1 home
+for Earth-centered two-body dynamics (frozen by the determinism record),
+while third-body accelerations use the ephemeris's own constants. At
+third-body magnitudes the difference is physically negligible
+($<10^{-14}$~\unit{\metre\per\second\squared} at LEO).
+
+\paragraph{(c) SRP.} The Sun position comes from the same ephemeris
+composition; the illumination fraction over the configured occulters
+(central body at minimum) combines per-occulter fractions of
+Chapter~\ref{ch:srp} as a product,
+$\nu = \prod_i \nu_i$ --- exact for a single occulter and whenever any
+$\nu_i \in \{0, 1\}$, and a documented approximation when two bodies
+partially occult the solar disk simultaneously (it assumes independent
+disk coverage; the true value lies in
+$[\max(0, \nu_1{+}\nu_2{-}1),\, \min(\nu_1,\nu_2)]$). Occulting-disk
+radii: WGS84 equatorial radius for Earth~\cite{nima2000}, the IAU 2015
+mean radius \qty{1737.4}{\kilo\metre} for the Moon and equatorial radius
+\qty{3396.19}{\kilo\metre} for Mars~\cite{archinal2018}.
+
+\paragraph{(d) Drag.} The air-relative velocity follows the FR-8
+co-rotating rule (eq:drag:vrel, Chapter~\ref{ch:drag}):
+$\vv{v}_{\mathrm{rel}} = \vv{v} - \vv{\omega} \times \vv{r}$ with
+$\vv{\omega} = \omega\,\hat{\vv{z}}_{\mathrm{bf}}$ resolved in GCRF
+($\hat{\vv{z}}_{\mathrm{bf}}$ is the third row of
+$\dcm{\mathrm{GCRF}}{\mathrm{bf}}$; $\omega$ from
+\texttt{star/constants.hpp}: IERS for Earth~\cite{iers2010}, the IAU 2015
+spin rate for Mars~\cite{archinal2018}). Density selection:
+\begin{itemize}
+  \item \textbf{USSA76} (Earth): geodetic altitude over the WGS84
+    ellipsoid~\cite{nima2000} as the geometric-altitude argument of
+    Chapter~\ref{ch:ussa76}. Above the model's \qty{1000}{\kilo\metre}
+    ceiling the composition takes $\rho = 0$ exactly (documented
+    approximation mirroring the Harris--Priester ceiling, so drag
+    vanishes instead of aborting; the omitted density is below
+    $10^{-15}$~\unit{\kilogram\per\metre\cubed}).
+  \item \textbf{Harris--Priester} (Earth): geodetic altitude over WGS84;
+    the diurnal-bulge apex of Chapter~\ref{ch:harrispriester} built from
+    the ephemeris geocentric Sun direction, with the $+30^{\circ}$
+    rotation applied about the GCRF $+z$ axis and $\cos\psi$ formed with
+    the GCRF position direction (the frame convention of the Orekit
+    reference configuration; the GCRF-vs-true-equator axis difference is
+    $\sim 20$~\unit{\mas}-scale and far inside the model's own
+    uncertainty).
+  \item \textbf{Mars exponential}: geodetic altitude over the IAU 2015
+    Mars ellipsoid ($a = \qty{3396.19}{\kilo\metre}$,
+    $1/f = 169.894$~\cite{archinal2018}) as the altitude argument of
+    Chapter~\ref{ch:marsatmosphere}. The source model states no altitude
+    datum (PRD A-3, confidence low); the ellipsoidal datum is this
+    project's documented choice.
+\end{itemize}
+
+\section{Discretization and implementation}
+\label{sec:env:implementation}
+
+Time flows from the mission epoch through the Phase~2 time systems
+(Chapter~\ref{ch:time}): the Python layer converts the UTC epoch to a
+two-part TAI epoch across the binding (the core never parses text, D-2);
+each right-hand-side evaluation at mission-elapsed $t$ forms
+$\mathrm{TAI} + t$, from which the frame chain takes TT and the ephemeris
+lookups take TDB seconds since J2000. The TDB epoch and the body-fixed
+rotation are computed once per evaluation and shared by every term.
+
+The model is evaluated through either integrator of
+Chapter~\ref{ch:integrators} (FR-11): fixed-step RK4 with truth records
+by step decimation (exactly the Phase~1 semantics), or adaptive RKF7(8)
+through the event-aware driver of Chapter~\ref{ch:events} with truth
+records sampled from the cubic Hermite dense output at
+$k/f_{\mathrm{truth}}$. Dense-output interpolation error is bounded by
+$h^{4}/384\,\max\lVert\vv{r}^{(4)}\rVert$ (Chapter~\ref{ch:integrators}),
+so $h_{\max}$ is the logging-accuracy control; the cross-tool missions
+pin $h_{\max} = \qty{30}{\second}$ (interpolation
+$\sim\qty{2e-2}{\metre}$ at LEO, far below the exit-criterion gates).
+Construction loads the gravity field and ephemeris before the time loop;
+evaluation performs no heap allocation and no file I/O (D-10).
+
+\section{Validation evidence}
+\label{sec:env:validation}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the composition layer (doctest,
+    \texttt{cpp/tests/test\_environment.cpp}; pytest,
+    \texttt{tests/python/}; verify checks,
+    \texttt{python/star\_reacher/verify.py}). The physics of each term is
+    gated in its own chapter's golden suite.}
+  \label{tab:env:validation}
+  \begin{tabular}{lp{8.2cm}}
+    \hline
+    Test & What it pins \\
+    \hline
+    \testid{env_composition_matches_sum_of_terms} &
+      Full Earth stack (harmonic gravity, Sun+Moon third bodies, SRP,
+      Harris--Priester drag) equals the independently recomposed sum of
+      the per-model terms with the same frame chain and ephemeris
+      arithmetic, to $10^{-12}$ relative. \\
+    \testid{env_vrel_corotating_definition} &
+      The isolated drag term uses
+      $\vv{v} - \vv{\omega}\times\vv{r}$ (and demonstrably not the
+      inertial velocity). \\
+    \testid{env_run_double_run_bit_identity} &
+      \texttt{run\_env} double runs are byte-identical for both
+      integrators; RK4 and RKF7(8) final states agree at the metre level
+      on a short arc. \\
+    \testid{env_error_paths} &
+      Constructor and configuration rejections: unknown bodies, central
+      body as perturber, missing ephemeris, regime-inconsistent
+      atmospheres, malformed adaptive controls; \texttt{gm()} wiring to
+      the cited constants. \\
+    \testid{V018} &
+      Verify-tier perturbed double-run SHA-256 bit-identity on
+      synthesized field and ephemeris fixtures (both integrators). \\
+    \testid{test_leo_gravity_8x8_runs_and_is_deterministic} &
+      Committed 7-day cross-tool gravity mission: bit-identical double
+      run, bounded orbit, drift-free J2-inclusive energy. \\
+    \testid{test_leo_drag_hp_runs_and_loses_energy} &
+      Committed 7-day cross-tool drag mission: bit-identical double run,
+      bounded orbit, secular energy loss from drag alone. \\
+    \hline
+  \end{tabular}
+\end{table}
+
+The external-truth comparison for the two committed cross-tool missions
+(GMAT for gravity-only, Orekit for Harris--Priester drag; Phase~3 exit
+criterion~5) is maintainer-side per D-15; the frozen configuration both
+tools must replicate is specified in
+\texttt{tests/golden/crosstool/README.md}.
+
+\section{References}
+\label{sec:env:references}
+
+Model derivations: Chapters~\ref{ch:twobody}, \ref{ch:gravity},
+\ref{ch:thirdbody}, \ref{ch:srp}, \ref{ch:ussa76},
+\ref{ch:harrispriester}, \ref{ch:marsatmosphere}, and~\ref{ch:drag}.
+Frames and time: Chapters~\ref{ch:frames} and~\ref{ch:time}. Integrators
+and event-aware driver: Chapters~\ref{ch:integrators}
+and~\ref{ch:events}. Constants: DE440 header GMs~\cite{park2021}; IERS
+Conventions (2010)~\cite{iers2010}; IAU 2015 cartographic
+report~\cite{archinal2018}; WGS84~\cite{nima2000}; formulation context in
+Montenbruck and Gill~\cite{montenbruck2000} and
+Vallado~\cite{vallado2013}.

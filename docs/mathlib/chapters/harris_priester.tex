@@ -1,0 +1,260 @@
+% Chapter — Harris–Priester upper-atmosphere density model (FR-8). Follows
+% the mandatory FR-29 six-section template: purpose; assumptions and domain
+% of validity; derivation; discretization and implementation; validation
+% evidence; references. The equation labels eq:hp:interp, eq:hp:cospow,
+% eq:hp:density, eq:hp:apex, and eq:hp:geodetic are echoed verbatim in
+% comments in cpp/src/models/atmosphere_hp.cpp (FR-29
+% equation-label-to-code traceability); renaming them breaks that trace.
+\chapter{Earth Atmosphere: Harris--Priester Density Model}
+\label{ch:harrispriester}
+
+\section{Purpose}
+\label{sec:hp:purpose}
+
+This chapter documents the orbit-decay drag atmosphere (FR-8): the modified
+Harris--Priester density model in the form given by Montenbruck and
+Gill~\cite[Sect.~3.5.2]{montenbruck2000}, whose underlying physics is the
+time-dependent upper-atmosphere model of Harris and
+Priester~\cite{harris1962}. The model is fully deterministic --- a fixed
+mean-solar-activity coefficient table plus a diurnal-bulge term, with no
+space-weather inputs (D-10 determinism; FR-8 explicitly excludes
+space-weather-driven models). It supplies the density consumed by the
+cannonball drag acceleration of Chapter~\ref{ch:drag} in the orbital
+regime, 100--1000~km. Formulation compatibility with Orekit's
+\texttt{HarrisPriester} class~\cite{orekithp} is a design requirement: the
+frozen Phase~3 cross-tool drag case (exit criterion~5, decision D-15) uses
+Orekit as truth because GMAT does not implement Harris--Priester. The model
+is implemented in \texttt{cpp/src/models/atmosphere\_hp.cpp} with its
+interface in \texttt{cpp/include/star/models/atmosphere\_hp.hpp}.
+
+\section{Assumptions and domain of validity}
+\label{sec:hp:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Mean solar activity.} The committed coefficient table is
+    the Montenbruck--Gill mean-activity table; actual thermospheric
+    density varies by factors of several with the solar cycle and
+    geomagnetic activity. Montenbruck and Gill place the model's
+    representative accuracy near $10$--$20\,\%$ for the regimes it was
+    fitted to~\cite[Sect.~3.5.2]{montenbruck2000}; treat absolute decay
+    predictions accordingly.
+  \item \textbf{Diurnal bulge only.} The single harmonic
+    $\cos^{n}(\psi/2)$ apex/antapex modulation is the only local-time
+    dependence; semiannual, 27-day, and geomagnetic variations are not
+    modeled.
+  \item \textbf{Static bulge geometry.} The bulge apex is taken at the
+    Sun's declination, lagging the Sun by \ang{30} in right ascension
+    (the thermospheric response lag)~\cite[Sect.~3.5.2]{montenbruck2000};
+    the same constant is used by the Orekit reference
+    implementation~\cite{orekithp}.
+  \item \textbf{Geodetic height argument.} The table altitude is geodetic
+    height above the reference ellipsoid. This project evaluates it above
+    the WGS84 ellipsoid ($a = \qty{6378137.0}{\metre}$,
+    $1/f = 298.257223563$~\cite{nima2000}; values in
+    \texttt{star/constants.hpp}), matching the Orekit cross-tool
+    configuration. The density function itself takes the altitude as an
+    argument, so a caller may supply a height computed against any
+    ellipsoid.
+  \item \textbf{Inclination-dependent exponent.} The bulge exponent $n$
+    ranges from 2 for low-inclination orbits to 6 for polar
+    orbits~\cite[Sect.~3.5.2]{montenbruck2000}. The default is $n = 4$,
+    adopted from the Orekit reference implementation~\cite{orekithp} so
+    that default configurations of the two tools coincide; mission
+    configuration overrides it per orbit.
+\end{enumerate}
+
+Domain of validity: geodetic altitude
+$h \in [\qty{100}{\kilo\metre}, \qty{1000}{\kilo\metre}]$ (the table
+span) and $n \in [2, 6]$. Out-of-domain behavior, matching the code
+exactly: below \qty{100}{\kilo\metre} and for non-finite or
+out-of-range arguments ($|\cos\psi| > 1$, $n < 2$, $n > 6$) the model
+throws \texttt{std::domain\_error}; above \qty{1000}{\kilo\metre} it
+returns exactly zero. Both choices mirror the Orekit reference
+implementation (which raises an altitude exception below the table and
+returns zero above it), keeping the cross-tool trajectories comparable;
+they are gated by \testid{ATM-HP-DOMAIN}.
+
+\section{Derivation}
+\label{sec:hp:derivation}
+
+\subsection{Antapex and apex profiles}
+
+The committed table lists, at altitudes $h_i$ (100--1000~km, 50 rows), the
+minimum (antapex) density $\rho_{m,i}$ and maximum (apex) density
+$\rho_{M,i}$ for mean solar activity
+\cite[Sect.~3.5.2, pp.~89--91]{montenbruck2000}. Within a bracket
+$[h_i, h_{i+1}]$ each profile is an exponential with the constant scale
+height implied by the bracket endpoints,
+$H_m = (h_i - h_{i+1}) / \ln(\rho_{m,i+1}/\rho_{m,i})$, so that
+\begin{equation}
+  \rho_m(h) \;=\; \rho_{m,i} \exp\!\left(\frac{h_i - h}{H_m}\right)
+  \;=\; \rho_{m,i}
+    \left(\frac{\rho_{m,i+1}}{\rho_{m,i}}\right)^{\textstyle
+      \frac{h_i - h}{h_i - h_{i+1}}},
+  \label{eq:hp:interp}
+\end{equation}
+and identically for $\rho_M(h)$. The second (power) form is exactly the
+first with the scale height eliminated; it is the form the reference
+implementation evaluates~\cite{orekithp}, and this implementation follows
+it operation for operation so the two tools differ only in floating-point
+rounding. At $h = h_i$ the exponent is zero and the tabulated value is
+returned exactly.
+
+\subsection{Diurnal bulge}
+
+Let $\vv{u}_r$ be the unit satellite position vector and $\vv{u}_b$ the
+unit vector toward the bulge apex, both resolved in any common
+Earth-equatorial frame. With $\cos\psi = \vv{u}_b \cdot \vv{u}_r$, the
+half-angle identity gives the bulge weight without evaluating $\psi$
+itself:
+\begin{equation}
+  \cos^{2}\!\frac{\psi}{2} \;=\; \frac{1 + \cos\psi}{2},
+  \qquad
+  \cos^{n}\!\frac{\psi}{2}
+    \;=\; \left(\frac{1 + \cos\psi}{2}\right)
+          \left(\sqrt{\frac{1 + \cos\psi}{2}}\,\right)^{\!n-2},
+  \label{eq:hp:cospow}
+\end{equation}
+which is well defined for the non-integer exponents the configuration
+permits. The density is the antapex profile plus the bulge modulation
+\cite[Sect.~3.5.2]{montenbruck2000}:
+\begin{equation}
+  \rho(h, \psi) \;=\; \rho_m(h)
+    + \bigl[\rho_M(h) - \rho_m(h)\bigr]\cos^{n}\!\frac{\psi}{2}.
+  \label{eq:hp:density}
+\end{equation}
+At $\psi = 0$ (apex) the model returns $\rho_M(h)$; at $\psi = \pi$
+(antapex) it returns $\rho_m(h)$ --- the two cases the criterion-8 gate
+pins.
+
+The apex direction is the unit Sun direction $\vv{u}_s = (s_x, s_y, s_z)$
+rotated by the lag angle $\lambda_b = \ang{30}$ about the Earth's polar
+($+z$) axis, which advances its right ascension by $\lambda_b$ while
+preserving its declination:
+\begin{equation}
+  \vv{u}_b \;=\;
+  \begin{bmatrix}
+    s_x \cos\lambda_b - s_y \sin\lambda_b \\
+    s_x \sin\lambda_b + s_y \cos\lambda_b \\
+    s_z
+  \end{bmatrix}.
+  \label{eq:hp:apex}
+\end{equation}
+
+\subsection{Geodetic altitude}
+
+The model's height argument is geodetic. For callers holding an
+Earth-fixed Cartesian position $(x, y, z)$, the module provides the
+closed-form geodetic-altitude approximation of
+Bowring~\cite{bowring1976}: with $p = \sqrt{x^2 + y^2}$,
+$e^2 = f(2-f)$, $e'^2 = e^2/(1-e^2)$, $b = a(1-f)$, and starting parametric
+latitude $\tan u = (z/p)(a/b)$, one fixed refinement of
+\begin{equation}
+  \tan\phi \;=\; \frac{z + e'^2\, b \sin^3 u}{p - e^2\, a \cos^3 u},
+  \qquad
+  h \;=\; \frac{p}{\cos\phi} - \frac{a}{\sqrt{1 - e^2 \sin^2\phi}},
+  \label{eq:hp:geodetic}
+\end{equation}
+after which $u$ is recomputed from $\phi$ and
+equation~\eqref{eq:hp:geodetic} is applied once more. Bowring's iteration
+converges cubically; for heights within this model's domain the fixed
+two-pass evaluation is accurate to well below a millimetre, which is seven
+orders of magnitude below the density model's own fidelity. The fixed pass
+count keeps the evaluation branch-free and deterministic (D-10).
+
+\section{Discretization and implementation}
+\label{sec:hp:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/atmosphere\_hp.cpp}; the source comments echo
+    the labels \texttt{eq:hp:interp}, \texttt{eq:hp:cospow},
+    \texttt{eq:hp:density}, \texttt{eq:hp:apex}, and
+    \texttt{eq:hp:geodetic} verbatim.
+  \item \textbf{Compiled-in table with a committed check copy.} The
+    50-row coefficient table is compiled into the model source in
+    \unit{\kilogram\per\metre\cubed} (the book prints
+    \unit{\gram\per\kilo\metre\cubed} $= 10^{-12}$
+    \unit{\kilogram\per\metre\cubed}), digit-for-digit identical to the
+    Orekit reference table. The committed golden
+    \texttt{tests/golden/atmosphere/harris\_priester\_table.toml} is the
+    independent transcription check: test \testid{ATM-HP-NODES} requires
+    the compiled table to match it bit-for-bit after \texttt{strtod}. A
+    runtime file load was rejected: the core never parses text (D-2).
+  \item \textbf{Purity.} The density function is a pure function of
+    (geodetic altitude, $\cos\psi$, $n$); the bulge-apex construction
+    (equation~\eqref{eq:hp:apex}) and the geodetic-altitude helper
+    (equation~\eqref{eq:hp:geodetic}) are separate pure functions. Frame
+    handling and ellipsoid choice remain with the caller (the EOM layer
+    owns frames), which is what keeps the model testable against the
+    published values without an ephemeris in the loop.
+  \item \textbf{Evaluation-order compatibility.} Bracket search is a
+    fixed-order forward scan; the interpolation is evaluated in the power
+    form of equation~\eqref{eq:hp:interp}; the bulge weight uses
+    equation~\eqref{eq:hp:cospow} with the reference implementation's
+    guard (weight set to zero when $\cos(\psi/2) \le 10^{-12}$, i.e.\
+    within double rounding of the exact antapex) --- each choice mirrors
+    Orekit~\cite{orekithp} so cross-tool differences reduce to
+    floating-point rounding.
+  \item \textbf{Determinism.} Straight-line binary64 arithmetic, fixed
+    scan order, no data-dependent iteration counts; libm
+    \texttt{pow}/\texttt{log}/\texttt{sqrt} contribute the usual
+    last-ulp cross-platform spread, orders below every committed
+    tolerance.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:hp:validation}
+
+Table~\ref{tab:hp:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
+provenance and tolerances are recorded in
+\texttt{tests/golden/atmosphere/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the Harris--Priester model (doctest,
+    \texttt{cpp/tests/test\_atmosphere.cpp}).}
+  \label{tab:hp:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{ATM-HP-NODES} &
+      Phase~3 exit criterion~8: with the bulge term pinned to its minimum
+      ($\cos\psi = -1$) and separately its maximum ($\cos\psi = +1$), the
+      model evaluated at every one of the 50 published altitude nodes
+      reproduces the published $\rho_{\min}$/$\rho_{\max}$ value to 4
+      significant figures (at-node evaluation is exact by construction,
+      equation~\eqref{eq:hp:interp}); the compiled table equals the
+      committed transcription check copy bit-for-bit. \\
+    \testid{ATM-HP-OFFNODE} &
+      Eight off-node cases (101--995~km, $\cos\psi \in [-1,1]$,
+      $n \in \{2,4,6\}$) match the independent 50-digit mpmath reference
+      to $10^{-13}$ relative; the apex construction
+      (equation~\eqref{eq:hp:apex}) and the geodetic helper
+      (equation~\eqref{eq:hp:geodetic}, closure against exact synthesized
+      geodetic points) are exercised in the same case. \\
+    \testid{ATM-HP-DOMAIN} &
+      Out-of-domain behavior of Section~\ref{sec:hp:domain}:
+      \texttt{std::domain\_error} below \qty{100}{\kilo\metre} and for
+      invalid $\cos\psi$/$n$/non-finite inputs; exactly zero above
+      \qty{1000}{\kilo\metre}. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:hp:references}
+
+This chapter relies on Montenbruck and Gill~\cite{montenbruck2000},
+Sect.~3.5.2, for the model formulation and the mean-solar-activity
+coefficient table; on Harris and Priester~\cite{harris1962} for the
+underlying physical model; on the Orekit \texttt{HarrisPriester}
+implementation~\cite{orekithp} as the formulation-compatibility target and
+table transcription source (decision D-15); on NIMA
+TR8350.2~\cite{nima2000} for the WGS84 ellipsoid parameters; and on
+Bowring~\cite{bowring1976} for the geodetic-altitude conversion. Full
+bibliographic details appear in the bibliography.

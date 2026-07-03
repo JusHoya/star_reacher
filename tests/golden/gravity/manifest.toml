@@ -1,0 +1,103 @@
+# Provenance manifest for the gravity golden set in this directory
+# (FR-22 layer 1: uncited golden = lint failure; schema documented in
+# tests/golden/README.md). This manifest is also the committed fetch record
+# for the FR-5 gravity sources: the source URLs and SHA-256 pins below are
+# the ones `star data fetch egm2008 | grgm1200a | mro120f` enforces, so any
+# workstream can re-verify the data/ files against this file without network.
+
+schema_version = 1
+
+[golden]
+directory = "gravity"
+date = "2026-07-02"
+generation = """
+All files are written by tests/golden/gravity/generate.py, which verifies
+the three source coefficient files against the SHA-256 pins recorded in
+python/star_reacher/data_fetch.py (fetching via the pipeline if absent),
+truncates each to its excerpt degree, writes the full-precision CSV form,
+re-reads that CSV and writes the SRGRAV v1 binary form from the re-read
+values (so both committed forms are provably the same data), self-checks
+pyshtools MakeGravGridPoint's output convention on a monopole field against
+the closed form, evaluates the 20 exit-criterion-1 states with pyshtools
+over the SAME committed excerpt coefficients, and cross-checks every golden
+acceleration against a pure-Python mirror of the core's Pines recursions
+(measured worst relative difference 2.7e-15 on 2026-07-02; generation-time
+honesty check only). Regenerating is
+`<venv-with-pyshtools> python tests/golden/gravity/generate.py`
+(pyshtools 4.14.1, numpy 2.5.0, Python 3.12.10; network only if data/ is
+empty; the committed outputs are consumed offline).
+
+Source files (the committed fetch record; data/ itself stays git-ignored):
+- EGM2008.gfc (252,140,870 bytes), retrieved 2026-07-02 from
+  https://icgem.gfz.de/getmodel/gfc/c50128797a9cb62e936337c890e4425f03f0461d7329b09a8cc8561504465340/EGM2008.gfc
+  SHA-256 ab5b524da073e63b5bdceb7ca47a0de07a26dd44a1c5798f39fc98dc80af70fd
+  (gfc header: GM = 3.986004415e14 m^3/s^2, R = 6378136.3 m, tide_free,
+  fully normalized).
+- gggrx_1200a_sha.tab (88,059,844 bytes; GRGM1200A), retrieved 2026-07-02 from
+  https://pds-geosciences.wustl.edu/grail/grail-l-lgrs-5-rdr-v1/grail_1001/shadr/gggrx_1200a_sha.tab
+  SHA-256 fa04c3dce9376948ad243f3df74144e2602f12d183ea4d179604ed0a79da7ded
+  (SHADR header: GM = 4902.8001224453001 km^3/s^2, R = 1738.0 km, fully
+  normalized; the PDS label gggrx_1200a_sha.lbl, SHA-256
+  c478c251e6e6bdd9fe130964e087a933c5db7f544b3f851fecd3e7a6f5729374, states
+  the nominal Love number k2 = 0.024133 but no permanent-tide convention,
+  recorded honestly as tide system "unknown").
+- jgmro_120f_sha.tab (900,604 bytes; MRO120F), retrieved 2026-07-02 from
+  https://pds-geosciences.wustl.edu/mro/mro-m-rss-5-sdp-v1/mrors_1xxx/data/shadr/jgmro_120f_sha.tab
+  SHA-256 ddd3de9c30d75879fe37aa17a1149e7c96c141c095962954cb7ea865a2c025b6
+  (SHADR header: GM = 0.4282837566395650e5 km^3/s^2, R = 3396.0 km, fully
+  normalized; the PDS label jgmro_120f_sha.lbl, SHA-256
+  bf50ba3a03c1c2ec8d63c3132a9b3cd89a5e880d546f195d9eb10a902ea0c80a, states
+  the degree-2 coefficients exclude the permanent tide: tide-free). This
+  source pin is independently corroborated: pyshtools 4.14.1 pins the
+  identical SHA-256 for the same PDS URL in its dataset registry.
+
+Full-degree repacks left in data/ for downstream workstreams (regenerable
+bytes, pure functions of the pinned sources; recorded here so they can be
+verified without refetching):
+- data/egm2008_n70.srgrav
+  SHA-256 47e2b65049dd7db379b0f2765c10e851628fa43fe5063d63fe38a37574ac52da
+- data/grgm1200a_n120.srgrav
+  SHA-256 0b9b0795ee125c15b0aa07557ed4c1bb3814da3b4bda284819309a1bda1d8e07
+- data/mro120f_n80.srgrav
+  SHA-256 a421e57351363613f823a4a0186e85fd448fbc23aef82c2fc91b3b4a14dacd84
+"""
+
+[[file]]
+name = "earth_egm2008_n20.csv"
+source = "EGM2008.gfc (SHA-256 ab5b524da073e63b5bdceb7ca47a0de07a26dd44a1c5798f39fc98dc80af70fd), ICGEM (GFZ) getmodel distribution, retrieved 2026-07-02; truncated to 20x20"
+citation = "Pavlis, Holmes, Kenyon, and Factor, 'The development and evaluation of the Earth Gravitational Model 2008 (EGM2008)', Journal of Geophysical Research 117, B04406, 2012; ICGEM service: Ince et al., Earth System Science Data 11, 647-674, 2019"
+generation = "write_excerpt_csv() in generate.py: one decimal-to-binary64 conversion per source value, printed with repr() so parsing recovers the identical binary64; GM/R from the gfc header; tide system tide_free per the gfc header"
+date = "2026-07-02"
+tolerance = "not applicable (input fixture; exact decimal round trip verified at generation time)"
+
+[[file]]
+name = "moon_grgm1200a_n50.csv"
+source = "gggrx_1200a_sha.tab (SHA-256 fa04c3dce9376948ad243f3df74144e2602f12d183ea4d179604ed0a79da7ded), NASA PDS Geosciences Node GRAIL archive, retrieved 2026-07-02; truncated to 50x50"
+citation = "Lemoine et al., 'GRGM900C: A degree 900 lunar gravity model from GRAIL primary and extended mission data', Geophysical Research Letters 41, 3382-3389, 2014 (the reference the GRGM1200A PDS label designates); Goossens et al., 'High-Resolution Gravity Field Models from GRAIL Data and Implications for Models of the Density Structure of the Moon's Crust', JGR Planets 125, e2019JE006086, 2020"
+generation = "write_excerpt_csv() in generate.py, as earth_egm2008_n20.csv; GM/R from the SHADR header (km -> m and km^3/s^2 -> m^3/s^2 by exact powers of ten); tide system 'unknown' (not stated by the PDS label)"
+date = "2026-07-02"
+tolerance = "not applicable (input fixture; exact decimal round trip verified at generation time)"
+
+[[file]]
+name = "mars_mro120f_n20.csv"
+source = "jgmro_120f_sha.tab (SHA-256 ddd3de9c30d75879fe37aa17a1149e7c96c141c095962954cb7ea865a2c025b6), NASA PDS Geosciences Node MRO radio-science archive, retrieved 2026-07-02; truncated to 20x20"
+citation = "Konopliv et al., 'Detection of the Chandler Wobble of Mars From Orbiting Spacecraft', Geophysical Research Letters 47, e2020GL090568, 2020"
+generation = "write_excerpt_csv() in generate.py, as earth_egm2008_n20.csv; GM/R from the SHADR header; tide system tide-free per the PDS label"
+date = "2026-07-02"
+tolerance = "not applicable (input fixture; exact decimal round trip verified at generation time)"
+
+[[file]]
+name = "earth_egm2008_n20.srgrav / moon_grgm1200a_n50.srgrav / mars_mro120f_n20.srgrav (3 files)"
+source = "the CSV excerpts above, re-read and written as SRGRAV v1 (docs/formats/srgrav_v1.md) by star_reacher.data_fetch.write_srgrav"
+citation = "as the corresponding CSV excerpts"
+generation = "generate.py: write_srgrav(read_coeffs_csv(csv)); committed binary fixtures follow the Phase 2 exception recorded in tests/golden/README.md (real coefficient sets cannot be synthesized in test code); marked binary in .gitattributes"
+date = "2026-07-02"
+tolerance = "exact (byte equality): tests/python/test_gravity_data.py rebuilds each binary from its committed CSV and requires identical bytes, so the two committed forms can never drift apart"
+
+[[file]]
+name = "pyshtools_accel.toml"
+source = "pyshtools 4.14.1 (SHTOOLS backend) MakeGravGridPoint point evaluation over the committed excerpt coefficients at 20 body-fixed states (8 Earth incl. 8x8 and 20x20 truncations, 6 Moon 50x50, 6 Mars 20x20; latitudes to +/-89.95 deg near both poles)"
+citation = "Wieczorek and Meschede, 'SHTools: Tools for Working with Spherical Harmonics', Geochemistry, Geophysics, Geosystems 19, 2574-2592, 2018; coefficient citations as the excerpt files"
+generation = "generate.py: MakeGravGridPoint(cilm, gm, r0, r, lat, lon, lmax, omega=0) with GM/R from each excerpt's own header, output triad (g_r, g_theta, g_phi) mapped to Cartesian; the triad and sign convention are pinned by a monopole closed-form self-check that must pass to bit level before any golden is written. Positions and accelerations committed as binary64 hex"
+date = "2026-07-02"
+tolerance = "< 1e-12 relative on the acceleration-vector difference norm at every state (Phase 3 exit criterion 1), enforced by doctest GRAV-XTOOL-20. The bound is the exit criterion verbatim; the generation-time Pines-mirror cross-check measured worst 2.7e-15, so the gate carries ~2.5 orders of margin over independent-implementation agreement while any recursion, normalization, or frame defect fails it decisively"

@@ -1,0 +1,437 @@
+% Chapter — Spherical-harmonic gravity (FR-5). Follows the mandatory FR-29
+% six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. The equation labels eq:gravity:potential, eq:gravity:pines,
+% eq:gravity:diag, eq:gravity:subdiag, eq:gravity:column, eq:gravity:deriv,
+% eq:gravity:rmim, eq:gravity:sums, and eq:gravity:accel are echoed verbatim
+% in comments in cpp/src/models/gravity.cpp and
+% cpp/include/star/models/gravity.hpp (FR-29 equation-label-to-code
+% traceability); renaming them breaks that trace.
+\chapter{Spherical-Harmonic Gravity}
+\label{ch:gravity}
+
+\section{Purpose}
+\label{sec:gravity:purpose}
+
+This chapter documents the harmonic gravity model (FR-5): evaluation of
+the gravitational acceleration of an extended central body from a fully
+normalized spherical-harmonic coefficient set --- Earth EGM2008, Moon
+GRGM1200A, Mars MRO120F --- in the body-fixed frame, using the Pines
+formulation, which is regular at the poles. The model supports a runtime
+truncation degree and order and the three FR-5 fidelity tiers
+(point-mass, $J_2$-only, full $n \times m$). Field data arrives either
+from in-memory arrays (tests) or from the SRGRAV~v1 binary container
+written by \texttt{star data fetch}
+(\texttt{docs/formats/srgrav\_v1.md}); the returned acceleration always
+includes the central (degree-0) term. The module is implemented in
+\texttt{cpp/src/models/gravity.cpp} with its interface in
+\texttt{cpp/include/star/models/gravity.hpp}; body-frame orientation is
+the frames chapter's responsibility (Chapter~\ref{ch:frames}).
+
+\section{Assumptions and domain of validity}
+\label{sec:gravity:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Static, rigid field.} The coefficient set is constant:
+    solid and ocean tides, atmospheric loading, and secular
+    $\bar{C}_{2,0}$ drift are unmodeled. Their effect on the low-degree
+    coefficients is at the $10^{-8}$--$10^{-9}$ level of
+    $\bar{C}_{2,0}$~\cite{pavlis2012}, far below the mission-analysis
+    fidelity this simulator targets.
+  \item \textbf{Fully normalized inputs.} Coefficients are $4\pi$
+    (geodesy) fully normalized $\bar{C}_{nm}, \bar{S}_{nm}$; the data
+    pipeline rejects any source that declares another normalization.
+    Each field's $\mu = GM$ and reference radius $R$ come from the same
+    source header as its coefficients --- the triple is self-consistent
+    and is never mixed with constants from elsewhere. In particular
+    EGM2008's $\mu = \qty{3.986004415e14}{\metre\cubed\per\second\squared}$
+    differs deliberately from the IERS value in
+    \texttt{constants.hpp}~\cite{iers2010} used by the two-body
+    placeholder model.
+  \item \textbf{Permanent-tide convention documented, not applied.} The
+    tide system of each source (EGM2008 tide-free per its header;
+    MRO120F tide-free per its PDS label; GRGM1200A not stated by its
+    label, recorded as unknown) is carried through the SRGRAV header for
+    cross-tool bookkeeping. It never enters evaluation; it only affects
+    which $\bar{C}_{2,0}$ convention a comparison tool must be fed.
+  \item \textbf{Exterior evaluation.} The exterior series converges for
+    $r$ greater than the Brillouin sphere radius (here the reference
+    radius $R$); all validation states satisfy $r > R$. Below $R$ the
+    series may diverge and results are not trustworthy.
+  \item \textbf{Body-fixed input, body-fixed output.} Position and
+    acceleration are resolved in the source model's body-fixed frame
+    (ITRS-aligned for EGM2008, lunar principal axes for GRGM1200A, IAU
+    Mars body-fixed for MRO120F). Rotation into the integration frame is
+    composed from Chapter~\ref{ch:frames} and is outside this module.
+\end{enumerate}
+
+Domain of validity: degrees up to the shipped maxima ($70\times70$
+Earth, $120\times120$ Moon, $80\times80$ Mars; FR-5). The normalized
+recursions of Section~\ref{sec:gravity:derivation} are the
+forward-stable column recursions recommended for nonsingular
+geopotential models~\cite{lundberg1988}; the normalized Helmholtz values
+$\bar{A}_{nm}(u)$ grow to at most $\sim 10^{23}$ near $|u| = 1$ at
+degree 120 while their multipliers $r_m, i_m$ decay as
+$\cos^m\varphi$, so every summed term is bounded by the corresponding
+normalized-Legendre magnitude $O(\sqrt{2n+1})$ and binary64 overflow is
+excluded by orders of magnitude at the shipped degrees.
+
+Out-of-domain behavior, matching the code exactly: a requested
+truncation degree or order beyond the stored band throws
+\texttt{std::invalid\_argument} (the file carries no information above
+its band; fidelity is never silently degraded); evaluation at $r = 0$
+throws \texttt{std::domain\_error}; the $J_2$-only tier on a field of
+degree $< 2$ throws \texttt{std::invalid\_argument}; a malformed SRGRAV
+file (magic, major version, size, tide code) is rejected by the loader
+with \texttt{std::runtime\_error} naming the defect. Evaluation at
+$R_{\text{surface}} < r < R$ (possible for the Moon and Mars, whose
+reference radii exceed parts of the physical surface) proceeds without
+warning; assumption 4 bounds its trustworthiness.
+
+\section{Derivation}
+\label{sec:gravity:derivation}
+
+\subsection{Normalized harmonic potential}
+
+The exterior gravitational potential of an extended body, in body-fixed
+spherical coordinates (radius $r$, geocentric latitude $\varphi$,
+longitude $\lambda$), is the standard harmonic
+expansion~\cite{vallado2013, pavlis2012}
+\begin{equation}
+  V = \frac{\mu}{r} \sum_{n=0}^{N} \left(\frac{R}{r}\right)^{\!n}
+      \sum_{m=0}^{\min(n,M)} \bar{P}_{nm}(\sin\varphi)
+      \left[ \bar{C}_{nm} \cos m\lambda + \bar{S}_{nm} \sin m\lambda
+      \right],
+  \label{eq:gravity:potential}
+\end{equation}
+with $\bar{P}_{nm} = N_{nm} P_{nm}$ the $4\pi$ fully normalized
+associated Legendre functions,
+\begin{equation}
+  N_{nm} = \sqrt{\frac{(2 - \delta_{0m})(2n+1)(n-m)!}{(n+m)!}},
+  \label{eq:gravity:norm}
+\end{equation}
+and $\bar{C}_{nm} = C_{nm}/N_{nm}$, $\bar{S}_{nm} = S_{nm}/N_{nm}$ the
+correspondingly normalized Stokes coefficients. The $n = 0$ term is
+$\mu \bar{C}_{0,0} / r$ with $\bar{C}_{0,0} = 1$: the monopole is
+carried entirely by $\mu$, which is why the model's acceleration always
+contains the central term. For a center-of-mass origin the degree-1
+coefficients vanish, which every shipped field satisfies. The dynamic
+form factor follows from equation~\eqref{eq:gravity:norm} at
+$(n,m) = (2,0)$: $N_{2,0} = \sqrt{5}$, so
+$J_2 = -C_{2,0} = -\sqrt{5}\,\bar{C}_{2,0}$.
+
+Evaluating equation~\eqref{eq:gravity:potential} through latitude and
+longitude derivatives is singular at the poles, where the local
+east--north basis degenerates ($1/\cos\varphi$ factors). The Pines
+formulation removes the singularity by construction.
+
+\subsection{Pines coordinates and Helmholtz polynomials}
+
+Following Pines~\cite{pines1973}, parameterize the field point by its
+radius and direction cosines,
+\begin{equation}
+  s = \frac{x}{r}, \qquad t = \frac{y}{r}, \qquad u = \frac{z}{r}
+    = \sin\varphi,
+  \label{eq:gravity:pines}
+\end{equation}
+and define the Helmholtz polynomials
+$A_{nm}(u) = (1 - u^2)^{-m/2} P_{nm}(u)$, which are polynomials in $u$
+(the $(1-u^2)^{m/2}$ factor of $P_{nm}$ is divided out). Because
+$(1 - u^2)^{m/2} = \cos^m\varphi$, the longitude factors combine with
+it into the complex power
+\begin{equation}
+  r_m(s, t) + i\, i_m(s, t) = (s + i t)^m
+    = \cos^m\varphi\, e^{i m \lambda},
+  \label{eq:gravity:rmim}
+\end{equation}
+whose real and imaginary parts obey the product recursion $r_0 = 1$,
+$i_0 = 0$, $r_m = s\, r_{m-1} - t\, i_{m-1}$,
+$i_m = s\, i_{m-1} + t\, r_{m-1}$ --- polynomials in $(s, t)$ with no
+trigonometry, regular at the poles where $s = t = 0$. Each potential
+term then factors as
+\begin{equation}
+  \bar{P}_{nm}(u)\left[\bar{C}_{nm}\cos m\lambda
+    + \bar{S}_{nm}\sin m\lambda\right]
+  = \bar{A}_{nm}(u)\, D_{nm}(s,t), \qquad
+  D_{nm} = \bar{C}_{nm}\, r_m + \bar{S}_{nm}\, i_m,
+  \label{eq:gravity:dnm}
+\end{equation}
+with $\bar{A}_{nm} = N_{nm} A_{nm}$ the normalized Helmholtz values.
+
+\subsection{Normalized recursions}
+
+The unnormalized Helmholtz polynomials satisfy~\cite{pines1973,
+lundberg1988}
+\begin{equation}
+  A_{mm} = (2m-1)!!, \qquad
+  A_{m+1,m} = u\,(2m+1)\,A_{mm}, \qquad
+  (n-m)\,A_{nm} = u\,(2n-1)\,A_{n-1,m} - (n+m-1)\,A_{n-2,m},
+  \label{eq:gravity:unnorm}
+\end{equation}
+and the derivative identity $\mathrm{d}A_{nm}/\mathrm{d}u =
+A_{n,m+1}$. Normalized forms follow by multiplying each relation by
+$N_{nm}$ and absorbing ratios of normalization factors, the approach of
+Lundberg and Schutz~\cite{lundberg1988}. For the diagonal,
+$A_{mm} = (2m-1)A_{m-1,m-1}$ gives
+$\bar{A}_{mm} = (2m-1)\,(N_{mm}/N_{m-1,m-1})\,\bar{A}_{m-1,m-1}$; with
+$N_{mm} = \sqrt{(2-\delta_{0m})(2m+1)/(2m)!}$ the ratio collapses to
+\begin{equation}
+  \bar{A}_{mm} =
+  \sqrt{\frac{(2-\delta_{0m})}{(2-\delta_{0,m-1})}\cdot
+        \frac{2m+1}{2m}}\;\bar{A}_{m-1,m-1}
+  =
+  \begin{cases}
+    \sqrt{3}\;\bar{A}_{0,0}, & m = 1,\\[2pt]
+    \sqrt{\dfrac{2m+1}{2m}}\;\bar{A}_{m-1,m-1}, & m \geq 2,
+  \end{cases}
+  \qquad \bar{A}_{0,0} = 1,
+  \label{eq:gravity:diag}
+\end{equation}
+the $m = 1$ step carrying the extra $\sqrt{2}$ from the
+$(2-\delta_{0m})$ factor switching on between order 0 and order 1. The
+same substitution applied to the second and third of
+equations~\eqref{eq:gravity:unnorm}, with
+$N_{m+1,m}/N_{mm} = \sqrt{(2m+3)}/(2m+1)$,
+$N_{nm}/N_{n-1,m} = \sqrt{(2n+1)(n-m)/\bigl((2n-1)(n+m)\bigr)}$, and
+$N_{nm}/N_{n-2,m} =
+\sqrt{(2n+1)(n-m)(n-m-1)/\bigl((2n-3)(n+m)(n+m-1)\bigr)}$, yields
+\begin{equation}
+  \bar{A}_{m+1,m} = u\,\sqrt{2m+3}\;\bar{A}_{mm},
+  \label{eq:gravity:subdiag}
+\end{equation}
+\begin{equation}
+  \bar{A}_{nm} =
+  u\,\sqrt{\frac{(2n-1)(2n+1)}{(n-m)(n+m)}}\;\bar{A}_{n-1,m}
+  \;-\;
+  \sqrt{\frac{(2n+1)(n+m-1)(n-m-1)}{(2n-3)(n+m)(n-m)}}\;\bar{A}_{n-2,m},
+  \label{eq:gravity:column}
+\end{equation}
+for $n \geq m+2$, and, from the derivative identity with
+$N_{nm}/N_{n,m+1} = \sqrt{(2-\delta_{0m})(n-m)(n+m+1)/2}$,
+\begin{equation}
+  \frac{\mathrm{d}\bar{A}_{nm}}{\mathrm{d}u}
+  = \sqrt{(n-m)(n+m+1)\cdot
+      \tfrac{1}{2}(2-\delta_{0m})}\;\bar{A}_{n,m+1},
+  \qquad \bar{A}_{n,m+1} \equiv 0 \text{ for } m = n.
+  \label{eq:gravity:deriv}
+\end{equation}
+
+\subsection{Gradient assembly}
+
+Write the potential as $V(r, s, t, u) = \sum_{n,m} \rho_n(r)\,
+\bar{A}_{nm}(u)\, D_{nm}(s,t)$ with
+$\rho_n = (\mu/r)(R/r)^n$. The gradients of the Pines coordinates are
+$\nabla s = (\hat{\vv{x}} - s\hat{\vv{r}})/r$,
+$\nabla t = (\hat{\vv{y}} - t\hat{\vv{r}})/r$,
+$\nabla u = (\hat{\vv{z}} - u\hat{\vv{r}})/r$, and
+$\nabla r = \hat{\vv{r}}$, so
+\begin{equation}
+  \vv{a} = \nabla V
+  = a_1 \hat{\vv{x}} + a_2 \hat{\vv{y}} + a_3 \hat{\vv{z}}
+  + \left[\frac{\partial V}{\partial r}
+      - \bigl(s\,a_1 + t\,a_2 + u\,a_3\bigr)\right]\hat{\vv{r}},
+  \qquad
+  a_k \equiv \frac{1}{r}\frac{\partial V}{\partial (s,t,u)_k}.
+  \label{eq:gravity:gradient}
+\end{equation}
+The partials of $D_{nm}$ follow from
+$\partial r_m/\partial s = m\, r_{m-1}$,
+$\partial i_m/\partial s = m\, i_{m-1}$,
+$\partial r_m/\partial t = -m\, i_{m-1}$, and
+$\partial i_m/\partial t = m\, r_{m-1}$ (differentiate
+equation~\eqref{eq:gravity:rmim}), giving per-term auxiliaries
+$E_{nm} = \bar{C}_{nm} r_{m-1} + \bar{S}_{nm} i_{m-1}$ and
+$F_{nm} = \bar{S}_{nm} r_{m-1} - \bar{C}_{nm} i_{m-1}$. Substituting,
+using $\partial \rho_n/\partial r = -(n+1)\rho_n / r$ and the identity
+$s E_{nm} + t F_{nm} = D_{nm}$ (expand and regroup by
+equation~\eqref{eq:gravity:rmim}), the four Pines sums are
+\begin{equation}
+  \begin{aligned}
+    a_1 &= \sum_{n,m} \frac{\rho_n}{r}\, m\, \bar{A}_{nm}\, E_{nm},
+    &\quad
+    a_2 &= \sum_{n,m} \frac{\rho_n}{r}\, m\, \bar{A}_{nm}\, F_{nm},\\
+    a_3 &= \sum_{n,m} \frac{\rho_n}{r}\, \bar{A}'_{nm}\, D_{nm},
+    &\quad
+    a_4 &= \sum_{n,m} \frac{\rho_n}{r}
+      \left[(n+m+1)\,\bar{A}_{nm} + u\,\bar{A}'_{nm}\right] D_{nm},
+  \end{aligned}
+  \label{eq:gravity:sums}
+\end{equation}
+with $\bar{A}'_{nm} = \mathrm{d}\bar{A}_{nm}/\mathrm{d}u$ from
+equation~\eqref{eq:gravity:deriv}, and the acceleration assembles as
+\begin{equation}
+  \boxed{\;\vv{a} = \bigl(a_1 - s\,a_4\bigr)\hat{\vv{x}}
+        + \bigl(a_2 - t\,a_4\bigr)\hat{\vv{y}}
+        + \bigl(a_3 - u\,a_4\bigr)\hat{\vv{z}}.\;}
+  \label{eq:gravity:accel}
+\end{equation}
+Consistency check at degree 0: $\bar{A}_{0,0} = 1$, $D_{0,0} =
+\bar{C}_{0,0} = 1$, $a_1 = a_2 = a_3 = 0$, $a_4 = \mu/r^2$, so
+equation~\eqref{eq:gravity:accel} reduces to
+$-(\mu/r^2)\,\hat{\vv{r}}$, the two-body acceleration of
+Chapter~\ref{ch:twobody}. No factor anywhere divides by
+$\cos\varphi$ or $\sqrt{1-u^2}$: the exact poles ($s = t = 0$,
+$u = \pm 1$) are regular points, the property FR-5 selects the Pines
+formulation for.
+
+\subsection{$J_2$ secular rates (acceptance formulas)}
+
+The first-order secular rates of the node and argument of perigee under
+$J_2$, in mean elements, are~\cite{vallado2013}
+\begin{equation}
+  \dot{\Omega} = -\frac{3}{2}\, n\, J_2
+    \left(\frac{R}{p}\right)^{\!2} \cos i,
+  \qquad
+  \dot{\omega} = \frac{3}{4}\, n\, J_2
+    \left(\frac{R}{p}\right)^{\!2} \bigl(5\cos^2 i - 1\bigr),
+  \label{eq:gravity:j2secular}
+\end{equation}
+with $n = \sqrt{\mu/a^3}$ and $p = a(1 - e^2)$. These are the analytic
+side of the Phase~3 exit-criterion-2 gate
+(\testid{GRAV-J2-SECULAR}); the numerical side is a 30-day $J_2$-only
+propagation whose fitted rates must agree within \qty{0.5}{\percent}.
+
+\section{Discretization and implementation}
+\label{sec:gravity:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/gravity.cpp}; the source comments echo the
+    labels \texttt{eq:gravity:potential}, \texttt{eq:gravity:pines},
+    \texttt{eq:gravity:diag}, \texttt{eq:gravity:subdiag},
+    \texttt{eq:gravity:column}, \texttt{eq:gravity:deriv},
+    \texttt{eq:gravity:rmim}, \texttt{eq:gravity:sums}, and
+    \texttt{eq:gravity:accel} verbatim.
+  \item \textbf{Precomputed recursion tables; no per-call allocation.}
+    The square-root coefficients of
+    equations~\eqref{eq:gravity:diag}--\eqref{eq:gravity:deriv} depend
+    only on $(n, m)$; the evaluator computes them once at construction
+    for the field's full degree, together with all workspace
+    ($\bar{A}$ triangle, $r_m/i_m$, $\rho_n$). The per-call path is
+    multiply--add only and allocation-free (D-10: no heap allocation in
+    the propagation loop).
+  \item \textbf{Fixed evaluation order (D-10).} Per call: the
+    $\bar{A}$ triangle is filled diagonal first, then first
+    sub-diagonal, then column by column in ascending $n$ for each $m$
+    (the forward-stable direction~\cite{lundberg1988}); the four sums of
+    equation~\eqref{eq:gravity:sums} accumulate in ascending $n$ outer,
+    ascending $m$ inner order. The full triangle ($m \leq n$) is
+    computed regardless of the order truncation because
+    equation~\eqref{eq:gravity:deriv} reads column $m + 1$.
+  \item \textbf{Tiers and truncation.} The FR-5 tiers are loop bounds:
+    point-mass evaluates $n = 0$ only; $J_2$-only evaluates $n \in
+    \{0, 2\}$, $m = 0$ (skipping $n = 1$ so a hypothetical non-zero
+    stored degree-1 row cannot leak into the tier); full $n \times m$
+    evaluates the requested band, which must lie within the stored band
+    (out-of-band requests throw; Section~\ref{sec:gravity:domain}).
+    Runtime truncation is arithmetically identical to load-time
+    truncation --- the same terms in the same order --- which
+    \testid{gravity_truncation_consistency} pins at bit level.
+  \item \textbf{Pole behavior and underflow.} At $|u| \to 1$ the
+    $\bar{A}_{nm}$ grow while $r_m, i_m \sim \cos^m\varphi$ decay;
+    products remain bounded (Section~\ref{sec:gravity:domain}). Within
+    $\sim 10^{-2}$ degrees of a pole, high-order $r_m, i_m$ underflow
+    gradually to zero; the affected terms are below $10^{-300}$ of the
+    total and IEEE-754 gradual underflow (guaranteed by the D-10 flags)
+    keeps the result deterministic.
+  \item \textbf{SRGRAV loader.} Binary read only (D-2): magic and major
+    version checked first, then degree/order plausibility, tide-system
+    code, and an exact file-size-versus-header check before any
+    coefficient is interpreted; failures name the defect. Coefficients,
+    $\mu$, and $R$ are stored and consumed as one indivisible model
+    (assumption 2).
+  \item \textbf{Data pipeline.} \texttt{star data fetch egm2008 |
+    grgm1200a | mro120f} downloads each pinned source (SHA-256), parses
+    the ICGEM gfc or PDS SHADR text in Python (D-2 boundary), truncates
+    to the FR-5 degrees, and writes SRGRAV; the committed test excerpts
+    under \texttt{tests/golden/gravity/} carry the same data in CSV and
+    SRGRAV form with byte-anchored equality between the two
+    (provenance: that directory's \texttt{manifest.toml}).
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:gravity:validation}
+
+Table~\ref{tab:gravity:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked
+to exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
+provenance and tolerances are recorded in
+\texttt{tests/golden/gravity/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the spherical-harmonic gravity
+    module.}
+  \label{tab:gravity:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{GRAV-XTOOL-20} &
+      Phase~3 exit criterion 1: acceleration matches independently
+      synthesized pyshtools~4.14.1 values over the same committed
+      excerpt coefficients at 20 states (Earth $8\times8$ and
+      $20\times20$, Moon $50\times50$, Mars $20\times20$; latitudes to
+      $\pm\qty{89.95}{\degree}$) to $< 10^{-12}$ relative on the
+      acceleration vector (observed worst \num{2.7e-15}). \\
+    \testid{GRAV-J2-SECULAR} &
+      Phase~3 exit criterion 2: 30-day $J_2$-only LEO propagation
+      (RKF7(8), $a = \qty{7078.137}{\kilo\metre}$, $e = 0.02$,
+      $i = \qty{97.8}{\degree}$); fitted nodal and apsidal rates match
+      equation~\eqref{eq:gravity:j2secular} within \qty{0.5}{\percent}
+      (observed \qty{0.091}{\percent} and \qty{0.180}{\percent}). \\
+    \testid{gravity_pointmass_tier} &
+      Point-mass tier and point-mass factory equal the closed form
+      $-\mu\hat{\vv{r}}/r^2$ ($< 10^{-15}$ relative) and each other
+      (bit equality). \\
+    \testid{gravity_j2_tier_closed_form} &
+      $J_2$-only tier equals the closed-form central-plus-$J_2$
+      acceleration at four states to $< 10^{-14}$ relative, pinning the
+      $J_2 = -\sqrt{5}\,\bar{C}_{2,0}$ normalization chain. \\
+    \testid{gravity_pole_regularity} &
+      Evaluation exactly on both poles ($s = t = 0$, $u = \pm 1$) is
+      finite, radially dominated, and continuous against a
+      \qty{1}{\metre} off-axis point (bound \qty{1e-4}{\metre\per\second\squared},
+      versus $\sim\qty{4e-6}{\metre\per\second\squared}$ expected from
+      the gradient). \\
+    \testid{gravity_truncation_consistency} &
+      Runtime $8\times8$ truncation of the $20\times20$ field is
+      bit-identical to a load-time-truncated field; repeated evaluation
+      is bit-identical (D-10); out-of-band degree/order requests and
+      $r = 0$ throw. \\
+    \testid{gravity_srgrav_error_paths} &
+      SRGRAV loader rejects bad magic, unsupported major version,
+      truncated bodies, unknown tide codes, and missing files with
+      specific errors. \\
+    \testid{test_write_read_bit_exact} &
+      pytest: SRGRAV write/read round trip is bit-exact and the writer
+      is a pure function (identical bytes on identical input). \\
+    \testid{test_csv_rebuilds_committed_srgrav_bytes} &
+      pytest: each committed CSV excerpt rebuilds its committed SRGRAV
+      excerpt byte-identically, so the two committed forms cannot
+      drift apart. \\
+    \testid{test_committed_headers_match_sources} &
+      pytest: committed excerpt headers carry each source's own $GM$,
+      $R$, and tide system (never \texttt{constants.hpp} values), the
+      monopole is exactly 1, and degree-1 rows are zero. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:gravity:references}
+
+This chapter relies on Pines~\cite{pines1973} for the singularity-free
+formulation (direction-cosine coordinates, Helmholtz polynomials, and
+the four-sum gradient assembly); on Lundberg and
+Schutz~\cite{lundberg1988} for the normalized recursion approach and
+its stability properties; on Vallado~\cite{vallado2013} for the
+harmonic-potential development and the $J_2$ secular-rate formulas; on
+Pavlis et al.~\cite{pavlis2012} for EGM2008; on Lemoine et
+al.~\cite{lemoine2014} and Goossens et al.~\cite{goossens2020} for
+GRGM1200A; on Konopliv et al.~\cite{konopliv2020} for MRO120F; on
+Wieczorek and Meschede~\cite{wieczorek2018} for the pyshtools
+cross-validation tool; and on Ince et al.~\cite{ince2019} for the ICGEM
+distribution service. Full bibliographic details appear in the
+bibliography.

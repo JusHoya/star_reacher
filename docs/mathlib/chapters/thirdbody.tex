@@ -1,0 +1,309 @@
+% Chapter — Third-body gravitational perturbation (FR-6). Follows the
+% mandatory FR-29 six-section template: purpose; assumptions and domain of
+% validity; derivation; discretization and implementation; validation
+% evidence; references. The equation labels eq:thirdbody:naive,
+% eq:thirdbody:q, eq:thirdbody:fq, and eq:thirdbody:accel are echoed
+% verbatim in comments in cpp/src/models/thirdbody.cpp and
+% cpp/tests/test_thirdbody.cpp (FR-29 equation-label-to-code traceability);
+% renaming them breaks that trace.
+\chapter{Third-Body Gravitational Perturbation}
+\label{ch:thirdbody}
+
+\section{Purpose}
+\label{sec:thirdbody:purpose}
+
+This chapter documents the third-body gravitational perturbation model
+(FR-6): the differential acceleration a spacecraft experiences, relative
+to its central body, from the point-mass gravity of an additional
+attracting body (Sun, Moon, Venus, Jupiter, or Earth, per the FR-6 regime
+rules), evaluated in the cancellation-safe $f(q)$ formulation of
+Battin~\cite{battin1999}. The naive difference of two nearly equal
+acceleration vectors loses a geometry-dependent number of significant
+digits in double precision; the $f(q)$ reformulation is algebraically
+identical but avoids the catastrophic subtraction, which is what Phase~3
+exit criterion~7 gates. The model is implemented in
+\texttt{cpp/src/models/thirdbody.cpp} with its interface in
+\texttt{cpp/include/star/models/thirdbody.hpp}; third-body positions come
+from the ephemeris evaluator of Chapter~\ref{ch:ephemeris}, and
+gravitational parameters are supplied by the caller (the model hardcodes
+no body data).
+
+\section{Assumptions and domain of validity}
+\label{sec:thirdbody:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Point-mass third body.} The perturbing body is a point
+    mass or, by Newton's shell theorem, a spherically symmetric mass
+    distribution; its field is characterized entirely by $\mu_3 = GM_3$.
+    Third-body harmonic structure (indirect oblateness) is a PRD non-goal.
+  \item \textbf{Test-particle spacecraft.} The spacecraft's mass is
+    negligible: it perturbs neither the central nor the third body.
+  \item \textbf{Common frame, common origin.} Both input vectors --- the
+    spacecraft position $\vv{r}$ and the third-body position $\vv{s}$ ---
+    are resolved in the same GCRF-oriented inertial frame and are both
+    relative to the central body's center. The model is purely algebraic
+    in these inputs; frame bookkeeping is the caller's responsibility.
+  \item \textbf{Geometric ephemeris positions.} $\vv{s}$ is the geometric
+    (instantaneous) position from Chapter~\ref{ch:ephemeris}; light-time
+    and aberration corrections are excluded from dynamics by the PRD
+    light-time policy (FR-23). The neglected retardation displaces the Sun
+    by $\sim \qty{500}{\second} \times \qty{30}{\kilo\metre\per\second}
+    \approx \qty{1.5e7}{\metre}$, i.e.\ $\sim 10^{-4}$ of $\norm{\vv{s}}$,
+    changing the perturbing acceleration by the same relative order ---
+    the standard convention for planetary force models.
+\end{enumerate}
+
+Domain of validity: any geometry with $\vv{r} \neq \vv{s}$ and
+$\vv{s} \neq \vv{0}$, for every body pair of the FR-6 set; the formulation
+is exact for all separation ratios (it is not a series expansion), so
+cislunar geometries with $\norm{\vv{r}} \sim \norm{\vv{s}}$ are as valid
+as LEO--Sun geometries with $\norm{\vv{r}} \ll \norm{\vv{s}}$. The
+floating-point error bound of
+Section~\ref{sec:thirdbody:implementation} additionally assumes
+$\norm{\vv{r}} < \norm{\vv{s}}$ (spacecraft inside the third body's
+distance), which regime validation (FR-15) guarantees for every
+configurable case.
+
+Out-of-domain behavior, matching the code exactly: at
+$\vv{r} = \vv{s}$ the denominator $\Delta^3$ vanishes and the model
+returns non-finite values (division by zero propagates IEEE infinities or
+NaNs); at $\vv{s} = \vv{0}$ likewise. No function of this module throws:
+it runs inside the deterministic time loop, and excluding physically
+impossible states (a spacecraft coincident with a body center) is the
+configuration validator's job, not the hot path's.
+
+\section{Derivation}
+\label{sec:thirdbody:derivation}
+
+\subsection{The differential acceleration}
+
+Let the central body $B$, the spacecraft $P$, and the third body $T$ have
+inertial positions $\vv{R}_B^{I}$, $\vv{R}_P^{I}$, $\vv{R}_T^{I}$, and
+define the central-body-relative vectors
+\begin{equation}
+  \vv{r} = \vv{R}_P^{I} - \vv{R}_B^{I},
+  \qquad
+  \vv{s} = \vv{R}_T^{I} - \vv{R}_B^{I},
+  \qquad
+  \vv{\Delta} = \vv{s} - \vv{r},
+  \label{eq:thirdbody:vectors}
+\end{equation}
+so $\vv{\Delta}$ points from the spacecraft to the third body. Newton's
+law of gravitation (equation~\eqref{eq:twobody:newton}) applied to the
+spacecraft and to the central body, each attracted by the third body,
+gives
+\begin{equation}
+  \ddot{\vv{R}}_P^{I}
+    = -\,\frac{\mu_B}{r^{3}}\,\vv{r}
+      + \frac{\mu_3}{\Delta^{3}}\,\vv{\Delta},
+  \qquad
+  \ddot{\vv{R}}_B^{I}
+    = \frac{\mu_3}{s^{3}}\,\vv{s}
+      + \mathcal{O}(\mu_P),
+  \label{eq:thirdbody:eom}
+\end{equation}
+with $r = \norm{\vv{r}}$, $s = \norm{\vv{s}}$, $\Delta =
+\norm{\vv{\Delta}}$, and the spacecraft's own pull on the central body
+negligible by assumption 2. Subtracting, the spacecraft's acceleration
+relative to the central body is the two-body term of
+equation~\eqref{eq:twobody:accel} plus the \emph{differential} (direct
+minus indirect) third-body perturbation
+\begin{equation}
+  \vv{p} = \mu_3 \left( \frac{\vv{\Delta}}{\Delta^{3}}
+           - \frac{\vv{s}}{s^{3}} \right).
+  \label{eq:thirdbody:naive}
+\end{equation}
+This is the form a naive implementation evaluates directly, and the form
+the extended-precision golden references evaluate (it is exact; only its
+double-precision evaluation is problematic).
+
+\subsection{Why the naive form cancels}
+
+For $r \ll s$, expand equation~\eqref{eq:thirdbody:naive} to first order
+in $r/s$ (the tidal limit):
+$\vv{p} \approx (\mu_3/s^{3})\bigl(3 (\vv{r} \cdot \hat{\vv{s}})
+\hat{\vv{s}} - \vv{r}\bigr)$, whose magnitude lies between $\mu_3 r /
+s^{3}$ (for $\vv{r} \perp \vv{s}$) and $2 \mu_3 r / s^{3}$ (for $\vv{r}
+\parallel \vv{s}$). Each of the two terms in
+equation~\eqref{eq:thirdbody:naive} has magnitude $\approx \mu_3 /
+s^{2}$, so the subtraction cancels all but a fraction $\sim r/s$ of the
+operands: with operand rounding at relative $\varepsilon \approx
+\num{1.1e-16}$, the difference carries a relative error of order
+$\varepsilon \, s / r$. For the classic LEO--Sun geometry ($r \approx
+\qty{6.8e6}{\metre}$, $s \approx \qty{1.5e11}{\metre}$) that is a loss of
+roughly four to six significant digits depending on rounding luck; the
+committed near-alignment golden state (a low lunar orbiter with Jupiter
+at a far conjunction, $s/r \approx \num{5.4e5}$) demonstrates a measured
+loss of $6.1$ digits (test
+\testid{thirdbody_naive_cancellation_digit_loss}).
+
+\subsection{Battin's $f(q)$ reformulation}
+
+Following Battin~\cite{battin1999} (the treatment also appears in
+Vallado~\cite{vallado2013}), define the dimensionless
+\begin{equation}
+  q = \frac{\vv{r} \cdot (\vv{r} - 2\vv{s})}{\vv{s} \cdot \vv{s}}.
+  \label{eq:thirdbody:q}
+\end{equation}
+Expanding $\vv{\Delta} \cdot \vv{\Delta}$ makes $q$ the exact fractional
+excess of $\Delta^{2}$ over $s^{2}$:
+\begin{equation}
+  \Delta^{2} = (\vv{s} - \vv{r}) \cdot (\vv{s} - \vv{r})
+             = s^{2} - 2\,\vv{r}\cdot\vv{s} + \vv{r}\cdot\vv{r}
+             = s^{2}\,(1 + q).
+  \label{eq:thirdbody:dsq}
+\end{equation}
+Now factor $1/\Delta^{3}$ out of equation~\eqref{eq:thirdbody:naive} and
+eliminate the ratio $\Delta^{3}/s^{3} = (1+q)^{3/2}$ using
+equation~\eqref{eq:thirdbody:dsq}:
+\begin{equation}
+  \vv{p}
+  = \frac{\mu_3}{\Delta^{3}}
+    \left( \vv{\Delta} - \frac{\Delta^{3}}{s^{3}}\,\vv{s} \right)
+  = \frac{\mu_3}{\Delta^{3}}
+    \Bigl( \vv{s} - \vv{r} - (1+q)^{3/2}\,\vv{s} \Bigr)
+  = -\,\frac{\mu_3}{\Delta^{3}}
+    \Bigl( \vv{r} + \bigl[(1+q)^{3/2} - 1\bigr]\,\vv{s} \Bigr).
+  \label{eq:thirdbody:factored}
+\end{equation}
+The bracket is still a catastrophic subtraction if evaluated literally
+($q \to 0$ as $r/s \to 0$), so rationalize it: with $a = (1+q)^{3/2}$ and
+$b = 1$, the identity $a - b = (a^{2} - b^{2})/(a + b)$ applied with
+$a^{2} = (1+q)^{3}$ gives
+\begin{equation}
+  f(q) \equiv (1+q)^{3/2} - 1
+       = \frac{(1+q)^{3} - 1}{1 + (1+q)^{3/2}}
+       = q\,\frac{3 + 3q + q^{2}}{1 + (1+q)^{3/2}},
+  \label{eq:thirdbody:fq}
+\end{equation}
+where the numerator expansion $(1+q)^{3} - 1 = 3q + 3q^{2} + q^{3}$ is
+exact polynomial algebra. Every operation in
+equation~\eqref{eq:thirdbody:fq} is well conditioned: $f(q)$ is $q$ times
+a smooth factor that tends to $3/2$ as $q \to 0$. Substituting into
+equation~\eqref{eq:thirdbody:factored} yields the implemented form,
+\begin{equation}
+  \boxed{\;
+  \vv{p} = -\,\frac{\mu_3}{\Delta^{3}}
+           \bigl( \vv{r} + f(q)\,\vv{s} \bigr),
+  \qquad
+  \Delta = \norm{\vv{r} - \vv{s}} .
+  \;}
+  \label{eq:thirdbody:accel}
+\end{equation}
+Equations~\eqref{eq:thirdbody:naive} and~\eqref{eq:thirdbody:accel} are
+algebraically identical --- every step above is an exact identity, not an
+approximation --- so an extended-precision evaluation of the naive form
+is a valid reference for the $f(q)$ implementation, and the model remains
+exact at large $r/s$ where tidal expansions would break down.
+
+\subsection{Conditioning of the reformulation}
+
+The reformulation is safe because no step forms a small difference of
+large like-magnitude quantities when $r < s$:
+\begin{enumerate}
+  \item In equation~\eqref{eq:thirdbody:q}, the dot product
+    $\vv{r} \cdot (\vv{r} - 2\vv{s})$ sums terms of magnitude at most
+    $\sim 2 r s$; for near-perpendicular geometry the sum cancels to
+    $\mathcal{O}(r^{2})$, leaving $q$ with \emph{absolute} error
+    $\sim \varepsilon\, r/s$. The error $f(q)$ inherits is
+    $\sim \tfrac{3}{2}\,\varepsilon\, r/s$, and its contribution to
+    $\vv{r} + f(q)\vv{s}$ is $\sim \tfrac{3}{2}\,\varepsilon\, r$ ---
+    a few $\varepsilon$ relative to the result, whose magnitude is
+    itself of order $r$ (between $r$ and $2r$ in the tidal limit).
+  \item In equation~\eqref{eq:thirdbody:accel}, the addition
+    $\vv{r} + f(q)\vv{s}$ combines operands of magnitude $r$ and
+    $\lesssim 3r$ (since $f(q) \to -3\,(\vv{r}\cdot\hat{\vv{s}})/s$ in
+    the tidal limit): any cancellation is $\mathcal{O}(1)$, never
+    $\mathcal{O}(s/r)$.
+\end{enumerate}
+The observed generation-time error of the double-precision $f(q)$
+evaluation against the extended-precision reference is at most
+\num{3.4e-16} over the ten committed states, consistent with a few-ulp
+bound; the criterion-7 gate of $10^{-12}$ therefore carries more than
+three orders of margin (test
+\testid{thirdbody_battin_extended_reference_golden}).
+
+\section{Discretization and implementation}
+\label{sec:thirdbody:implementation}
+
+There is no discretization: the model is a pointwise algebraic map from
+$(\mu_3, \vv{r}, \vv{s})$ to $\vv{p}$, evaluated inside the force
+composition at whatever states the integrator (Chapter~\ref{ch:integrators})
+requests. Implementation notes:
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/thirdbody.cpp}. The source comments echo the
+    labels \texttt{eq:thirdbody:q}, \texttt{eq:thirdbody:fq}, and
+    \texttt{eq:thirdbody:accel} verbatim; the test's naive reference
+    evaluation echoes \texttt{eq:thirdbody:naive}.
+  \item \textbf{No per-call allocation.} All intermediates are
+    fixed-size Eigen vectors and scalars on the stack; the function
+    allocates nothing, per the deterministic-loop rules.
+  \item \textbf{Fixed evaluation order, basic operations only.} The
+    implementation uses only IEEE-754 basic operations
+    ($+, -, \times, \div$, \texttt{sqrt}), all correctly rounded, in a
+    fixed order compiled without contraction (D-10). The golden
+    generator's Python mirror reproduces the same operation sequence
+    statement for statement, so its generation-time error measurements
+    transfer bit-exactly to every CI platform.
+  \item \textbf{The naive form never ships.} Equation
+    \eqref{eq:thirdbody:naive} is evaluated in double precision only
+    inside the validation test, to demonstrate the digit loss the
+    formulation exists to avoid.
+  \item \textbf{Data ownership.} $\mu_3$ values are supplied by the
+    caller (DE440 header values wired in by the force-composition
+    layer); the module defines no body constants.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:thirdbody:validation}
+
+Table~\ref{tab:thirdbody:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
+provenance and tolerances are recorded in
+\texttt{tests/golden/thirdbody/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the third-body model (doctest,
+    \texttt{cpp/tests/test\_thirdbody.cpp}).}
+  \label{tab:thirdbody:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{thirdbody_battin_extended_reference_golden} &
+      Phase~3 exit criterion 7: equation~\eqref{eq:thirdbody:accel}
+      matches the naive difference~\eqref{eq:thirdbody:naive} evaluated
+      in extended precision (mpmath, 60 significant digits) to
+      $< 10^{-12}$ norm-relative at all 10 committed states
+      (generation-time mirror maximum \num{3.4e-16}). \\
+    \testid{thirdbody_naive_cancellation_digit_loss} &
+      Phase~3 exit criterion 7, near-alignment clause: at the flagged
+      committed state the naive difference evaluated in doubles loses
+      $\geq 6$ significant digits against the extended-precision
+      reference (norm-relative error $\geq 10^{-10}$; observed
+      \num{1.373e-10}, i.e.\ 6.14 digits), while
+      equation~\eqref{eq:thirdbody:accel} stays $< 10^{-12}$ at the same
+      state. \\
+    \testid{thirdbody_limit_properties} &
+      Exact-zero limit: $\vv{p}(\vv{r} = \vv{0}) = \vv{0}$ exactly
+      (every component), since $q = 0 \Rightarrow f(q) = 0$ by
+      equations~\eqref{eq:thirdbody:q} and~\eqref{eq:thirdbody:fq};
+      agreement of the two algebraically identical forms in double
+      precision at a benign wide-angle geometry ($s/r \sim 200$, where
+      the naive form is itself accurate) to $< 10^{-11}$. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:thirdbody:references}
+
+This chapter relies on Battin~\cite{battin1999} for the $f(q)$
+formulation of the third-body differential acceleration and on
+Vallado~\cite{vallado2013} for the standard presentation of the
+third-body perturbation and its cancellation discussion. Full
+bibliographic details appear in the bibliography.
