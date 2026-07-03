@@ -590,7 +590,8 @@ def main() -> None:
         "to roughly 10 m per century away from the present, predominantly",
         "along-track (Park et al. 2021, AJ 161:105, Section 6). The measured",
         f"lunar difference above ({worst_lunar:.3f} m worst case, growing",
-        "monotonically from 1.8 m in 2020 to 5.4 m in 2060, and mirrored in the",
+        "secularly from 1.8 m in 2020 to 5.4 m in 2060 with local oscillation",
+        "about the trend, and mirrored in the",
         "earth quantity at 1/82.3 of the lunar value - the EMB mass-ratio",
         "signature) is exactly that published DE440/DE441 difference, not a",
         "repack defect. A bit-faithful DE440 repack cannot match DE441-sourced",
@@ -698,7 +699,7 @@ source = "full repack (data/{df.REPACK_FILENAME}) vs the horizons_vectors.toml s
 citation = "as horizons_vectors.toml"
 generation = "generate.py full-span pass; the committed table records the max observed position error per quantity"
 date = "{GENERATION_DATE}"
-tolerance = "< 1 m at every epoch and quantity (Phase 2 exit criterion 2)"
+tolerance = "< 1 m at every epoch for the six DE440-identical quantities (Phase 2 exit criterion 2); lunar quantities < 10 m vs DE441-served Horizons with the authoritative < 1 mm DE440 gate in moon_de440_jplephem.toml (ADR 0002)"
 '''
     (HERE / "manifest.toml").write_text(manifest, newline="\n", encoding="utf-8")
     print("manifest.toml written")

@@ -534,7 +534,9 @@ PYBIND11_MODULE(_core, m) {
   m.def("quat_to_dcm", &quat_to_dcm, py::arg("w"), py::arg("x"), py::arg("y"),
         py::arg("z"),
         "DCM C_A^B (row-major, 9 elements) of the unit frame-transformation "
-        "quaternion q_a2b.");
+        "quaternion q_a2b. Unit norm is the caller's invariant: a non-unit "
+        "input is not detected and yields the rotation scaled by |q|^2; "
+        "normalize first via quat_normalize.");
   m.def("dcm_to_quat", &dcm_to_quat, py::arg("dcm"),
         "Scalar-first quaternion of a proper rotation DCM via Shepperd's "
         "method; the returned w is >= 0.");

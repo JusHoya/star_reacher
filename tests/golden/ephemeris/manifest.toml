@@ -75,4 +75,4 @@ source = "full repack (data/de440s_2020_2060.sreph) vs the horizons_vectors.toml
 citation = "as horizons_vectors.toml"
 generation = "generate.py full-span pass; the committed table records the max observed position error per quantity"
 date = "2026-07-02"
-tolerance = "< 1 m at every epoch and quantity (Phase 2 exit criterion 2)"
+tolerance = "< 1 m at every epoch for the six DE440-identical quantities (Phase 2 exit criterion 2); lunar quantities < 10 m vs DE441-served Horizons with the authoritative < 1 mm DE440 gate in moon_de440_jplephem.toml (ADR 0002)"

@@ -16,10 +16,14 @@ Chebyshev records from the checksummed JPL DE440s SPK kernel: coefficients
 are copied verbatim, never refit, so evaluation accuracy is inherited from
 DE440 exactly.
 
-The JPL Horizons system, however, serves lunar and Earth-Moon-barycenter
-states from DE441, and the committed query transcripts
-(`tests/golden/ephemeris/horizons/`) record `{source: DE441}` for those
-quantities. DE440 and DE441 are not identical for the Moon: DE441 omits the
+The JPL Horizons system, however, serves its planetary and lunar states
+from DE441, and the committed query transcripts
+(`tests/golden/ephemeris/horizons/`) record `{source: DE441}` for all
+eight compared quantities. For the six planetary and barycenter
+quantities this is immaterial — DE440 and DE441 planetary orbits are
+identical to well below the gate, which the measured sub-millimeter
+residuals confirm empirically — so the distinction matters only for the
+Moon. DE440 and DE441 are not identical for the Moon: DE441 omits the
 lunar core-mantle tidal damping term so that its lunar orbit remains
 well-behaved over the full -13200 to +17191 integration span; as a result
 its lunar orbit differs from DE440 by under 2 m across 1970-2020, growing
@@ -33,7 +37,8 @@ The full-span validation executed on 2026-07-02
 signature: the repack matches Horizons to 0.066 m worst case on the six
 quantities DE440 and DE441 share (sun, emb, venus_bary, mars_bary,
 jupiter_bary, earth), while the lunar quantities differ by 1.8 m in 2020
-growing monotonically to 5.4 m by 2060, mirrored in the earth quantity at
+growing secularly to 5.4 m by 2060 (with local oscillation about the
+trend), mirrored in the earth quantity at
 1/82.3 of the lunar value (the Earth-Moon mass-ratio signature of a lunar
 orbit difference). A bit-faithful DE440 repack cannot match DE441-sourced
 lunar states more closely; applying the < 1 m Horizons gate verbatim to the

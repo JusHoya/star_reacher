@@ -113,6 +113,9 @@ jobs:
       - name: Measure the max pairwise relative divergence
         id: measure
         run: |
+          # pipefail so a measure failure fails this step directly instead of
+          # relying on the downstream grep/gate steps to notice the gap.
+          set -o pipefail
           python scripts/cross_platform_divergence.py measure \
             --dir finalstates --expect-legs 4 \
             --bound 1e-9 --out measurement.json | tee measure.log

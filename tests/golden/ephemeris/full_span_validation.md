@@ -40,7 +40,8 @@ consequently differs from DE440 by under 2 m across 1970-2020, growing
 to roughly 10 m per century away from the present, predominantly
 along-track (Park et al. 2021, AJ 161:105, Section 6). The measured
 lunar difference above (5.417 m worst case, growing
-monotonically from 1.8 m in 2020 to 5.4 m in 2060, and mirrored in the
+secularly from 1.8 m in 2020 to 5.4 m in 2060 with local oscillation
+about the trend, and mirrored in the
 earth quantity at 1/82.3 of the lunar value - the EMB mass-ratio
 signature) is exactly that published DE440/DE441 difference, not a
 repack defect. A bit-faithful DE440 repack cannot match DE441-sourced

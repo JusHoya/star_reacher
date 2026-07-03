@@ -70,7 +70,10 @@ Eigen::Vector3d quat_transform(const Eigen::Quaterniond& q_a2b,
                                const Eigen::Vector3d& v_a);
 
 // DCM C_A^B of a unit frame-transformation quaternion q_a2b
-// (eq:rotations:quat2dcm).
+// (eq:rotations:quat2dcm). Unit norm is the caller's invariant, mirroring
+// quat_from_dcm below: a non-unit input is not detected and yields the
+// rotation scaled by |q|^2 (not orthonormal); normalize first via
+// quat_normalize when the invariant is not already established.
 Eigen::Matrix3d dcm_from_quat(const Eigen::Quaterniond& q_a2b);
 
 // Inverse mapping via Shepperd's method (eq:rotations:shepperd): the four
