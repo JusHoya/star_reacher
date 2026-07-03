@@ -1,0 +1,32 @@
+# Provenance manifest for the determinism records in this directory
+# (FR-22 layer 1: uncited golden = lint failure; schema documented in
+# tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "determinism"
+date = "2026-07-02"
+generation = """
+cross_platform.toml is not tool-generated on the maintainer machine: its
+measured value is produced by the cross-platform-divergence job in
+.github/workflows/ci.yml, which runs `star run missions/twobody_leo.toml`
+on all four CI legs, extracts each leg's final truth record at full
+precision, and computes the maximum pairwise relative divergence with
+scripts/cross_platform_divergence.py (the divergence definition lives in
+that script's module docstring; the script is unit-tested by
+tests/python/test_cross_platform_divergence.py against synthetic inputs).
+The measurement is published as a commit status (context
+determinism/cross-platform) and transcribed into the record per the
+procedure in the file's comments, with the CI run URL committed as
+provenance. The file is committed with status pending-first-measurement,
+which the CI gate treats as a designed bootstrap failure.
+"""
+
+[[file]]
+name = "cross_platform.toml"
+source = "GitHub Actions cross-platform-divergence job (.github/workflows/ci.yml) over the four build-test matrix legs; comparison by scripts/cross_platform_divergence.py"
+citation = "PRD decision D-10 (cross-platform final-state agreement <= 1e-9 relative on reference missions) and PRD section 8, Phase 2 exit criterion 8; reference propagation defined by missions/twobody_leo.toml"
+generation = "Update procedure recorded in the file's comments: read the determinism/cross-platform commit status for the phase-branch CI run, transcribe measured_max_rel, set status = \"measured\", and commit the run URL as provenance"
+date = "2026-07-02"
+tolerance = "measured_max_rel <= 1e-9 relative (D-10 bound, enforced by the CI gate on both the fresh measurement and this committed value); measurement-vs-record drift beyond a factor of 10 warns without failing, flagging a stale record"
