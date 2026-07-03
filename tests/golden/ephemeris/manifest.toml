@@ -76,3 +76,11 @@ citation = "as horizons_vectors.toml"
 generation = "generate.py full-span pass; the committed table records the max observed position error per quantity"
 date = "2026-07-02"
 tolerance = "< 1 m at every epoch for the six DE440-identical quantities (Phase 2 exit criterion 2); lunar quantities < 10 m vs DE441-served Horizons with the authoritative < 1 mm DE440 gate in moon_de440_jplephem.toml (ADR 0002)"
+
+[[file]]
+name = "excerpt_de440s_crosstool.sreph"
+source = "de440s.bsp (SHA-256 c1c7feeab882263fc493a9d5a5b2ddd71b54826cdf65d8d17a76126b260a49f2) and moon_pa_de440_200625.bpc (SHA-256 60cd55aa401ea2ea97360636f567554bfe4e37bb829f901b4460a455dfaf783f), JPL SSD / NAIF distribution"
+citation = "Park, Folkner, Williams, and Boggs, 'The JPL Planetary and Lunar Ephemerides DE440 and DE441', The Astronomical Journal 161:105, 2021"
+generation = "generate_crosstool.py: the verbatim (never refit) DE440 Chebyshev records of the sun, emb, earth, and moon segments covering [2026-01-01 TDB - 2 d, 2026-01-01 TDB + 9 d], one contiguous SREPH v1 mini-segment per body; the mission window of missions/leo_drag_hp.toml plus margin. Bit-identity of excerpt evaluation against the full repack is asserted at generation time"
+date = "2026-07-02"
+tolerance = "not applicable (input fixture; committed binary excerpt per the Phase 2 exception recorded in tests/golden/README.md). Consumers: missions/leo_drag_hp.toml (its [environment] ephemeris path), tests/python/test_crosstool_missions.py, and the doctest cases env_composition_matches_sum_of_terms and env_error_paths"
