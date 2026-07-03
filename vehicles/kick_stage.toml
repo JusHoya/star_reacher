@@ -1,0 +1,110 @@
+# Restartable storable-bipropellant kick stage (DX-3 starter fleet).
+#
+# DISCLAIMER - provenance "representative": every number below is a round,
+# class-representative value chosen by the author for a small restartable
+# in-space stage; nothing here is a published specification of any real
+# stage. Do not cite these values.
+#
+# Structural frame: origin at the aft (engine gimbal) plane, +X toward the
+# payload adapter (overall length ~1.8 m, diameter ~1.0 m), +Y/+Z
+# right-handed. Block inertias are about each block's own CG.
+#
+# Capability check (recorded for the TLI mission): with the 160 kg
+# payload_adapter item aboard, ideal delta-v = 320*9.80665*ln(710/250) =
+# 3277 m/s, ~145 m/s above the ~3130 m/s a trans-lunar injection from a
+# 200 km LEO requires; without the payload item the stage alone holds
+# 5680 m/s. Four ignitions cover ullage-settle/TLI plus two correction
+# burns.
+
+schema_version = 1
+provenance = "representative"
+
+[vehicle]
+name = "kick-stage"
+description = "Restartable storable-biprop kick stage, ~3.2 km/s with a 160 kg payload"
+
+[[stage]]
+name = "kick"
+# Structure, engine, avionics, and RCS hardware for a 550 kg wet stage
+# (propellant mass fraction 0.836, typical for small biprop stages).
+dry_mass_kg = 90.0
+# Dry CG at the tank midplane; the aft engine mass offsets the forward
+# adapter ring.
+dry_cg_m = [0.7, 0.0, 0.0]
+# Squat-cylinder dry inertia about the dry CG: roll ~ m*r^2/2 (~11, rounded
+# 15 for radially mounted hardware), pitch/yaw ~ m*(3r^2 + L^2)/12 (~25).
+dry_inertia_kgm2 = [[15.0, 0.0, 0.0], [0.0, 25.0, 0.0], [0.0, 0.0, 25.0]]
+
+[[stage.tank]]
+name = "biprop"
+# NTO/MMH volume modeled as one settled cylinder (A-2) inside the 0.5 m
+# body radius.
+radius_m = 0.38
+# 1.0 m barrel: capacity pi*0.38^2*1.0*1200 = 544 kg, an 85 % fill for the
+# 460 kg load (ullage and residuals allowance).
+length_m = 1.0
+# Tank centered on the stage CG so depletion barely moves the composite CG.
+position_m = [0.7, 0.0, 0.0]
+# 460 kg sized for the TLI capability recorded in the header.
+propellant_mass_kg = 460.0
+# Volume-weighted bulk density of an NTO/MMH load at a ~1.65 mixture ratio.
+density_kgpm3 = 1200.0
+
+[[stage.engine]]
+name = "main"
+feeds_tank = "biprop"
+# 4 kN pressure-fed biprop apogee-class engine: a 460 kg load burns in
+# ~360 s, keeping finite-burn losses from LEO modest.
+thrust_vac_N = 4000.0
+# Vacuum Isp typical of pressure-fed NTO/MMH with a high-expansion bell.
+isp_vac_s = 320.0
+# High-expansion bell exit area; vacuum-only engine.
+exit_area_m2 = 0.05
+# Gimbal plane at the aft origin.
+position_m = [0.05, 0.0, 0.0]
+# Nominal thrust force along +X (forward).
+axis = [1.0, 0.0, 0.0]
+# +/-4 deg TVC covers CG travel across depletion.
+gimbal_max_deg = 4.0
+# 8 deg/s is ample for the slow in-space attitude dynamics.
+gimbal_rate_dps = 8.0
+# Pressure-fed fixed thrust: no throttle capability.
+throttle_min = 1.0
+throttle_max = 1.0
+# Half-second spool from valve open to rated thrust.
+spool_time_s = 0.5
+# Restartable: settle/TLI plus midcourse and cleanup burns.
+ignitions = 4
+
+[[stage.rcs]]
+name = "acs"
+# 10 N monoprop thrusters for settling, attitude hold, and small
+# corrections.
+thrust_N = 10.0
+# 2 ms minimum pulse at 10 N.
+min_impulse_bit_Ns = 0.02
+# Four thrusters on the midbody ring at the 0.5 m body radius.
+thruster_positions_m = [[0.7, 0.5, 0.0], [0.7, -0.5, 0.0], [0.7, 0.0, 0.5], [0.7, 0.0, -0.5]]
+# Lateral force directions (+/-Y, +/-Z) for pitch/yaw couples.
+thruster_directions = [[0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]]
+
+[[stage.sensor]]
+name = "imu0"
+# Preset reference only in Phase 4; the preset file and its error model land
+# with the Phase 6 sensor suite.
+preset = "presets/imu_tactical.toml"
+# On the forward avionics ring.
+position_m = [1.2, 0.0, 0.0]
+axis = [1.0, 0.0, 0.0]
+
+[[stage.jettison]]
+name = "payload_adapter"
+# The mounted smallsat-class payload plus its adapter cone, separable at
+# destination arrival; until the separation event it rides as part of the
+# stack (the TLI capability in the header is computed with it aboard).
+mass_kg = 160.0
+# Payload envelope centroid above the forward ring.
+cg_m = [1.6, 0.0, 0.0]
+# Compact spacecraft envelope about its own CG; roll-heavy because the
+# payload is wider than it is tall on the adapter.
+inertia_kgm2 = [[20.0, 0.0, 0.0], [0.0, 15.0, 0.0], [0.0, 0.0, 15.0]]

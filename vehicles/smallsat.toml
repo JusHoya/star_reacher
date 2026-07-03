@@ -1,0 +1,82 @@
+# 150 kg smallsat bus (DX-3 starter fleet).
+#
+# DISCLAIMER - provenance "representative": every number below is a round,
+# class-representative value chosen by the author for a 150 kg-class LEO
+# smallsat; nothing here is a published specification of any real
+# spacecraft. Do not cite these values.
+#
+# Structural frame: origin at the aft (separation) face, +X toward the
+# forward face (a ~0.6 m cube-class bus), +Y/+Z right-handed. Block
+# inertias are about each block's own CG.
+#
+# The bus carries no main propulsion: attitude control is reaction wheels
+# with a cold-gas RCS for momentum management and small translations (the
+# cold-gas reservoir is bookkept inside the dry mass; v1 RCS draws no
+# modeled propellant).
+
+schema_version = 1
+provenance = "representative"
+
+[vehicle]
+name = "smallsat-150"
+description = "150 kg LEO smallsat bus: reaction wheels plus cold-gas RCS, no main engine"
+
+[[stage]]
+name = "bus"
+# Total spacecraft mass including the cold-gas reservoir; a single-stage
+# free-flyer has no separate propellant bookkeeping in v1.
+dry_mass_kg = 150.0
+# CG at the geometric center of the ~0.6 m bus.
+dry_cg_m = [0.3, 0.0, 0.0]
+# Near-cubic bus: m*a^2/6 ~ 9 for a = 0.6 m, spread 9/10/11 so the principal
+# axes are distinct (attitude tests need a non-degenerate tensor).
+dry_inertia_kgm2 = [[9.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 11.0]]
+
+[[stage.rcs]]
+name = "coldgas"
+# 2 N cold-gas thrusters: wheel-desaturation couples and small translations.
+thrust_N = 2.0
+# 2 ms minimum pulse at 2 N.
+min_impulse_bit_Ns = 0.004
+# Four thrusters at the midbody panel edges (0.3 m half-width).
+thruster_positions_m = [[0.3, 0.3, 0.0], [0.3, -0.3, 0.0], [0.3, 0.0, 0.3], [0.3, 0.0, -0.3]]
+# Lateral force directions (+/-Y, +/-Z) for pitch/yaw couples.
+thruster_directions = [[0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]]
+
+[[stage.wheel]]
+name = "rw_x"
+# Orthogonal three-wheel set; smallsat-class wheels: 20 mN*m torque, 0.4
+# N*m*s storage (enough for several orbits of gravity-gradient accumulation
+# at this inertia).
+axis = [1.0, 0.0, 0.0]
+max_torque_Nm = 0.02
+max_momentum_Nms = 0.4
+
+[[stage.wheel]]
+name = "rw_y"
+axis = [0.0, 1.0, 0.0]
+max_torque_Nm = 0.02
+max_momentum_Nms = 0.4
+
+[[stage.wheel]]
+name = "rw_z"
+axis = [0.0, 0.0, 1.0]
+max_torque_Nm = 0.02
+max_momentum_Nms = 0.4
+
+[[stage.sensor]]
+name = "imu0"
+# Preset references only in Phase 4; preset files and error models land with
+# the Phase 6 sensor suite.
+preset = "presets/imu_tactical.toml"
+# On the bus centerline near the CG to minimize lever-arm effects.
+position_m = [0.3, 0.0, 0.0]
+axis = [1.0, 0.0, 0.0]
+
+[[stage.sensor]]
+name = "st0"
+preset = "presets/startracker_arcsec.toml"
+# Star tracker on the forward face, boresight along +Z (clear of the
+# velocity vector and the Earth limb in a nose-forward LEO attitude).
+position_m = [0.55, 0.0, 0.2]
+axis = [0.0, 0.0, 1.0]

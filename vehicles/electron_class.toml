@@ -1,0 +1,211 @@
+# Electron-class two-stage small launch vehicle (DX-3 starter fleet).
+#
+# DISCLAIMER - provenance "representative": every number below is a round,
+# class-representative value chosen by the author for a ~13 t GLOM kerolox
+# smallsat launcher with a ~150-300 kg LEO payload class. Nothing here is a
+# published specification of any real vehicle; do not cite these values.
+#
+# Structural frame: origin at the aft (stage-1 gimbal) plane of the
+# assembled stack, +X toward the nose (stack length ~18 m, diameter 1.2 m),
+# +Y/+Z right-handed. All positions, CGs, inertias, and aero xcp stations
+# use this frame; block inertias are about each block's own CG.
+#
+# Capability check (recorded so downstream missions can rely on it): a
+# scratch planar-3DOF integration of exactly these masses/Isp/thrusts with a
+# piecewise-linear pitch program (90 deg to t+10 s, 75 deg at 25 s, 40 deg
+# at 60 s, 30 deg at MECO ~121 s, 6 deg at 200 s, 0 from 300 s) reaches a
+# 195 x 223 km LEO with the 150 kg payload item aboard and ~7 % stage-2
+# propellant remaining; max-q ~32 kPa at ~13 km, Mach 1 at ~6 km.
+
+schema_version = 1
+provenance = "representative"
+
+[vehicle]
+name = "electron-class"
+description = "Two-stage kerolox smallsat launch vehicle, ~13 t GLOM, ~150-300 kg to LEO"
+
+# --- Stage 1: booster, stations 0-12 m --------------------------------------
+
+[[stage]]
+name = "stage1"
+# Booster structure + engines: ~9.5 % of the 10.5 t stage wet mass, a
+# representative structural fraction for a small pressure-stabilized kerolox
+# stage.
+dry_mass_kg = 1000.0
+# Dry CG near the stage geometric center: engine cluster mass at the aft end
+# offsets the forward tank dome and interstage.
+dry_cg_m = [6.0, 0.0, 0.0]
+# Slender-body dry inertia about the dry CG: roll ~ m*r^2/2 with structure at
+# the 0.6 m radius (~300), pitch/yaw ~ m*L^2/12 for L ~ 12 m (~12000).
+dry_inertia_kgm2 = [[300.0, 0.0, 0.0], [0.0, 12000.0, 0.0], [0.0, 0.0, 12000.0]]
+
+[[stage.tank]]
+name = "s1_kerolox"
+# Common-bulkhead LOX/RP-1 volume modeled as one settled cylinder (A-2):
+# 0.55 m radius fits inside the 0.6 m body radius with wall allowance.
+radius_m = 0.55
+# 10 m barrel: capacity pi*0.55^2*10*1030 = 9787 kg, a 97 % fill for the
+# 9500 kg load (ullage allowance).
+length_m = 10.0
+# Cylinder centered mid-stage, leaving the aft 1.5 m for the engine bay.
+position_m = [6.5, 0.0, 0.0]
+# 9500 kg gives the booster a 0.905 propellant mass fraction, typical for
+# this class.
+propellant_mass_kg = 9500.0
+# Bulk density of a LOX/RP-1 load at a ~2.3 mixture ratio (~1140 and ~810
+# kg/m^3 volume-weighted).
+density_kgpm3 = 1030.0
+
+[[stage.engine]]
+name = "s1_cluster"
+feeds_tank = "s1_kerolox"
+# Nine ~26 kN-vacuum pump-fed kerolox engines modeled as one equivalent
+# rigid cluster (v1: a single gimbaled resultant at the stack centerline);
+# 234 kN vacuum total gives liftoff T/W ~1.6 at sea level.
+thrust_vac_N = 234000.0
+# Vacuum Isp for a small pump-fed kerolox engine with a sea-level bell.
+isp_vac_s = 303.0
+# Total exit area, 9 x 0.03 m^2: sea-level thrust 234000 - 101325*0.27 =
+# 207 kN via the FR-10 back-pressure law.
+exit_area_m2 = 0.27
+# Cluster resultant acts at the gimbal plane, 0.3 m forward of the aft
+# origin.
+position_m = [0.3, 0.0, 0.0]
+# Nominal thrust force along +X (forward).
+axis = [1.0, 0.0, 0.0]
+# +/-5 deg TVC authority, typical for a first stage that must fly through
+# max-q winds.
+gimbal_max_deg = 5.0
+# 10 deg/s slew keeps the TVC loop comfortably faster than the rigid-body
+# ascent dynamics.
+gimbal_rate_dps = 10.0
+# Pump-fed deep-throttle floor of 50 % rated thrust.
+throttle_min = 0.5
+throttle_max = 1.0
+# One-second linear spool from ignition command to rated thrust.
+spool_time_s = 1.0
+# Ground-lit only.
+ignitions = 1
+
+# --- Stage 2: upper stage, stations 12-18 m ---------------------------------
+
+[[stage]]
+name = "stage2"
+# Upper-stage structure + vacuum engine: 250 kg dry for a 2.4 t wet stage
+# (propellant mass fraction 0.896).
+dry_mass_kg = 250.0
+# Dry CG mid-stage: aft-mounted engine balances the forward avionics ring.
+dry_cg_m = [14.5, 0.0, 0.0]
+# Slender-body dry inertia about the dry CG for a ~4 m stage: roll ~60,
+# pitch/yaw ~ m*L^2/12 ~ 330, rounded to 400 for dome/engine overhang.
+dry_inertia_kgm2 = [[60.0, 0.0, 0.0], [0.0, 400.0, 0.0], [0.0, 0.0, 400.0]]
+
+[[stage.tank]]
+name = "s2_kerolox"
+# 0.5 m radius inside the same 1.2 m body diameter.
+radius_m = 0.5
+# 2.8 m barrel: capacity pi*0.5^2*2.8*1030 = 2266 kg, a 95 % fill for the
+# 2150 kg load.
+length_m = 2.8
+# Centered in the stage barrel section.
+position_m = [14.0, 0.0, 0.0]
+# 2150 kg sized so the stage delivers the orbit-insertion burn with margin
+# (see the capability check in the header).
+propellant_mass_kg = 2150.0
+# Same LOX/RP-1 bulk density as stage 1.
+density_kgpm3 = 1030.0
+
+[[stage.engine]]
+name = "s2_vacuum"
+feeds_tank = "s2_kerolox"
+# Single vacuum variant of the stage-1 engine: same 26 kN rated vacuum
+# thrust through a larger bell.
+thrust_vac_N = 26000.0
+# Vacuum Isp gain from the extended nozzle (+40 s over the sea-level bell).
+isp_vac_s = 343.0
+# Large-expansion bell exit area; never fired at sea level (the validator
+# back-pressure warning applies to first-stage engines only).
+exit_area_m2 = 0.35
+# Mounted at the stage-2 gimbal plane just above the interstage.
+position_m = [12.2, 0.0, 0.0]
+axis = [1.0, 0.0, 0.0]
+# Slightly wider TVC cone than stage 1: the short stage needs more authority
+# per degree.
+gimbal_max_deg = 6.0
+gimbal_rate_dps = 10.0
+throttle_min = 0.5
+throttle_max = 1.0
+spool_time_s = 1.0
+# Restart capability for a coast-and-circularize profile.
+ignitions = 2
+
+[[stage.rcs]]
+name = "s2_coldgas"
+# Cold-gas cluster for coast attitude control between burns; 20 N per
+# thruster.
+thrust_N = 20.0
+# 2 ms minimum electrical pulse at 20 N.
+min_impulse_bit_Ns = 0.04
+# Four thrusters on the stage-2 aft ring at the body radius.
+thruster_positions_m = [[12.5, 0.55, 0.0], [12.5, -0.55, 0.0], [12.5, 0.0, 0.55], [12.5, 0.0, -0.55]]
+# Force directions lateral (+/-Y, +/-Z): pure couples in pitch/yaw when
+# fired in opposition.
+thruster_directions = [[0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]]
+
+[[stage.sensor]]
+name = "imu0"
+# Preset reference only in Phase 4; the preset file and its error model land
+# with the Phase 6 sensor suite.
+preset = "presets/imu_tactical.toml"
+# On the avionics ring, forward of the tank.
+position_m = [15.6, 0.0, 0.0]
+# Sensitive-axis triad reference along +X.
+axis = [1.0, 0.0, 0.0]
+
+[[stage.jettison]]
+name = "fairing"
+# Two composite halves modeled as one item, dropped by a sequence event once
+# free-molecular heating is benign (~110-120 km on the reference ascent).
+mass_kg = 50.0
+# Fairing envelope centroid near the top of the stack.
+cg_m = [17.0, 0.0, 0.0]
+# Thin shell about its own CG: roll ~ m*r^2 (~20), pitch/yaw ~
+# m*(r^2/2 + L^2/12) for a ~2.5 m shell (~40).
+inertia_kgm2 = [[20.0, 0.0, 0.0], [0.0, 40.0, 0.0], [0.0, 0.0, 40.0]]
+
+[[stage.jettison]]
+name = "payload_stack"
+# Smallsat-class payload plus adapter allowance riding to orbit; declared as
+# a jettison item so a deployment event can drop it, and it simply rides
+# along in missions that never do. The capability check in the header holds
+# with this item aboard.
+mass_kg = 150.0
+# Payload sits on the adapter cone above the stage-2 tank.
+cg_m = [15.8, 0.0, 0.0]
+# Compact ~0.7 m-class spacecraft envelope about its own CG.
+inertia_kgm2 = [[12.0, 0.0, 0.0], [0.0, 14.0, 0.0], [0.0, 0.0, 16.0]]
+
+# --- Aero blocks: one per stack configuration (FR-9) ------------------------
+
+[[aero]]
+config = "full_stack"
+# Reference area = body cross-section, pi*(1.2/2)^2 = 1.13 m^2.
+ref_area_m2 = 1.13
+# Reference length = body diameter.
+ref_diameter_m = 1.2
+# CA/CNalpha/xcp Mach table for the full 18 m stack; see the CSV header for
+# declared units.
+mach_table_csv = "vehicles/electron_class_aero_full.csv"
+# Constant pitch-damping coefficient, slender finless body; damping opposes
+# the pitch rate (negative by convention).
+cmq_per_rad = -30.0
+
+[[aero]]
+config = "upper_stack"
+# Same body diameter after stage separation (stage 2 + fairing, stations
+# 12-18 m), so the reference area and diameter are unchanged.
+ref_area_m2 = 1.13
+ref_diameter_m = 1.2
+# The upper stack flies above ~55 km where dynamic pressure is small; the
+# table mainly bounds the brief post-separation transient.
+mach_table_csv = "vehicles/electron_class_aero_upper.csv"
