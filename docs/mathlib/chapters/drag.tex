@@ -1,0 +1,175 @@
+% Chapter — Cannonball orbital drag (FR-9). Follows the mandatory FR-29
+% six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. The equation labels eq:drag:accel and eq:drag:vrel are
+% echoed verbatim in comments in cpp/src/models/drag.cpp (FR-29
+% equation-label-to-code traceability); renaming them breaks that trace.
+\chapter{Cannonball Orbital Drag}
+\label{ch:drag}
+
+\section{Purpose}
+\label{sec:drag:purpose}
+
+This chapter documents the cannonball atmospheric-drag acceleration
+(FR-9): the orbital-regime drag model that consumes a density from one of
+the atmosphere models (Chapters~\ref{ch:ussa76},
+\ref{ch:harrispriester}, and~\ref{ch:marsatmosphere}) and a ballistic
+parameter $C_D A / m$, mirroring the cannonball solar-radiation-pressure
+model's $C_R A / m$. FR-9 splits the aerodynamic domain deliberately: the
+Mach-table aerodynamic database (Phase~4) is valid for continuum ascent
+flight only, while this cannonball model serves the orbital free-molecular
+regime; the two never apply simultaneously, and a vehicle selects the
+cannonball model per configuration. The model is implemented in
+\texttt{cpp/src/models/drag.cpp} with its interface in
+\texttt{cpp/include/star/models/drag.hpp}.
+
+\section{Assumptions and domain of validity}
+\label{sec:drag:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Cannonball geometry.} The drag force is
+    attitude-independent: a single constant product $C_D A / m$
+    characterizes the vehicle, as for a sphere. For non-spherical
+    vehicles this is the standard mean-area approximation; the error is
+    absorbed into the configured $C_D A / m$.
+  \item \textbf{Co-rotating atmosphere (the FR-8 air-relative-velocity
+    rule).} All aerodynamic quantities use the velocity of the vehicle
+    relative to an atmosphere rotating rigidly with the planet,
+    equation~\eqref{eq:drag:vrel}. Winds are neglected; near-surface wind
+    speeds (tens of \unit{\metre\per\second}) are two orders below
+    orbital air-relative speeds, and thermospheric super-rotation is far
+    inside the density model's own uncertainty.
+  \item \textbf{Free-molecular drag coefficient.} In the orbital regime
+    the flow is free-molecular (mean free path far exceeds vehicle
+    dimensions; cf.\ the USSA76 mean-free-path tables above
+    \qty{100}{\kilo\metre}~\cite{ussa1976}). The commonly adopted default
+    for compact satellites is $C_D = 2.2$, per the drag discussions of
+    Montenbruck and Gill~\cite[Sect.~3.5]{montenbruck2000} and
+    Vallado~\cite[Sect.~8.6.2]{vallado2013}; the value enters only
+    through the configured $C_D A / m$ (the default itself is applied at
+    the vehicle-configuration level in Phase~4, not inside this
+    function). Physical free-molecular values for non-compact shapes
+    range roughly 2.0--3.0; treat absolute decay rates accordingly.
+  \item \textbf{Frame-agnostic kinematics.} The model is a pure function
+    of $(\rho,\, C_D A/m,\, \vv{v}_{\mathrm{rel}})$; the EOM layer owns
+    frames and supplies $\vv{v}_{\mathrm{rel}}$ resolved in the
+    integration frame, so the returned acceleration is in that same
+    frame.
+\end{enumerate}
+
+Domain of validity: orbital free-molecular flight around any body whose
+atmosphere model supplies $\rho$; non-negative $\rho$ and $C_D A / m$.
+Out-of-domain behavior, matching the code exactly: negative $\rho$ or
+negative $C_D A / m$, and non-finite inputs, throw
+\texttt{std::domain\_error}; a zero relative velocity returns the exact
+zero vector (no normalization singularity exists because the formulation
+never divides by $\lVert \vv{v}_{\mathrm{rel}} \rVert$). Continuum ascent
+aerodynamics are explicitly outside this model's domain --- they are the
+Phase~4 Mach-table database's regime (FR-9 domain split).
+
+\section{Derivation}
+\label{sec:drag:derivation}
+
+A surface element moving at speed
+$v = \lVert \vv{v}_{\mathrm{rel}} \rVert$ through gas of density $\rho$
+intercepts momentum flux $\rho v^2$ per unit area. Writing the net
+aerodynamic force on a body of reference area $A$ as this flux times the
+dimensionless drag coefficient $C_D/2$ (the factor 2 is the classical
+convention that normalizes the force by the dynamic pressure
+$\tfrac{1}{2}\rho v^2$), directed opposite the air-relative velocity
+\cite[Sect.~3.5]{montenbruck2000}, \cite[Sect.~8.6.2]{vallado2013}:
+\begin{equation}
+  \vv{F} \;=\; -\tfrac{1}{2}\,\rho\,C_D A\,
+    v\,\vv{v}_{\mathrm{rel}},
+\end{equation}
+where $v\,\vv{v}_{\mathrm{rel}} = v^2\,\hat{\vv{v}}_{\mathrm{rel}}$
+combines the magnitude and direction without a normalization. Dividing by
+the vehicle mass gives the model's governing equation,
+\begin{equation}
+  \boxed{\;
+  \vv{a}_{\mathrm{drag}} \;=\;
+    -\tfrac{1}{2}\,\rho\,\frac{C_D A}{m}\,
+    \lVert \vv{v}_{\mathrm{rel}} \rVert\, \vv{v}_{\mathrm{rel}}\; }
+  \label{eq:drag:accel}
+\end{equation}
+with the air-relative velocity of a co-rotating atmosphere (FR-8)
+\begin{equation}
+  \vv{v}_{\mathrm{rel}} \;=\; \vv{v} \;-\;
+    \vv{\omega}_{p} \times \vv{r},
+  \label{eq:drag:vrel}
+\end{equation}
+where $\vv{r}, \vv{v}$ are the vehicle's planet-centered inertial position
+and velocity and $\vv{\omega}_{p}$ is the planet's angular-velocity vector
+(Earth: $\omega_\oplus = \qty{7.292115e-5}{\radian\per\second}$, IERS
+Conventions~\cite{iers2010}; Mars: $\omega_{\mathrm{Mars}} =
+\qty{7.088218e-5}{\radian\per\second}$, from the IAU 2015 rotation rate of
+Archinal et al.~\cite{archinal2018} --- both defined in
+\texttt{star/constants.hpp}). Equation~\eqref{eq:drag:vrel} is evaluated
+by the EOM layer, which owns frames; this module receives
+$\vv{v}_{\mathrm{rel}}$ ready-made, and the same air-relative velocity
+rule governs the Phase~4 ascent aerodynamics (Mach number and dynamic
+pressure), so the two drag regimes share one kinematic convention.
+
+\section{Discretization and implementation}
+\label{sec:drag:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/drag.cpp}; the source comments echo the labels
+    \texttt{eq:drag:accel} and \texttt{eq:drag:vrel} verbatim.
+  \item \textbf{Single expression, no singularity.} The implementation is
+    the literal product
+    $-\tfrac{1}{2}\rho\,(C_D A/m)\,
+    \lVert\vv{v}_{\mathrm{rel}}\rVert\,\vv{v}_{\mathrm{rel}}$ using
+    Eigen's \texttt{norm()}; at zero velocity the product is exactly zero
+    with no special case.
+  \item \textbf{Determinism.} Three multiplies and a norm per component
+    in fixed order; the only libm call is the square root inside the
+    norm. Same-platform bit identity is trivial; cross-platform spread
+    is one ulp of \texttt{sqrt}.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:drag:validation}
+
+Table~\ref{tab:drag:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
+provenance and tolerances are recorded in
+\texttt{tests/golden/atmosphere/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the cannonball drag model (doctest,
+    \texttt{cpp/tests/test\_drag.cpp}).}
+  \label{tab:drag:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{DRAG-CANNONBALL-GOLDEN} &
+      Five committed states (axis-aligned, generic, dense-ascent,
+      bulge-state, zero-velocity) match the independent 50-digit mpmath
+      reference component-wise to $10^{-14}$ relative; the zero-velocity
+      case returns the exact zero vector. \\
+    \testid{DRAG-PROPERTIES} &
+      FR-22 layer-2 invariants of equation~\eqref{eq:drag:accel}:
+      acceleration is anti-parallel to $\vv{v}_{\mathrm{rel}}$
+      (cross product exactly zero, dot product negative), linear in
+      $\rho$ and in $C_D A/m$, and quadratic under velocity scaling
+      ($\vv{a}(2\vv{v}) = 4\,\vv{a}(\vv{v})$ to double rounding);
+      domain errors per Section~\ref{sec:drag:domain}. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:drag:references}
+
+This chapter relies on Montenbruck and Gill~\cite{montenbruck2000},
+Sect.~3.5, and Vallado~\cite{vallado2013}, Sect.~8.6.2, for the drag
+formulation and the conventional $C_D = 2.2$ default; on the IERS
+Conventions (2010)~\cite{iers2010} for the Earth rotation rate; and on
+Archinal et al.~\cite{archinal2018} for the Mars rotation rate. Full
+bibliographic details appear in the bibliography.

@@ -45,3 +45,23 @@ label = "ch:rotations"
 module = "cpp/src/frames.cpp"
 chapter = "docs/mathlib/chapters/frames.tex"
 label = "ch:frames"
+
+[[chapter]]
+module = "cpp/src/models/atmosphere_ussa76.cpp"
+chapter = "docs/mathlib/chapters/ussa76.tex"
+label = "ch:ussa76"
+
+[[chapter]]
+module = "cpp/src/models/atmosphere_hp.cpp"
+chapter = "docs/mathlib/chapters/harris_priester.tex"
+label = "ch:harrispriester"
+
+[[chapter]]
+module = "cpp/src/models/atmosphere_mars.cpp"
+chapter = "docs/mathlib/chapters/mars_atmosphere.tex"
+label = "ch:marsatmosphere"
+
+[[chapter]]
+module = "cpp/src/models/drag.cpp"
+chapter = "docs/mathlib/chapters/drag.tex"
+label = "ch:drag"
