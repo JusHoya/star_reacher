@@ -1,0 +1,37 @@
+# Malformed-vehicle fixture (FR-15 pass 1, schema): the mandatory FR-13
+# provenance field is absent. Expected error: [root] provenance missing
+# required key.
+
+schema_version = 1
+
+[vehicle]
+name = "fixture-missing-provenance"
+
+[[stage]]
+name = "stage1"
+dry_mass_kg = 500.0
+dry_cg_m = [2.0, 0.0, 0.0]
+dry_inertia_kgm2 = [[150.0, 0.0, 0.0], [0.0, 1200.0, 0.0], [0.0, 0.0, 1200.0]]
+
+[[stage.tank]]
+name = "main_tank"
+radius_m = 0.5
+length_m = 3.0
+position_m = [2.0, 0.0, 0.0]
+propellant_mass_kg = 2000.0
+density_kgpm3 = 1030.0
+
+[[stage.engine]]
+name = "main_engine"
+feeds_tank = "main_tank"
+thrust_vac_N = 60000.0
+isp_vac_s = 320.0
+exit_area_m2 = 0.08
+position_m = [0.1, 0.0, 0.0]
+axis = [1.0, 0.0, 0.0]
+gimbal_max_deg = 5.0
+gimbal_rate_dps = 10.0
+throttle_min = 0.6
+throttle_max = 1.0
+spool_time_s = 0.5
+ignitions = 1

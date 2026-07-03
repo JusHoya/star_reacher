@@ -1,0 +1,12 @@
+# Fixture aero table for the malformed-vehicle corpus: a well-formed
+# axisymmetric Mach table (FR-9 columns, declared units in the header) so
+# fixtures that seed a defect elsewhere still carry a valid aero reference.
+# Columns: mach (1), ca (1), cnalpha_per_rad (1/rad), xcp_m (m, structural
+# frame: origin at the stack aft plane, +X toward the nose).
+mach,ca,cnalpha_per_rad,xcp_m
+0.0,0.30,2.0,7.6
+0.8,0.35,2.4,7.2
+1.05,0.75,3.4,6.6
+2.0,0.50,2.6,7.3
+4.0,0.34,2.2,7.8
+8.0,0.26,2.0,8.1
