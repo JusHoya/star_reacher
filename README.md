@@ -136,7 +136,7 @@ Citation metadata lives in [`CITATION.cff`](CITATION.cff) (validated by `cffconv
   title   = {star\_reacher},
   year    = {2026},
   url     = {https://github.com/JusHoya/star_reacher},
-  version = {0.2.0}
+  version = {0.3.0}
 }
 ```
 
