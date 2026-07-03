@@ -175,12 +175,18 @@ def test_two_initial_state_forms_rejected(tmp_path):
     assert any("exactly one initial-state form is required, found 2" in e for e in errors), errors
 
 
-def test_geodetic_recognized_but_rejected_until_phase_4(tmp_path):
+def test_geodetic_without_vehicle_and_release_rejected(tmp_path):
+    # The FR-14 launch-site form is accepted from Phase 4, but it is
+    # meaningless without a vehicle to hold on the pad and a pad_release
+    # event to end the constraint; both defects must be named. The full
+    # geodetic/sequence surface is covered in test_mission_sequence.py.
     extra = ("[initial_state.geodetic]", "lat_deg = 28.5", "lon_deg = -80.6", "alt_m = 10.0")
     text = _mission_text(exclude=("initial_state.cartesian",), extra_lines=extra)
     resolved, errors = _validate_text(tmp_path, text)
     assert resolved is None
-    assert any("supported from Phase 4" in e for e in errors), errors
+    joined = "\n".join(errors)
+    assert "[root] vehicle:" in joined and "geodetic" in joined
+    assert "[root] sequence:" in joined and "pad_release" in joined
 
 
 @pytest.mark.parametrize(

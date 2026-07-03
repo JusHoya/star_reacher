@@ -43,18 +43,36 @@ class RunResult:
     summary: dict
 
 
-def run_mission(mission_path, outdir=None, force=False, command_line=None) -> RunResult:
+def run_mission(mission_path, outdir=None, force=False, command_line=None, strict=False) -> RunResult:
     """Validate, resolve, hash, propagate, and write the run artifacts.
 
     Raises ``MissionValidationError`` (exit 2 at the CLI) for config errors,
     ``CoreMissingError`` or ``RunnerError`` (exit 1) for runtime failures.
+    ``strict`` promotes validation warnings (the vehicle plausibility tier)
+    to errors (FR-15).
     """
     start_wall = time.monotonic()
     start_utc = datetime.now(timezone.utc).isoformat()
 
-    resolved, errors = validate_mission_file(mission_path)
+    resolved, errors = validate_mission_file(mission_path, strict=strict)
     if errors:
         raise MissionValidationError(errors)
+
+    # The Phase 4 vehicle/sequence surface validates fully (above, before any
+    # core call), but its 6DOF propagation path lands with the Phase 4 core
+    # integration; running it against the point-mass core would silently
+    # ignore the vehicle, which the no-silent-degradation rule forbids.
+    if (
+        "vehicle" in resolved
+        or "sequence" in resolved
+        or "geodetic" in resolved["initial_state"]
+    ):
+        raise RunnerError(
+            f"{mission_path}: the mission validated cleanly, but it uses the "
+            f"Phase 4 vehicle/sequence surface (vehicle file, [[sequence]], or "
+            f"geodetic launch state), whose 6DOF propagation path is not "
+            f"available in this build"
+        )
 
     config_bytes = canonical_bytes(resolved)
     config_sha = hashlib.sha256(config_bytes).hexdigest()

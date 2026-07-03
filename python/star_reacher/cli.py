@@ -56,6 +56,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="overwrite an existing run.srlog in the output directory",
     )
+    p_run.add_argument(
+        "--strict",
+        action="store_true",
+        help="promote validation warnings (the FR-15 vehicle plausibility tier) "
+        "to errors",
+    )
 
     p_verify = sub.add_parser(
         "verify",
@@ -151,7 +157,11 @@ def _cmd_run(args: argparse.Namespace, argv: list[str]) -> int:
 
     try:
         result = run_mission(
-            args.mission, args.outdir, force=args.force, command_line=["star", *argv]
+            args.mission,
+            args.outdir,
+            force=args.force,
+            command_line=["star", *argv],
+            strict=args.strict,
         )
     except MissionValidationError as exc:
         for line in exc.errors:
