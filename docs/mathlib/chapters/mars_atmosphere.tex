@@ -1,0 +1,202 @@
+% Chapter — Mars piecewise-exponential atmosphere (FR-8, assumption A-3).
+% Follows the mandatory FR-29 six-section template: purpose; assumptions
+% and domain of validity; derivation; discretization and implementation;
+% validation evidence; references. The equation labels eq:mars:glenn,
+% eq:mars:scaleheight, and eq:mars:segment are echoed verbatim in comments
+% in cpp/src/models/atmosphere_mars.cpp (FR-29 equation-label-to-code
+% traceability); renaming them breaks that trace.
+\chapter{Mars Atmosphere: Piecewise-Exponential Table}
+\label{ch:marsatmosphere}
+
+\section{Purpose}
+\label{sec:mars:purpose}
+
+This chapter documents the Mars atmosphere (FR-8, assumption A-3): a
+piecewise-exponential density table for aerobraking-class sensitivity
+studies in Mars orbit. Mars entry, descent, and landing is a project
+non-goal, so the model's only downstream consumer is the cannonball drag
+acceleration of Chapter~\ref{ch:drag} at orbital altitudes. The model is
+implemented in \texttt{cpp/src/models/atmosphere\_mars.cpp} with its
+interface in \texttt{cpp/include/star/models/atmosphere\_mars.hpp}.
+
+\section{Assumptions and domain of validity}
+\label{sec:mars:domain}
+
+\textbf{Confidence: low --- provenance provisional per PRD A-3.} This
+entire model carries the PRD's assumption-A-3 flag, prominently and
+deliberately. The node densities derive from the NASA Glenn Research
+Center ``Mars Atmosphere Model'' curve fits~\cite{nasaglennmars}: an
+educational fit to Mars Global Surveyor data (April 1996) that states no
+uncertainty, no altitude datum, no seasonal or diurnal qualification, and
+whose temperature fit is discontinuous at its \qty{7}{\kilo\metre} seam.
+It is a real, citable source and it is used honestly --- but it is not a
+validated engineering atmosphere model. The same flag is carried in the
+golden manifest (\texttt{tests/golden/atmosphere/manifest.toml}) and in
+the source header. Until a citable engineering provenance replaces it
+(A-3: ``reference TBD''), results that depend on absolute Mars density
+are sensitivity studies, not predictions. Known context, for scale: the
+real Mars atmosphere varies seasonally by tens of percent in surface
+pressure and by order-of-magnitude factors in upper-atmosphere density
+(dust storms); this static table represents none of that.
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Static, spherically uniform atmosphere} --- density is a
+    function of altitude alone.
+  \item \textbf{Piecewise-exponential structure.} Between committed
+    nodes the density is exponential in altitude; the per-segment scale
+    height is derived from the adjacent node densities
+    (equation~\eqref{eq:mars:scaleheight}), which makes the profile
+    continuous at every boundary \emph{by construction}.
+  \item \textbf{Node truth equals the source curve fit sampled at
+    \qty{5}{\kilo\metre} steps, 0--\qty{100}{\kilo\metre}.} The source
+    temperature fit crosses absolute zero near \qty{112}{\kilo\metre},
+    so the table is capped at \qty{100}{\kilo\metre}, below the
+    breakdown.
+\end{enumerate}
+
+Domain of validity: altitude $z \in [\qty{0}{\kilo\metre},
+\qty{100}{\kilo\metre}]$ above the source model's (unstated) surface
+reference. Out-of-domain behavior, matching the code exactly: above
+\qty{100}{\kilo\metre} the topmost segment's exponential is continued ---
+a documented non-physical continuity aid whose scale height
+($\sim\qty{41}{\kilo\metre}$, an artifact of the source fit's collapsing
+temperature) is far larger than a physical Martian upper-atmosphere
+scale height; it exists so that aerobraking arcs with apoapsis above the
+table see a smooth, monotonically vanishing density rather than a step.
+Below \qty{0}{\kilo\metre} the first segment's exponential is continued
+down to \qty{-8}{\kilo\metre}, comfortably below the deepest Martian
+terrain (an engineering guard, not a physical datum); below that, and
+for non-finite input, the model throws \texttt{std::domain\_error}.
+Both behaviors are gated by \testid{ATM-MARS-DOMAIN}.
+
+\section{Derivation}
+\label{sec:mars:derivation}
+
+\subsection{Source curve fits and node sampling}
+
+The NASA Glenn model~\cite{nasaglennmars}, in metric form with altitude
+$h$ in metres, is
+\begin{equation}
+  T_C(h) =
+  \begin{cases}
+    -31 - 0.000998\,h, & h < 7000, \\
+    -23.4 - 0.00222\,h, & h \ge 7000,
+  \end{cases}
+  \qquad
+  p_{\mathrm{kPa}} = 0.699\,e^{-0.00009\,h},
+  \qquad
+  \rho = \frac{p_{\mathrm{kPa}}}{0.1921\,(T_C + 273.1)},
+  \label{eq:mars:glenn}
+\end{equation}
+with $T_C$ in degrees Celsius and $\rho$ in
+\unit{\kilogram\per\metre\cubed}. The committed nodes are
+$\rho_i = \rho(z_i)$ at $z_i = 0, 5, 10, \dots, \qty{100}{\kilo\metre}$
+(21 nodes), evaluated once by the golden generator and committed as exact
+binary64 values; the node set, not the source fit, is the model
+definition from that point on. The source's temperature discontinuity at
+\qty{7}{\kilo\metre} enters only through the node values ($z = 5$ and
+\qty{10}{\kilo\metre} straddle it); the committed model itself is
+continuous everywhere by construction.
+
+\subsection{Piecewise-exponential construction}
+
+Within segment $[z_i, z_{i+1}]$ define the inverse scale length from the
+adjacent nodes,
+\begin{equation}
+  k_i \;=\; \frac{\ln \rho_{i+1} - \ln \rho_i}{z_{i+1} - z_i}
+  \qquad\left(\text{scale height } H_i = -1/k_i\right),
+  \label{eq:mars:scaleheight}
+\end{equation}
+and evaluate
+\begin{equation}
+  \rho(z) \;=\; \rho_i\, e^{\,k_i\,(z - z_i)},
+  \qquad z_i \le z < z_{i+1}.
+  \label{eq:mars:segment}
+\end{equation}
+Continuity at an interior boundary $z_{i+1}$ holds by construction: the
+left limit is $\rho_i \exp[k_i (z_{i+1} - z_i)] =
+\rho_i \exp[\ln(\rho_{i+1}/\rho_i)] = \rho_{i+1}$ exactly in real
+arithmetic, and to within a few floating-point roundings ($\sim 10^{-16}$
+relative) in binary64 --- four orders below the $10^{-12}$ continuity
+gate of exit criterion~9. Node exactness also holds by construction: at
+$z = z_i$ the segment that starts at $z_i$ is selected, its exponent is
+identically zero, $e^{0} = 1$ exactly, and the returned value is the
+committed $\rho_i$ bit for bit.
+
+\section{Discretization and implementation}
+\label{sec:mars:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/atmosphere\_mars.cpp}; the source comments
+    echo the labels \texttt{eq:mars:glenn},
+    \texttt{eq:mars:scaleheight}, and \texttt{eq:mars:segment} verbatim,
+    and the file header carries the A-3 low-confidence flag.
+  \item \textbf{Bit-exact node table.} The 21 node densities are
+    compiled in as C++17 hexadecimal floating literals, numerically
+    identical to the committed golden
+    (\texttt{tests/golden/atmosphere/mars\_nodes.toml}, whose
+    \texttt{rho\_kgpm3} hex fields are normative); test
+    \testid{ATM-MARS-NODES} enforces bit equality at every node. The
+    segment coefficients $k_i$ are computed once from the nodes, in
+    fixed order, and cached (function-local static; single-threaded
+    core, D-10).
+  \item \textbf{Segment selection.} Fixed-order forward scan for the
+    segment with $z_i \le z$; altitudes at or above the last node use
+    the final segment's coefficient (the documented extrapolation), and
+    altitudes below node~0 use segment~0's coefficient down to the
+    \qty{-8}{\kilo\metre} guard.
+  \item \textbf{Determinism.} Straight-line binary64 arithmetic with
+    libm \texttt{log}/\texttt{exp} only; fixed evaluation order; no
+    data-dependent iteration counts.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:mars:validation}
+
+Table~\ref{tab:mars:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
+provenance and tolerances are recorded in
+\texttt{tests/golden/atmosphere/manifest.toml} (which repeats the A-3
+low-confidence flag).
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the Mars atmosphere model (doctest,
+    \texttt{cpp/tests/test\_atmosphere.cpp}).}
+  \label{tab:mars:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{ATM-MARS-NODES} &
+      Phase~3 exit criterion~9(a): the model evaluated at every committed
+      node altitude returns the committed node density with bit-exact
+      double equality (equation~\eqref{eq:mars:segment} with zero
+      exponent); off-node evaluations match the independent 50-digit
+      mpmath reference to $10^{-13}$ relative. \\
+    \testid{ATM-MARS-CONT} &
+      Phase~3 exit criterion~9(b): at every internal segment boundary,
+      evaluation at the boundary and at \texttt{nextafter} increments on
+      both sides yields a relative jump below $10^{-12}$. \\
+    \testid{ATM-MARS-DOMAIN} &
+      Out-of-domain behavior of Section~\ref{sec:mars:domain}: continued
+      exponentials above \qty{100}{\kilo\metre} (monotone, vanishing)
+      and down to \qty{-8}{\kilo\metre}; \texttt{std::domain\_error}
+      below \qty{-8}{\kilo\metre} and for non-finite input. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:mars:references}
+
+This chapter relies on the NASA Glenn Research Center Mars Atmosphere
+Model~\cite{nasaglennmars} as the (provisional, low-confidence per PRD
+A-3) source of the node densities. No other reference is load-bearing;
+replacing the provenance with a validated engineering model (e.g.\ a
+published Mars-GRAM-derived table) is the designated A-3 follow-up and
+requires regenerating the node golden and this chapter together. Full
+bibliographic details appear in the bibliography.

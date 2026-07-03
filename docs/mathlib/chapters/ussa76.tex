@@ -1,0 +1,297 @@
+% Chapter — U.S. Standard Atmosphere 1976 (FR-8). Follows the mandatory
+% FR-29 six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. The equation labels eq:ussa76:geopotential, eq:ussa76:hydro,
+% eq:ussa76:tm, eq:ussa76:gradient, eq:ussa76:isothermal, eq:ussa76:density,
+% eq:ussa76:speedofsound, and eq:ussa76:interp are echoed verbatim in
+% comments in cpp/src/models/atmosphere_ussa76.cpp (FR-29
+% equation-label-to-code traceability); renaming them breaks that trace.
+\chapter{Earth Atmosphere: U.S. Standard Atmosphere 1976}
+\label{ch:ussa76}
+
+\section{Purpose}
+\label{sec:ussa76:purpose}
+
+This chapter documents the Earth launch atmosphere (FR-8): the
+U.S.~Standard Atmosphere, 1976 (USSA76)~\cite{ussa1976}. Below
+\qty{86}{\kilo\metre} the model is fully analytic from the document's
+defining constants and returns temperature, pressure, density, and speed of
+sound --- the quantities the Phase~4 aerodynamics model needs for Mach
+number and dynamic pressure and the propulsion model needs for
+back-pressure thrust. From \qty{86}{\kilo\metre} to \qty{1000}{\kilo\metre}
+the model returns density only, by documented interpolation of the
+published USSA76 tables; this extension exists for profile continuity
+(launch aerodynamics live below \qty{86}{\kilo\metre}, and orbit-decay drag
+uses the Harris--Priester model of Chapter~\ref{ch:harrispriester}). The
+model is implemented in \texttt{cpp/src/models/atmosphere\_ussa76.cpp} with
+its interface in \texttt{cpp/include/star/models/atmosphere\_ussa76.hpp}.
+
+\section{Assumptions and domain of validity}
+\label{sec:ussa76:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Standard static atmosphere.} USSA76 is an idealized,
+    steady-state, mid-latitude annual-mean profile~\cite{ussa1976}. There
+    is no dependence on season, latitude, local time, or space weather;
+    day-to-day density at altitude can differ from the standard by large
+    factors. The model is the conventional reference for launch
+    aerodynamics, not a weather model.
+  \item \textbf{Molecular-scale temperature identification below
+    \qty{86}{\kilo\metre}.} The model computes and returns the
+    molecular-scale temperature $T_M$ of equation~\eqref{eq:ussa76:tm}.
+    The document defines the kinetic temperature $T = T_M \cdot M/M_0$
+    with a molecular-weight ratio that departs from unity only between 80
+    and \qty{86}{\kilo\metre}, by at most $0.04\,\%$, and its own main
+    tables print $T = T_M$ throughout that band (the correction is left
+    to the user; \cite[Part~1, \S1.2.4, p.~9]{ussa1976}). This model
+    adopts the same tabulation practice, so its temperature reproduces
+    the printed Table~I values exactly and is at most $0.04\,\%$ above
+    the rigorously corrected kinetic temperature between 80 and
+    \qty{86}{\kilo\metre}. Pressure and density are unaffected (both are
+    defined in terms of $T_M$).
+  \item \textbf{Constant sea-level composition below
+    \qty{86}{\kilo\metre}} ($M_0 = \qty{28.9644}{\kilogram\per\kilo\mole}$),
+    per the document's mixing assumption~\cite[Part~1, \S1.2.4]{ussa1976}.
+  \item \textbf{Tabulated densities above \qty{86}{\kilo\metre}.} The
+    document computes pressure and density above \qty{86}{\kilo\metre}
+    from species number-density integrals (diffusion equations for
+    N$_2$, O, O$_2$, Ar, He, H; \cite[Part~1, \S1.3.1,
+    eq.~33c]{ussa1976}). Those integrals are deliberately out of scope
+    here: the model instead interpolates the published Table~I densities
+    on a committed node grid (equation~\eqref{eq:ussa76:interp}). Only
+    density is provided above \qty{86}{\kilo\metre}; temperature,
+    pressure, and speed of sound are not (the printed speed-of-sound
+    tables themselves terminate at \qty{86}{\kilo\metre}
+    \cite[Part~1, \S1.3.10]{ussa1976}).
+\end{enumerate}
+
+Domain of validity: geometric altitude
+$z \in [\qty{-5}{\kilo\metre}, \qty{86}{\kilo\metre})$ for the full
+analytic state (the table's own lower limit is \qty{-5}{\kilo\metre});
+$z \in [\qty{86}{\kilo\metre}, \qty{1000}{\kilo\metre}]$ for density only.
+One boundary subtlety is adopted deliberately: the document equates the top
+of the seventh geopotential layer, $H_7 = 84852$~m$'$, with
+\qty{86}{\kilo\metre} geometric, but the exact conversion of
+$z = \qty{86000}{\metre}$ gives $H = 84852.046$~m$'$ --- the stated
+equivalence is a rounded convention. The implementation branches on
+geometric altitude at exactly \qty{86}{\kilo\metre} and lets the layer-7
+formulas extend approximately \qty{5}{\centi\metre} of geopotential past
+$H_7$, so the analytic and tabulated regions meet without a gap. The
+resulting seam discrepancy is print rounding only, measured at
+$2.6\times10^{-5}$ relative and gated at $2\times10^{-4}$ by
+\testid{ATM-USSA76-CONTINUITY}.
+
+Out-of-domain behavior, matching the code exactly: altitudes below
+\qty{-5}{\kilo\metre} or above \qty{1000}{\kilo\metre}, and non-finite
+inputs, throw \texttt{std::domain\_error}; requesting the full
+thermodynamic state at or above \qty{86}{\kilo\metre} also throws
+\texttt{std::domain\_error} (the quantities do not exist in this model
+there, and returning a fabricated value would violate the no-silent-default
+rule, DX-2). The guard is gated by \testid{ATM-USSA76-DOMAIN}.
+
+\section{Derivation}
+\label{sec:ussa76:derivation}
+
+\subsection{Geopotential altitude}
+
+The 0--\qty{86}{\kilo\metre} region is formulated in geopotential altitude
+$H$, defined so that the altitude-dependent gravity $g(z)$ is absorbed into
+the vertical coordinate: $g_0'\,dH = g\,dZ$ with the inverse-square law
+$g = g_0 (r_0/(r_0+Z))^2$. Integrating gives
+\cite[Part~1, eq.~18]{ussa1976}
+\begin{equation}
+  H \;=\; \frac{r_0\,Z}{r_0 + Z},
+  \label{eq:ussa76:geopotential}
+\end{equation}
+with $r_0 = \qty{6356766}{\metre}$ the document's effective Earth radius
+and $g_0' = \qty{9.80665}{\metre\squared\per\second\squared\per\metre}$ the
+unit geopotential (both from \cite[Part~1, Table~2]{ussa1976}; the ratio
+$\Gamma = g_0/g_0' = 1$~m$'$/m is applied implicitly).
+
+\subsection{Hydrostatic closed forms below \texorpdfstring{\qty{86}{\kilo\metre}}{86 km}}
+
+The defining equations are hydrostatic equilibrium and the perfect-gas law,
+combined by the document into
+\begin{equation}
+  \frac{dP}{P} \;=\; -\,\frac{g_0' M_0}{R^{*}\,T_M}\,dH,
+  \label{eq:ussa76:hydro}
+\end{equation}
+where $R^{*} = \qty{8314.32}{\newton\metre\per\kilo\mole\per\kelvin}$ and
+the molecular-scale temperature profile is linear in each of the seven
+layers of \cite[Part~1, Table~4]{ussa1976}:
+\begin{equation}
+  T_M(H) \;=\; T_{M,b} + L_{M,b}\,(H - H_b),
+  \qquad H_b \le H \le H_{b+1},
+  \label{eq:ussa76:tm}
+\end{equation}
+with layer bases $H_b = \{0, 11, 20, 32, 47, 51, 71\}$~km$'$ (top
+$H_7 = 84.852$~km$'$), gradients
+$L_{M,b} = \{-6.5, 0, +1.0, +2.8, 0, -2.8, -2.0\}$~K/km$'$, and
+$T_{M,0} = T_0 = \qty{288.15}{\kelvin}$,
+$P_0 = \qty{101325}{\pascal}$.
+
+For a gradient layer ($L_{M,b} \neq 0$), substituting
+equation~\eqref{eq:ussa76:tm} into equation~\eqref{eq:ussa76:hydro} with
+$dH = dT_M/L_{M,b}$ and integrating from the layer base,
+\begin{equation}
+  \int_{P_b}^{P} \frac{dP}{P}
+   = -\,\frac{g_0' M_0}{R^{*} L_{M,b}}
+     \int_{T_{M,b}}^{T_M} \frac{dT_M}{T_M}
+  \;\;\Longrightarrow\;\;
+  P \;=\; P_b \left[\frac{T_{M,b}}{T_{M,b} + L_{M,b}(H - H_b)}\right]
+          ^{\textstyle\frac{g_0' M_0}{R^{*} L_{M,b}}},
+  \label{eq:ussa76:gradient}
+\end{equation}
+which is the document's equation~33a. For an isothermal layer
+($L_{M,b} = 0$), $T_M = T_{M,b}$ is constant and the same integral gives
+the document's equation~33b:
+\begin{equation}
+  P \;=\; P_b \exp\!\left[-\,\frac{g_0' M_0\,(H - H_b)}{R^{*}\,T_{M,b}}
+          \right].
+  \label{eq:ussa76:isothermal}
+\end{equation}
+The base pressures $P_b$ follow by applying the appropriate member of the
+pair \eqref{eq:ussa76:gradient}/\eqref{eq:ussa76:isothermal} at
+$H = H_{b+1}$ successively from $b = 0$
+\cite[Part~1, \S1.3.1]{ussa1976}. Density and speed of sound then follow
+from the perfect-gas law and the adiabatic sound-speed relation
+\cite[Part~1, eqs.~42 and~50]{ussa1976}:
+\begin{equation}
+  \rho \;=\; \frac{P\,M_0}{R^{*}\,T_M},
+  \label{eq:ussa76:density}
+\end{equation}
+\begin{equation}
+  c_s \;=\; \sqrt{\frac{\gamma\,R^{*}\,T_M}{M_0}},
+  \qquad \gamma = 1.40 \text{ (exact, \cite[Table~2]{ussa1976})}.
+  \label{eq:ussa76:speedofsound}
+\end{equation}
+
+\subsection{Tabulated density, 86--1000 km}
+\label{sec:ussa76:upper}
+
+Above \qty{86}{\kilo\metre} the committed node grid
+$\{(z_i, \rho_i)\}$, transcribed from \cite[Part~4, Table~I, pp.~68--73]
+{ussa1976} (102 nodes; provenance in
+\texttt{tests/golden/atmosphere/manifest.toml}), is interpolated
+log-linearly in geometric altitude --- equivalently, each segment is an
+exponential with a constant scale height fitted to its endpoints:
+\begin{equation}
+  \rho(z) \;=\; \rho_i
+  \exp\!\left[\frac{\ln \rho_{i+1} - \ln \rho_i}{z_{i+1} - z_i}
+  \,(z - z_i)\right],
+  \qquad z_i \le z \le z_{i+1}.
+  \label{eq:ussa76:interp}
+\end{equation}
+At a node the fractional offset is identically zero and the model returns
+$\rho_i$ exactly. Between nodes the interpolation error is bounded by the
+log-density curvature, $\tfrac{1}{8}\,h^2 \,|\!\left(\ln\rho\right)''|$ for
+node spacing $h$. The grid was therefore graded to the curvature measured
+from the printed table itself: \qty{1}{\kilo\metre} spacing to
+\qty{100}{\kilo\metre}, \qty{2}{\kilo\metre} to \qty{160}{\kilo\metre},
+\qty{5}{\kilo\metre} to \qty{300}{\kilo\metre}, and 10--25~km above, giving
+an estimated between-node error below $\sim 0.1\,\%$ everywhere ---
+comparable to the $\pm$~half-unit-in-the-4th-figure quantum of the printed
+values themselves. The exit-criterion gate
+(\testid{ATM-USSA76-ROWS}) evaluates at published rows that are members of
+the committed grid, where the reproduction is exact by construction and
+therefore verifies the transcription and the evaluation path; the
+between-node figure above is a documented estimate, not a gated claim.
+
+\section{Discretization and implementation}
+\label{sec:ussa76:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/atmosphere\_ussa76.cpp}; the source comments
+    echo the labels \texttt{eq:ussa76:geopotential},
+    \texttt{eq:ussa76:hydro}, \texttt{eq:ussa76:tm},
+    \texttt{eq:ussa76:gradient}, \texttt{eq:ussa76:isothermal},
+    \texttt{eq:ussa76:density}, \texttt{eq:ussa76:speedofsound}, and
+    \texttt{eq:ussa76:interp} verbatim.
+  \item \textbf{Defining constants at the definition.} $T_0$, $P_0$,
+    $g_0'$, $R^{*}$, $M_0$, $r_0$, $\gamma$, and the Table~4 layer arrays
+    are USSA76-defining values, private to this model, and cited at their
+    definitions in the source. They are deliberately \emph{not} promoted
+    to \texttt{star/constants.hpp}: they define this document's
+    atmosphere, not the project's physical-constant set.
+  \item \textbf{Fixed-order layer walk.} Layer base values $(T_{M,b},
+    P_b)$ are computed once, in fixed order $b = 0..6$, and cached in a
+    function-local static; every subsequent evaluation walks the same
+    fixed sequence (D-10: fixed evaluation order, single-threaded core).
+  \item \textbf{Branch at exactly \qty{86}{\kilo\metre}.} $z <
+    \qty{86000}{\metre}$ selects the analytic branch (layer-7 formulas
+    extended $\sim\qty{5}{\centi\metre}$ of geopotential past $H_7$, per
+    Section~\ref{sec:ussa76:domain}); $z \ge \qty{86000}{\metre}$ selects
+    the node-grid branch, whose first node is exactly
+    \qty{86000}{\metre}.
+  \item \textbf{Compiled-in node table with a committed check copy.} The
+    node grid is compiled into the model source, and
+    \texttt{tests/golden/atmosphere/ussa76\_upper\_nodes.toml} carries the
+    same values as an independently reviewable transcription check; test
+    \testid{ATM-USSA76-UPPER-NODES} requires the two copies to agree
+    bit-for-bit after \texttt{strtod}. A runtime file load was rejected:
+    the core never parses text (D-2).
+  \item \textbf{Determinism.} All paths are straight-line binary64
+    arithmetic in fixed order under the D-10 flags. The gradient-layer
+    power in equation~\eqref{eq:ussa76:gradient} and the exponentials use
+    libm \texttt{pow}/\texttt{exp}/\texttt{log}, so cross-platform
+    results may differ in the last ulp; all committed tolerances sit
+    orders of magnitude above that spread.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:ussa76:validation}
+
+Table~\ref{tab:ussa76:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
+provenance and tolerances are recorded in
+\texttt{tests/golden/atmosphere/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the USSA76 model (doctest,
+    \texttt{cpp/tests/test\_atmosphere.cpp}).}
+  \label{tab:ussa76:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{ATM-USSA76-ROWS} &
+      Phase~3 exit criterion~4: 23 published Table~I rows spanning all
+      seven layers below \qty{86}{\kilo\metre} (temperature, pressure,
+      density) plus 12 rows above \qty{86}{\kilo\metre} (density), each
+      reproduced at print precision --- within half a unit in the 4th
+      significant figure of the printed value. \\
+    \testid{ATM-USSA76-UPPER-NODES} &
+      The compiled-in 86--1000~km node grid equals the committed
+      transcription check copy bit-for-bit, and evaluation at every node
+      altitude returns the node density exactly
+      (equation~\eqref{eq:ussa76:interp} with zero offset). \\
+    \testid{ATM-USSA76-CONTINUITY} &
+      Analytic/table seam at \qty{86}{\kilo\metre}: the analytic density
+      approaching from below agrees with the first table node to
+      $2\times10^{-4}$ relative (measured $2.6\times10^{-5}$; print
+      rounding of the node is the dominant term). \\
+    \testid{ATM-USSA76-DOMAIN} &
+      Out-of-domain behavior of Section~\ref{sec:ussa76:domain}:
+      \texttt{std::domain\_error} below \qty{-5}{\kilo\metre}, above
+      \qty{1000}{\kilo\metre}, for non-finite input, and for full-state
+      requests at or above \qty{86}{\kilo\metre}. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:ussa76:references}
+
+This chapter relies on the U.S.~Standard Atmosphere, 1976
+document~\cite{ussa1976} for every defining constant, equation, and table
+value: Part~1, Table~2 (adopted constants), Table~4 (layer bases and
+gradients), \S1.2.3--\S1.2.5 (geopotential and molecular-scale
+temperature), \S1.3.1 (pressure equations 33a/33b), \S1.3.4 (density,
+eq.~42), \S1.3.10 (speed of sound, eq.~50), and Part~4, Table~I
+(geometric-altitude main tables, document pages 51--73). Vallado
+\cite{vallado2013} surveys standard-atmosphere usage in astrodynamics
+practice. Full bibliographic details appear in the bibliography.

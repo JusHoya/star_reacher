@@ -1,0 +1,87 @@
+# Provenance manifest for the atmosphere and drag golden vectors in this
+# directory (FR-22 layer 1: uncited golden = lint failure; schema documented
+# in tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "atmosphere"
+date = "2026-07-02"
+generation = """
+All value files are written by tests/golden/atmosphere/generate.py
+(Python 3.14, mpmath 1.3.0). Two kinds of content coexist. TRANSCRIBED
+values (USSA76 rows and nodes; the Harris-Priester coefficient table) are
+copied from their published sources and recorded exactly as printed;
+generate.py holds the transcriptions and refuses to write files unless
+its self-checks pass: every below-86-km USSA76 row must be reproduced at
+print precision (4 significant figures) by an independent pure-Python
+implementation of the USSA76 defining equations (observed worst deviation
+at generation: 0.199 of a half-unit in the 4th significant figure), the
+86-1000 km node set must pass a log-density monotonicity/smoothness
+screen (worst adjacent-slope jump 9.6 %, gate 25 %) and an 86-km
+analytic anchor, and the Harris-Priester table must be monotone with
+rho_min <= rho_max. COMPUTED values (Harris-Priester off-node densities,
+Mars node and off-node densities, drag acceleration vectors) are
+evaluated by generate.py with mpmath at 50 significant digits (Mars
+nodes: plain binary64 by design, since the node values themselves are
+the committed definition) and committed as binary64 hex literals.
+Regenerating is `python tests/golden/atmosphere/generate.py`; output is
+byte-deterministic.
+"""
+
+[[file]]
+name = "ussa76_rows.toml"
+source = "Transcribed from the official document scan (NASA NTRS document ID 19770009539); each case records the document page it was read from"
+citation = "U.S. Standard Atmosphere, 1976. National Oceanic and Atmospheric Administration / National Aeronautics and Space Administration / United States Air Force, NOAA-S/T 76-1562 (NASA-TM-X-74335), U.S. Government Printing Office, Washington, D.C., October 1976. Part 4, Table I ('Temperature, pressure, and density for geopotential and geometric altitudes in metric units'), geometric-altitude pages, document pages 51-73 (below-86-km rows: pages 53-67; above-86-km rows: pages 68-73)."
+citation_anchor = "Sea-level row asserted at generation time: Z = 0 -> T = 288.150 K, P = 1.01325e3 mb, rho = 1.2250 kg/m^3 (document page 53)"
+generation = "BELOW86_ROWS / CRITERION_UPPER_Z transcriptions in generate.py; every below-86 row cross-checked against ussa76_below86(), an independent Python implementation of the defining equations (Part 1, eqs. 18, 33a, 33b, 42, 50; Table 2 and Table 4 constants)"
+date = "2026-07-02"
+tolerance = "The consuming test (ATM-USSA76-ROWS) requires |model - printed| <= 0.5 * 10^(floor(log10(printed)) - 3) for each printed quantity, i.e. agreement at print precision, 4 significant figures (Phase 3 exit criterion 4). P is compared in Pa as p_mb * 100 (exact decimal rescale of the printed millibar value). Observed generation-time worst case for the analytic region: 0.199 of that bound."
+
+[[file]]
+name = "ussa76_upper_nodes.toml"
+source = "Transcribed from the official document scan (NASA NTRS document ID 19770009539); each case records the document page it was read from"
+citation = "U.S. Standard Atmosphere, 1976 (NOAA-S/T 76-1562 / NASA-TM-X-74335), Part 4, Table I, geometric altitude, metric units, document pages 68-73 (86 km to 1000 km)."
+generation = "UPPER_NODES transcription in generate.py; screened by check_upper_nodes(): densities strictly decreasing, log-density slope magnitude decreasing with altitude, adjacent-segment slope jumps < 25 % (observed worst 9.6 %), 86-km node anchored against the analytic below-86 model at print precision. Cross-checked at transcription time against an independent full-model implementation (Public Domain Aeronautical Software, https://www.pdas.com/bigtables.html) at 12 altitudes: agreement within one unit in the 4th significant figure at and above 150 km; between 86 and 120 km that implementation deviates from the printed tables by up to ~0.7 %, and the committed values follow the printed document."
+date = "2026-07-02"
+tolerance = "exact string-to-binary64 equality (strtod) between these printed values and the node table compiled into cpp/src/models/atmosphere_ussa76.cpp (test ATM-USSA76-UPPER-NODES); the model evaluated at a node altitude must return the node value bit-exactly (log-linear interpolation with zero fractional offset)."
+
+[[file]]
+name = "harris_priester_table.toml"
+source = "Digit-for-digit transcription of the ALT_RHO table in Orekit's HarrisPriester class (src/main/java/org/orekit/models/earth/atmosphere/HarrisPriester.java, Orekit develop branch, retrieved 2026-07-02 from https://raw.githubusercontent.com/CS-SI/Orekit/develop/src/main/java/org/orekit/models/earth/atmosphere/HarrisPriester.java), which embeds the Montenbruck & Gill book table in kg/m^3 and is the frozen D-15 cross-tool baseline implementation for this model"
+citation = "Montenbruck, O., and Gill, E., 'Satellite Orbits: Models, Methods and Applications', Springer, Berlin, 2000 (ISBN 978-3-540-67280-7), Sect. 3.5.2 'The Harris-Priester Density Model', pp. 89-91: lower/upper (antapex/apex) density coefficients for mean solar activity, 100-1000 km, printed in g/km^3 (= 1e-12 kg/m^3). Underlying model: Harris, I., and Priester, W., 'Time-Dependent Structure of the Upper Atmosphere', Journal of the Atmospheric Sciences, Vol. 19, No. 4, 1962, pp. 286-301."
+generation = "HP_TABLE transcription in generate.py; check_hp_table() enforces 50 rows, 100-1000 km, rho_min <= rho_max, and strict decrease with altitude"
+date = "2026-07-02"
+tolerance = "exact string-to-binary64 equality (strtod) between these values and the table compiled into cpp/src/models/atmosphere_hp.cpp; the model pinned to the bulge minimum (cos_psi = -1) and maximum (cos_psi = +1) evaluated at each node altitude must reproduce every rho_min/rho_max value to 4 significant figures (test ATM-HP-NODES; Phase 3 exit criterion 8 - at-node evaluation is exact by construction, so the observed error is 0)."
+
+[[file]]
+name = "hp_offnode.toml"
+source = "generate.py independent reference evaluation (mpmath 1.3.0, 50 significant digits) of the published formulation over the committed table"
+citation = "Formulation per Montenbruck & Gill, Satellite Orbits (2000), Sect. 3.5.2: exponential (log-linear) interpolation of the antapex/apex profiles between table altitudes and diurnal-bulge combination rho = rho_min + (rho_max - rho_min) cos^n(psi/2); evaluation order mirrors the Orekit HarrisPriester reference implementation (cos^n(psi/2) computed as ((1+cos psi)/2) * ((1+cos psi)/2)^((n-2)/2))."
+generation = "hp_density_mp() in generate.py at 8 off-node cases spanning 101-995 km, cos_psi in [-1, 1], n in {2, 4, 6}"
+date = "2026-07-02"
+tolerance = "abs(rel) <= 1e-13 vs the C++ evaluation (test ATM-HP-OFFNODE). The C++ path performs the identical operation sequence in binary64, so the only spread is libm pow/log/sqrt rounding (a few 1e-16 relative); 1e-13 leaves ~three orders of margin while catching any formulation deviation."
+
+[[file]]
+name = "mars_nodes.toml"
+source = "generate.py evaluation of the NASA Glenn Research Center 'Mars Atmosphere Model' curve fits (metric units) at 5 km node spacing, 0-100 km. CONFIDENCE: LOW - provenance provisional per PRD A-3: the source is an educational curve fit to Mars Global Surveyor data (April 1996) with no stated uncertainty, altitude datum, or seasonal/diurnal qualification"
+citation = "NASA Glenn Research Center, 'Mars Atmosphere Model' (metric units), https://www.grc.nasa.gov/www/k-12/airplane/atmosmrm.html, retrieved 2026-07-02: T_C = -31 - 0.000998 h for h < 7000 m, T_C = -23.4 - 0.00222 h above; p_kPa = 0.699 exp(-0.00009 h); rho = p / (0.1921 (T_C + 273.1))."
+generation = "mars_glenn_density() in generate.py at z = 0, 5000, ..., 100000 m; committed as binary64 hex literals (the hex value is normative; the decimal field is a readability aid)"
+date = "2026-07-02"
+tolerance = "bit-exact double equality between the hex node values and the model evaluated at each node altitude (test ATM-MARS-NODES; Phase 3 exit criterion 9a). The node values ARE the committed model definition; the piecewise-exponential evaluation returns them exactly because the fractional offset is identically zero at a node."
+
+[[file]]
+name = "mars_offnode.toml"
+source = "generate.py independent reference evaluation (mpmath 1.3.0, 50 significant digits) of the piecewise exponential defined by mars_nodes.toml. CONFIDENCE: LOW - provenance provisional per PRD A-3 (inherited from the node source)"
+citation = "Piecewise-exponential construction: within segment [z_i, z_i+1], rho(z) = rho_i exp(k_i (z - z_i)) with k_i = ln(rho_i+1 / rho_i) / (z_i+1 - z_i), i.e. the per-segment scale height is derived from the adjacent committed node densities, making the profile continuous at every boundary by construction."
+generation = "mars_piecewise_mp() in generate.py at 7 off-node altitudes including one inside the source's 7 km temperature-fit seam"
+date = "2026-07-02"
+tolerance = "abs(rel) <= 1e-13 vs the C++ evaluation (test ATM-MARS-NODES off-node section). Identical operation sequence in binary64; only libm log/exp rounding differs. The boundary-continuity gate (test ATM-MARS-CONT) is separate: approaching every internal segment boundary from both sides (nextafter increments) must agree to relative jump < 1e-12 (Phase 3 exit criterion 9b)."
+
+[[file]]
+name = "drag_vectors.toml"
+source = "generate.py independent reference evaluation (mpmath 1.3.0, 50 significant digits) at exact binary64 inputs"
+citation = "Cannonball drag acceleration a = -1/2 rho (Cd A/m) |v_rel| v_rel with the air-relative velocity supplied by the caller (FR-8/FR-9); standard form per Montenbruck & Gill, Satellite Orbits (2000), Sect. 3.5 (Atmospheric Drag), and Vallado, Fundamentals of Astrodynamics and Applications, 4th ed. (2013), Sect. 8.6.2."
+generation = "drag_accel_mp() in generate.py over 5 cases: axis-aligned, generic, dense-ascent, bulge-state, and exactly-zero relative velocity"
+date = "2026-07-02"
+tolerance = "component-wise abs(rel) <= 1e-14 vs the C++ evaluation, and |a| = 0 exactly for the zero-velocity case (test DRAG-CANNONBALL-GOLDEN). The C++ path is the same multiply/norm sequence in binary64; the only spread is sqrt/rounding at the 1e-16 level, so 1e-14 carries two orders of margin."

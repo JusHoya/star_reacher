@@ -104,6 +104,10 @@ add_library(star_core STATIC
   cpp/src/events.cpp
   cpp/src/frames.cpp
   cpp/src/integrate.cpp
+  cpp/src/models/atmosphere_hp.cpp
+  cpp/src/models/atmosphere_mars.cpp
+  cpp/src/models/atmosphere_ussa76.cpp
+  cpp/src/models/drag.cpp
   cpp/src/models/gravity.cpp
   cpp/src/models/srp.cpp
   cpp/src/models/thirdbody.cpp
@@ -142,6 +146,8 @@ endif()
 if(STAR_BUILD_TESTING)
   enable_testing()
   add_executable(star_tests
+    cpp/tests/test_atmosphere.cpp
+    cpp/tests/test_drag.cpp
     cpp/tests/test_events.cpp
     cpp/tests/test_integrate.cpp
     cpp/tests/test_main.cpp

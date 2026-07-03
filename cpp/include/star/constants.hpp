@@ -49,6 +49,33 @@ inline constexpr double R_SUN_M = 6.957e8;
 inline constexpr double SRP_PRESSURE_1AU_N_PER_M2 =
     SOLAR_IRRADIANCE_1AU_W_PER_M2 / SPEED_OF_LIGHT_M_PER_S;
 
+// Nominal mean angular velocity of the Earth [rad/s].
+// Source: IERS Conventions (2010), IERS Technical Note No. 36, Table 1.1
+// ("Nominal mean Earth's angular velocity", 7.292115e-5 rad s^-1). Used by
+// the EOM layer to form the co-rotating-atmosphere air-relative velocity
+// v_rel = v - omega x r (FR-8; eq:drag:vrel) and the co-rotating launch pad
+// initial state (FR-14).
+inline constexpr double OMEGA_EARTH_RAD_PER_S = 7.292115e-5;
+
+// Mean angular velocity of Mars [rad/s], derived from the IAU 2015 prime-
+// meridian rotation rate dW/dt = 350.891982443297 deg/day (Archinal et al.,
+// Celest. Mech. Dyn. Astron. 130:22, 2018, with the 2019 erratum values as
+// distributed in NAIF pck00011.tpc; the same rate cpp/src/frames.cpp uses
+// for the Mars body-fixed frame): omega = dW/dt * (pi/180) / 86400.
+// Recorded as the binary64 result of that expression so every consumer
+// shares one value instead of re-deriving it (FR-8 co-rotating Mars
+// atmosphere; eq:drag:vrel).
+inline constexpr double OMEGA_MARS_RAD_PER_S =
+    350.891982443297 * (TWO_PI / 2.0 / 180.0) / 86400.0;
+
+// WGS84 reference ellipsoid: semi-major axis [m] and inverse flattening
+// (defining constants). Source: NIMA TR8350.2, "Department of Defense World
+// Geodetic System 1984", 3rd ed. (2000), Table 3.1. Used for the geodetic
+// altitude argument of the Harris-Priester atmosphere (ch:harrispriester;
+// the ellipsoid Orekit's cross-tool baseline configuration uses).
+inline constexpr double WGS84_A_M = 6378137.0;
+inline constexpr double WGS84_INV_F = 298.257223563;
+
 }  // namespace constants
 }  // namespace star
 

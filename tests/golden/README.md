@@ -134,3 +134,14 @@ this policy.
   all mpmath-generated (60 digits); consumed by the doctest cases
   `srp_shadow_fraction_golden` and `srp_cannonball_accel_golden`. See
   `srp/manifest.toml` for provenance and tolerances.
+- `atmosphere/` — atmosphere and orbital-drag golden vectors (FR-8, FR-9):
+  USSA76 published table rows and 86–1000 km density nodes transcribed
+  from the official 1976 document with per-row page provenance, the
+  Harris–Priester min/max density coefficient table (Montenbruck & Gill;
+  transcription cross-checked against the Orekit reference implementation),
+  Mars piecewise-exponential nodes (flagged `confidence: low` per PRD A-3),
+  and mpmath-computed off-node and cannonball-drag reference values.
+  Consumed by the doctest cases `ATM-USSA76-ROWS`,
+  `ATM-USSA76-UPPER-NODES`, `ATM-HP-NODES`, `ATM-HP-OFFNODE`,
+  `ATM-MARS-NODES`, `ATM-MARS-CONT`, and `DRAG-CANNONBALL-GOLDEN`. See
+  `atmosphere/manifest.toml` for provenance and tolerances.
