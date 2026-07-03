@@ -145,8 +145,16 @@ this policy.
   cross-tool missions (D-15: GMAT for the gravity-only case, Orekit for
   the Harris–Priester drag case): exact initial conditions, epoch, frames,
   constants, and model settings an external maintainer needs to freeze the
-  truth. The frozen external outputs land here with their own provenance
-  manifest when generated (workstream E).
+  truth, plus the frozen external truth itself: the GMAT R2026a and Orekit
+  13.1.5 baseline CSVs on the exact 60 s grid, the generated gravity-field
+  inputs (`.cof`/`.gfc`) derived from the committed EGM2008 excerpt, the
+  zeroed-EOP controlled-comparison configuration files, and the as-run
+  GMAT script/startup override. Consumed by the CI gates
+  XTOOL-LEO-GRAV-GMAT and XTOOL-LEO-DRAG-OREKIT in
+  `tests/python/test_crosstool_frozen_truth.py`; regenerated only by the
+  maintainer-run `scripts/crosstool/` toolchain (CI never installs
+  GMAT/Orekit). See `crosstool/manifest.toml` for provenance, tool pins,
+  command lines, and the frozen RMS measurements.
 - `atmosphere/` — atmosphere and orbital-drag golden vectors (FR-8, FR-9):
   USSA76 published table rows and 86–1000 km density nodes transcribed
   from the official 1976 document with per-row page provenance, the

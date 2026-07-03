@@ -1,0 +1,69 @@
+%------------------------------------------------------------------------------
+% gmat_leo_gravity_8x8.script -- frozen-truth generation run for cross-tool
+% case 1 (Phase 3 exit criterion 5, D-15): missions/leo_gravity_8x8.toml
+% replicated in GMAT R2026a. Full replication specification:
+% tests/golden/crosstool/README.md; provenance and command line: manifest.toml.
+%
+% Controlled-comparison configuration (documented in the manifest):
+%   * Gravity field: earth_egm2008_8x8.cof, generated from the same committed
+%     coefficient excerpt the mission loads (identical GM/R/coefficients).
+%   * EOP: run with --startup_file gmat_startup_zeroeop.txt, whose EOP_FILE
+%     points at eopc04_zero.txt (polar motion, UT1-UTC, LOD, dPsi/dEps all
+%     zero), matching the simulator's no-EOP Earth-orientation convention.
+%   * Fixed-step integration (ErrorControl = None, 60 s RK89 steps) so report
+%     rows land exactly on the shared 60 s comparison grid; 604800/60 = 10080
+%     steps land the final row exactly on the stop epoch. RK89 at 60 s is
+%     tighter than the stage-1 adaptive proof runs (Accuracy 1e-13 chose
+%     54-90 s steps on the same class of orbit).
+%   * State input and report output in the built-in EarthICRF system, the
+%     GMAT equivalent of the mission's GCRF (stage-1 bootstrap proof).
+%
+% This script contains maintainer-machine absolute paths by design: D-15 runs
+% the external tools offline on the maintainer machine only; CI never runs it.
+%------------------------------------------------------------------------------
+
+Create Spacecraft sat;
+GMAT sat.DateFormat = UTCGregorian;
+GMAT sat.Epoch = '01 Jan 2026 00:00:00.000';
+GMAT sat.CoordinateSystem = EarthICRF;
+GMAT sat.DisplayStateType = Cartesian;
+GMAT sat.X = 7000;
+GMAT sat.Y = 0;
+GMAT sat.Z = 0;
+GMAT sat.VX = 0;
+GMAT sat.VY = 6.9;
+GMAT sat.VZ = 3.0;
+GMAT sat.DryMass = 500;
+
+Create ForceModel fm;
+GMAT fm.CentralBody = Earth;
+GMAT fm.PrimaryBodies = {Earth};
+GMAT fm.GravityField.Earth.PotentialFile = 'C:/Users/hoyer/WorkSpace/Projects/star_reacher/tests/golden/crosstool/earth_egm2008_8x8.cof';
+GMAT fm.GravityField.Earth.Degree = 8;
+GMAT fm.GravityField.Earth.Order = 8;
+GMAT fm.GravityField.Earth.TideModel = 'None';
+GMAT fm.Drag = None;
+GMAT fm.SRP = Off;
+GMAT fm.RelativisticCorrection = Off;
+GMAT fm.ErrorControl = None;
+
+Create Propagator prop;
+GMAT prop.FM = fm;
+GMAT prop.Type = RungeKutta89;
+GMAT prop.InitialStepSize = 60;
+GMAT prop.MinStep = 0.001;
+GMAT prop.MaxStep = 60;
+GMAT prop.MaxStepAttempts = 50;
+
+Create ReportFile rpt;
+GMAT rpt.Filename = 'C:/Users/hoyer/WorkSpace/tools/crosstool-runs/gmat_leo_gravity_8x8_report.txt';
+GMAT rpt.Precision = 16;
+GMAT rpt.WriteHeaders = true;
+GMAT rpt.LeftJustify = On;
+GMAT rpt.FixedWidth = true;
+GMAT rpt.WriteReport = true;
+GMAT rpt.Add = {sat.ElapsedSecs, sat.UTCModJulian, sat.EarthICRF.X, sat.EarthICRF.Y, sat.EarthICRF.Z, sat.EarthICRF.VX, sat.EarthICRF.VY, sat.EarthICRF.VZ};
+
+BeginMissionSequence;
+
+Propagate prop(sat) {sat.ElapsedSecs = 604800.0};

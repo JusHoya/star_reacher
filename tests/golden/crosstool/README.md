@@ -116,6 +116,30 @@ against the case's gate. Freeze the external tool's output, versions, and
 scripts in this directory with a provenance manifest when the comparison
 is executed (workstream E).
 
+## Frozen truth (2026-07-03)
+
+Both baselines are frozen in this directory and gated in CI by
+`tests/python/test_crosstool_frozen_truth.py`, which re-propagates each
+mission and compares on the exact 60 s grid (10081 epochs, no
+interpolation). Configuration, hashes, command lines, and the full method
+record live in `manifest.toml`; the freeze scripts are
+`scripts/crosstool/` (maintainer-run only; CI never installs GMAT/Orekit).
+
+| Gate (test id) | Baseline file | Gate | Frozen measurement |
+|---|---|---|---|
+| XTOOL-LEO-GRAV-GMAT | `truth_gmat_leo_gravity_8x8.csv` (GMAT R2026a) | RMS < 10 m | **0.015243 m** |
+| XTOOL-LEO-DRAG-OREKIT | `truth_orekit_leo_drag_hp.csv` (Orekit 13.1.5) | RMS < 100 m | **3.376229 m** |
+
+Corroboration (informational, D-15 tie-breaker): the gravity-only case run
+through Orekit under the same controlled configuration gives position RMS
+0.0013130 m vs the simulator and 0.0159378 m vs GMAT, localizing the
+sim-vs-GMAT residual to GMAT's FK5/IAU-76 Earth-orientation chain (the
+simulator and Orekit both use IAU 2006/2000 CIO chains). Both external
+tools ran with zeroed EOP (this file's "Earth orientation" convention) and
+with gravity fields generated from the same committed coefficient excerpt
+the missions load; a stock-EOP GMAT control run (RMS 3.140 m vs 0.015 m)
+confirms the zero-EOP override was applied and material.
+
 ## Determinism note
 
 Both missions are covered by `tests/python/test_crosstool_missions.py`:
