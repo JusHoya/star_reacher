@@ -1,0 +1,139 @@
+# Mars/lunar navigation-testbed probe (DX-3 starter fleet).
+#
+# DISCLAIMER - provenance "representative": every number below is a round,
+# class-representative value chosen by the author for a 500 kg-class
+# deep-space smallsat probe; nothing here is a published specification of
+# any real spacecraft. Do not cite these values.
+#
+# This is the AI/ML navigation testbed of the fleet (DX-3): it carries the
+# full sensor complement the Phase 6 suite will animate (IMU, star tracker,
+# sun sensor, external nav fix per A-6), a restartable apogee engine for
+# orbit insertion and maneuvers, wheels for fine pointing, and RCS for
+# desaturation and settling.
+#
+# Structural frame: origin at the aft (engine) face, +X toward the forward
+# face (a ~1.2 m bus), +Y/+Z right-handed. Block inertias are about each
+# block's own CG.
+#
+# Capability check: ideal delta-v = 315*9.80665*ln(500/350) = 1102 m/s,
+# ~200 m/s above a ~900 m/s lunar-orbit-insertion budget from a trans-lunar
+# arrival, with ten ignitions for insertion, circularization, and
+# maintenance burns.
+
+schema_version = 1
+provenance = "representative"
+
+[vehicle]
+name = "navtest-probe"
+description = "500 kg-class Mars/lunar probe: restartable apogee engine, full sensor complement (AI/ML navigation testbed)"
+
+[[stage]]
+name = "probe"
+# Bus structure, tanks (dry), avionics, sensors, wheels, and RCS hardware.
+dry_mass_kg = 350.0
+# CG at the bus center, engine and tank masses balanced about the midplane.
+dry_cg_m = [0.6, 0.0, 0.0]
+# ~1.2 m bus with solar arrays stowed: distinct principal moments 80/90/100
+# (attitude tests need a non-degenerate tensor).
+dry_inertia_kgm2 = [[80.0, 0.0, 0.0], [0.0, 90.0, 0.0], [0.0, 0.0, 100.0]]
+
+[[stage.tank]]
+name = "biprop"
+# NTO/MMH volume modeled as one settled cylinder (A-2) at the bus center.
+radius_m = 0.3
+# Capacity pi*0.3^2*0.55*1200 = 187 kg, an 80 % fill for the 150 kg load.
+length_m = 0.55
+# Centered on the dry CG so depletion barely moves the composite CG.
+position_m = [0.6, 0.0, 0.0]
+# 150 kg sized for the insertion budget recorded in the header.
+propellant_mass_kg = 150.0
+# Volume-weighted bulk density of an NTO/MMH load at a ~1.65 mixture ratio.
+density_kgpm3 = 1200.0
+
+[[stage.engine]]
+name = "apogee"
+feeds_tank = "biprop"
+# 400 N apogee-class pressure-fed biprop engine, the standard size for
+# insertion burns on this bus class.
+thrust_vac_N = 400.0
+# Vacuum Isp typical of a 400 N-class NTO/MMH apogee engine.
+isp_vac_s = 315.0
+# High-expansion bell exit area.
+exit_area_m2 = 0.02
+# Fixed engine on the aft face centerline.
+position_m = [0.05, 0.0, 0.0]
+# Nominal thrust force along +X (forward).
+axis = [1.0, 0.0, 0.0]
+# Rigidly mounted (0 = no gimbal): attitude during burns is held by RCS and
+# wheels, standard for apogee-engine buses.
+gimbal_max_deg = 0.0
+gimbal_rate_dps = 0.0
+# Pressure-fed fixed thrust: no throttle capability.
+throttle_min = 1.0
+throttle_max = 1.0
+# Short valve-to-thrust ramp for a small pressure-fed engine.
+spool_time_s = 0.2
+# Insertion, circularization, and maintenance burns over the mission life.
+ignitions = 10
+
+[[stage.rcs]]
+name = "acs"
+# 1 N monoprop thrusters for settling, desaturation, and burn attitude.
+thrust_N = 1.0
+# 5 ms minimum pulse at 1 N.
+min_impulse_bit_Ns = 0.005
+# Four thrusters at the midbody panel edges (0.45 m half-width).
+thruster_positions_m = [[0.6, 0.45, 0.0], [0.6, -0.45, 0.0], [0.6, 0.0, 0.45], [0.6, 0.0, -0.45]]
+# Lateral force directions (+/-Y, +/-Z) for pitch/yaw couples.
+thruster_directions = [[0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]]
+
+[[stage.wheel]]
+name = "rw_x"
+# Orthogonal three-wheel set sized for the 80-100 kg*m^2 bus: 50 mN*m
+# torque, 4 N*m*s storage for fine pointing between desaturations.
+axis = [1.0, 0.0, 0.0]
+max_torque_Nm = 0.05
+max_momentum_Nms = 4.0
+
+[[stage.wheel]]
+name = "rw_y"
+axis = [0.0, 1.0, 0.0]
+max_torque_Nm = 0.05
+max_momentum_Nms = 4.0
+
+[[stage.wheel]]
+name = "rw_z"
+axis = [0.0, 0.0, 1.0]
+max_torque_Nm = 0.05
+max_momentum_Nms = 4.0
+
+[[stage.sensor]]
+name = "imu0"
+# Preset references only in Phase 4; preset files and error models land with
+# the Phase 6 sensor suite. The full complement is declared now so the
+# AI/ML navigation experiments have placement truth from the first commit.
+preset = "presets/imu_tactical.toml"
+# On the bus centerline near the CG to minimize lever-arm effects.
+position_m = [0.6, 0.0, 0.0]
+axis = [1.0, 0.0, 0.0]
+
+[[stage.sensor]]
+name = "st0"
+preset = "presets/startracker_arcsec.toml"
+# Boresight along +Z, clear of the Sun-pointed solar-array axis.
+position_m = [1.0, 0.0, 0.3]
+axis = [0.0, 0.0, 1.0]
+
+[[stage.sensor]]
+name = "css0"
+preset = "presets/sunsensor_coarse.toml"
+# Coarse sun sensor on the forward face for safe-mode Sun acquisition.
+position_m = [1.15, 0.0, 0.0]
+axis = [1.0, 0.0, 0.0]
+
+[[stage.sensor]]
+name = "navfix0"
+preset = "presets/navfix_external.toml"
+# Generalized external navigation fix (A-6): antenna on the forward face.
+position_m = [1.15, 0.2, 0.0]
+axis = [1.0, 0.0, 0.0]

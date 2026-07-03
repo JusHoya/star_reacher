@@ -1,4 +1,4 @@
-"""Mission TOML validation, canonicalization, and hashing (D-2, FR-14/FR-15 lite).
+"""Mission TOML validation, canonicalization, and hashing (D-2, FR-14/FR-15).
 
 All parsing and validation live in Python so the C++ core never touches text
 (D-2). Validation follows the four-pass-lite discipline: parse, schema with
@@ -7,6 +7,80 @@ file is accumulated and reported together (DX-2) so the user fixes the file
 once, not once per rerun; a missing critical input always aborts and is never
 silently defaulted. Exit-code policy is enforced by the CLI: 2 for validation
 failures, 1 for runtime failures.
+
+Phase 4 additions (FR-14): schema reference
+===========================================
+
+Vehicle reference (root key, optional -- point-mass ``[spacecraft]`` missions
+need none)::
+
+    vehicle = "vehicles/electron_class.toml"
+
+The referenced file is validated by ``star_reacher.vehicle`` (relative paths
+resolve against the working directory, the same rule as ``[environment]``
+paths); its errors are accumulated into this mission's report, and its
+config SHA-256 is embedded in the mission's resolved config as
+``{"vehicle": {"path", "config_sha256"}}`` so the run's config hash -- the
+reproducibility anchor -- covers the vehicle definition (FR-15). With
+``strict=True`` the vehicle's warning tier is promoted to errors; otherwise
+its warnings surface through ``warnings.warn``.
+
+Geodetic initial state (the FR-14 launch-site form; exactly one of
+cartesian | keplerian | geodetic is required)::
+
+    [initial_state.geodetic]
+    lat_deg = -39.0     # geodetic latitude on the reference ellipsoid
+    lon_deg = 177.9     # east longitude
+    alt_m = 10.0        # height above the ellipsoid
+
+The vehicle starts on the rotating pad: inertial velocity v = omega_earth x
+r, attitude pad-fixed until a ``pad_release`` sequence event. The geodetic
+form therefore requires a ``vehicle`` reference, ``central_body = "earth"``,
+and a ``[[sequence]]`` containing exactly one ``pad_release`` entry.
+
+Event sequence (FR-14): ordered named entries, exactly enough vocabulary for
+a scripted pad-to-LEO ascent and a TLI burn with no GNC in the loop::
+
+    [[sequence]]
+    name = "release"            # unique, referenced by after_event triggers
+    trigger = "elapsed"         # "elapsed" | "after_event" | "condition"
+    t_s = 0.0
+    action = "pad_release"      # see the action vocabulary below
+
+Triggers:
+
+- ``elapsed`` -- ``t_s`` seconds since t0 (must not exceed duration_s).
+- ``after_event`` -- ``event`` names an earlier sequence entry;
+  ``offset_s >= 0`` after it fires.
+- ``condition`` -- ``condition`` is one of ``altitude_above`` /
+  ``altitude_below`` (with ``altitude_m``, ellipsoid-relative, ascending or
+  descending crossing), ``apoapsis`` / ``periapsis`` (apsis crossing),
+  ``perigee_above`` (osculating perigee altitude rises through
+  ``perigee_alt_m`` -- the orbit-insertion terminal condition), or
+  ``soi_transition`` (with ``body``, entering that body's sphere of
+  influence -- the TLI terminal condition; ``body`` differs from the central
+  body).
+
+Actions:
+
+- ``pad_release`` -- release the pad-fixed attitude constraint (geodetic
+  missions only; exactly one per sequence).
+- ``ignite_engine`` / ``cutoff_engine`` -- ``stage`` and ``engine`` name a
+  vehicle engine.
+- ``separate_stage`` -- ``stage`` names a vehicle stage (FR-10 state remap).
+- ``jettison`` -- ``stage`` and ``item`` name a vehicle jettison item.
+- ``pitch_program`` -- open-loop pitch-over in the launch-pad tangent frame:
+  ``azimuth_deg`` (flight azimuth, degrees east of north), index-matched
+  tables ``pitch_t_s`` (>= 2 strictly increasing times) and ``pitch_deg``
+  (pitch above the local horizontal, [-90, 90], linearly interpolated,
+  held at the end values outside the table). Geodetic missions only.
+- ``attitude_hold`` -- hold the attitude at the event inertially fixed.
+- ``rate_command`` -- open-loop rate: ``frame`` ("gcrf" | "body"),
+  ``omega_dps`` (vec3).
+- ``terminate`` -- end the run early (duration_s stays the hard ceiling).
+
+Every action except ``terminate`` requires a vehicle reference. The resolved
+config carries the sequence entries in file order.
 """
 
 from __future__ import annotations
@@ -48,6 +122,35 @@ _DEFAULT_HP_EXPONENT_N = 4.0  # Orekit-compatible bulge exponent (ch:harrispries
 _U64_MAX = 2**64 - 1
 
 _CENTRAL_BODIES = ("earth", "moon", "mars")
+
+# FR-14 v1 sequence vocabulary. Deliberately small: exactly enough for a
+# scripted pad-to-LEO ascent and a TLI burn with no GNC in the loop; every
+# addition must be documented in the module docstring and earns its own
+# validation branch.
+_TRIGGERS = ("elapsed", "after_event", "condition")
+_CONDITIONS = {
+    "altitude_above": ("altitude_m",),
+    "altitude_below": ("altitude_m",),
+    "apoapsis": (),
+    "periapsis": (),
+    "perigee_above": ("perigee_alt_m",),
+    "soi_transition": ("body",),
+}
+_ACTIONS = {
+    "pad_release": (),
+    "ignite_engine": ("stage", "engine"),
+    "cutoff_engine": ("stage", "engine"),
+    "separate_stage": ("stage",),
+    "jettison": ("stage", "item"),
+    "pitch_program": ("azimuth_deg", "pitch_t_s", "pitch_deg"),
+    "attitude_hold": (),
+    "rate_command": ("frame", "omega_dps"),
+    "terminate": (),
+}
+# Everything an attitude or a vehicle part is involved in needs the vehicle;
+# only bare termination is meaningful for a point-mass mission.
+_VEHICLE_FREE_ACTIONS = ("terminate",)
+_RATE_FRAMES = ("gcrf", "body")
 # Canonical third-body order: the resolved config records the enabled set in
 # this order, which is also the core's fixed force-summation order (D-10), so
 # two missions enabling the same set hash identically regardless of file
@@ -284,6 +387,443 @@ def _validate_keplerian(table: object, errs: _Errors) -> dict | None:
     if any(v is None for v in values.values()):
         return None
     return values
+
+
+def _validate_geodetic(table: object, errs: _Errors) -> dict | None:
+    path = "initial_state.geodetic"
+    if not isinstance(table, dict):
+        errs.add(
+            "initial_state",
+            "geodetic",
+            "expected a table",
+            hint="e.g. [initial_state.geodetic] with lat_deg, lon_deg, alt_m",
+        )
+        return None
+    _reject_unknown(table, path, {"lat_deg", "lon_deg", "alt_m"}, errs)
+    lat_deg = _req_num(table, path, "lat_deg", errs, units="deg", typical="-90 to 90")
+    if lat_deg is not None and not (-90.0 <= lat_deg <= 90.0):
+        errs.add(path, "lat_deg", f"must be within [-90, 90], got {lat_deg!r}", units="deg", typical="-90 to 90")
+        lat_deg = None
+    lon_deg = _req_num(table, path, "lon_deg", errs, units="deg", typical="-180 to 180 (east positive)")
+    if lon_deg is not None and not (-180.0 <= lon_deg <= 180.0):
+        errs.add(
+            path,
+            "lon_deg",
+            f"must be within [-180, 180], got {lon_deg!r}",
+            units="deg",
+            typical="-180 to 180 (east positive)",
+        )
+        lon_deg = None
+    alt_m = _req_num(table, path, "alt_m", errs, units="m", typical="0 to 3000 (height above the ellipsoid)")
+    if alt_m is not None and not (-500.0 <= alt_m <= 10000.0):
+        # Launch sites live between the Dead Sea shore and high plateaus; a
+        # value outside this band is a unit mistake, not a pad.
+        errs.add(
+            path,
+            "alt_m",
+            f"must be within [-500, 10000], got {alt_m!r}",
+            units="m",
+            typical="0 to 3000 (height above the ellipsoid)",
+        )
+        alt_m = None
+    values = {"lat_deg": lat_deg, "lon_deg": lon_deg, "alt_m": alt_m}
+    if any(v is None for v in values.values()):
+        return None
+    return values
+
+
+def _validate_number_array(
+    entry: dict, path: str, key: str, errs: _Errors, *, units: str, typical: str
+) -> list[float] | None:
+    """A required array of >= 2 finite numbers (the pitch-program tables)."""
+    if key not in entry:
+        errs.add(path, key, "missing required key", units=units, typical=typical)
+        return None
+    v = entry[key]
+    if not isinstance(v, list) or len(v) < 2 or not all(_is_number(x) for x in v):
+        errs.add(path, key, "expected an array of at least 2 numbers", units=units, typical=typical)
+        return None
+    out = [float(x) for x in v]
+    if not all(math.isfinite(x) for x in out):
+        errs.add(path, key, f"all entries must be finite, got {out!r}", units=units, typical=typical)
+        return None
+    return out
+
+
+def _vehicle_ref_maps(vehicle_resolved: dict) -> dict:
+    """Stage name -> engine/jettison name sets, for sequence resolution."""
+    return {
+        stage["name"]: {
+            "engines": {e["name"] for e in stage.get("engine", [])},
+            "jettison": {j["name"] for j in stage.get("jettison", [])},
+        }
+        for stage in vehicle_resolved["stage"]
+    }
+
+
+def _validate_sequence_entry(
+    entry: dict,
+    path: str,
+    errs: _Errors,
+    *,
+    earlier_names: set,
+    duration_s: float | None,
+    central_body: str | None,
+    vehicle_present: bool,
+    vehicle_stages: dict | None,
+    initial_form: str | None,
+) -> dict | None:
+    name = _req_str(entry, path, "name", errs, hint='unique event name, e.g. "meco"')
+    if name is not None and not name.strip():
+        errs.add(path, "name", "must be a non-empty string", hint='e.g. "meco"')
+        name = None
+    if name is not None and name in earlier_names:
+        errs.add(
+            path,
+            "name",
+            f"duplicate event name {name!r}",
+            hint="after_event triggers resolve by name; names must be unique",
+        )
+        name = None
+
+    trigger = _req_str(entry, path, "trigger", errs, hint='"elapsed", "after_event", or "condition"')
+    if trigger is not None and trigger not in _TRIGGERS:
+        errs.add(
+            path,
+            "trigger",
+            f'must be one of "elapsed", "after_event", "condition", got {trigger!r}',
+            hint="the FR-14 v1 trigger vocabulary",
+        )
+        trigger = None
+    action = _req_str(entry, path, "action", errs, hint=", ".join(sorted(_ACTIONS)))
+    if action is not None and action not in _ACTIONS:
+        errs.add(
+            path,
+            "action",
+            f"unknown action {action!r}",
+            hint=f"the FR-14 v1 action vocabulary: {', '.join(sorted(_ACTIONS))}",
+        )
+        action = None
+
+    condition = None
+    if trigger == "condition":
+        condition = _req_str(
+            entry, path, "condition", errs, hint=", ".join(sorted(_CONDITIONS))
+        )
+        if condition is not None and condition not in _CONDITIONS:
+            errs.add(
+                path,
+                "condition",
+                f"unknown condition {condition!r}",
+                hint=f"the FR-14 v1 condition vocabulary: {', '.join(sorted(_CONDITIONS))}",
+            )
+            condition = None
+
+    # Unknown-key rejection needs the per-type key sets; with an unresolved
+    # trigger/action the precise set is unknowable and the type error above
+    # already aborts, so the check is skipped rather than guessed.
+    if trigger is not None and action is not None and (trigger != "condition" or condition is not None):
+        allowed = {"name", "trigger", "action"}
+        if trigger == "elapsed":
+            allowed |= {"t_s"}
+        elif trigger == "after_event":
+            allowed |= {"event", "offset_s"}
+        else:
+            allowed |= {"condition", *_CONDITIONS[condition]}
+        allowed |= set(_ACTIONS[action])
+        _reject_unknown(entry, path, allowed, errs)
+
+    resolved: dict = {}
+
+    if trigger == "elapsed":
+        t_s = _req_num(entry, path, "t_s", errs, units="s", typical="0 to duration_s")
+        if t_s is not None and t_s < 0.0:
+            errs.add(path, "t_s", f"must be >= 0, got {t_s!r}", units="s", typical="0 to duration_s")
+            t_s = None
+        if t_s is not None and duration_s is not None and t_s > duration_s:
+            errs.add(
+                path,
+                "t_s",
+                f"exceeds [mission] duration_s = {duration_s!r}, so the event can never fire",
+                units="s",
+                typical="0 to duration_s",
+            )
+            t_s = None
+        resolved["t_s"] = t_s
+    elif trigger == "after_event":
+        event = _req_str(entry, path, "event", errs, hint="name of an earlier sequence entry")
+        if event is not None and event not in earlier_names:
+            errs.add(
+                path,
+                "event",
+                f"references {event!r}, which is not an earlier sequence entry",
+                hint="triggers may only chain to entries defined earlier in the sequence",
+            )
+            event = None
+        offset_s = _req_num(entry, path, "offset_s", errs, units="s", typical="0 to 600")
+        if offset_s is not None and offset_s < 0.0:
+            errs.add(path, "offset_s", f"must be >= 0, got {offset_s!r}", units="s", typical="0 to 600")
+            offset_s = None
+        resolved["event"] = event
+        resolved["offset_s"] = offset_s
+    elif trigger == "condition" and condition is not None:
+        resolved["condition"] = condition
+        if condition in ("altitude_above", "altitude_below"):
+            altitude_m = _req_num(
+                entry, path, "altitude_m", errs, units="m", typical="1e3 to 5e5 (above the ellipsoid)"
+            )
+            if altitude_m is not None and altitude_m < 0.0:
+                errs.add(
+                    path,
+                    "altitude_m",
+                    f"must be >= 0, got {altitude_m!r}",
+                    units="m",
+                    typical="1e3 to 5e5 (above the ellipsoid)",
+                )
+                altitude_m = None
+            resolved["altitude_m"] = altitude_m
+        elif condition == "perigee_above":
+            perigee_alt_m = _req_num(
+                entry, path, "perigee_alt_m", errs, units="m", typical="1.5e5 to 5e5"
+            )
+            if perigee_alt_m is not None and perigee_alt_m < 0.0:
+                errs.add(
+                    path,
+                    "perigee_alt_m",
+                    f"must be >= 0, got {perigee_alt_m!r}",
+                    units="m",
+                    typical="1.5e5 to 5e5",
+                )
+                perigee_alt_m = None
+            resolved["perigee_alt_m"] = perigee_alt_m
+        elif condition == "soi_transition":
+            body = _req_str(entry, path, "body", errs, hint='"earth", "moon", or "mars"')
+            if body is not None and body not in _CENTRAL_BODIES:
+                errs.add(
+                    path,
+                    "body",
+                    f'must be one of "earth", "moon", "mars", got {body!r}',
+                    hint="the FR-12 SOI-transition event set",
+                )
+                body = None
+            if body is not None and central_body is not None and body == central_body:
+                errs.add(
+                    path,
+                    "body",
+                    f"the mission already starts inside the SOI of the central body {body!r}",
+                    hint="name the body whose sphere of influence is being entered",
+                )
+                body = None
+            resolved["body"] = body
+
+    if action is not None:
+        if action not in _VEHICLE_FREE_ACTIONS and not vehicle_present:
+            errs.add(
+                path,
+                "action",
+                f"{action!r} requires a vehicle reference",
+                hint='set the root key vehicle = "vehicles/<file>.toml"',
+            )
+        if action in ("pad_release", "pitch_program") and initial_form != "geodetic":
+            errs.add(
+                path,
+                "action",
+                f"{action!r} requires the geodetic (launch-site) initial-state form",
+                hint="pad release and the pad-frame pitch program are defined "
+                "relative to the launch pad (FR-14)",
+            )
+
+    if action in ("ignite_engine", "cutoff_engine", "separate_stage", "jettison"):
+        stage = _req_str(entry, path, "stage", errs, hint="a stage name from the vehicle file")
+        if (
+            stage is not None
+            and vehicle_stages is not None
+            and stage not in vehicle_stages
+        ):
+            errs.add(
+                path,
+                "stage",
+                f"unknown stage {stage!r} in the referenced vehicle",
+                hint=f"stages defined there: {', '.join(repr(s) for s in vehicle_stages)}",
+            )
+            stage = None
+        resolved["stage"] = stage
+        if action in ("ignite_engine", "cutoff_engine"):
+            engine = _req_str(entry, path, "engine", errs, hint="an engine name from that stage")
+            if (
+                engine is not None
+                and stage is not None
+                and vehicle_stages is not None
+                and engine not in vehicle_stages[stage]["engines"]
+            ):
+                errs.add(
+                    path,
+                    "engine",
+                    f"unknown engine {engine!r} in vehicle stage {stage!r}",
+                    hint=f"engines defined there: "
+                    f"{', '.join(repr(e) for e in sorted(vehicle_stages[stage]['engines'])) or 'none'}",
+                )
+                engine = None
+            resolved["engine"] = engine
+        elif action == "jettison":
+            item = _req_str(entry, path, "item", errs, hint="a jettison-item name from that stage")
+            if (
+                item is not None
+                and stage is not None
+                and vehicle_stages is not None
+                and item not in vehicle_stages[stage]["jettison"]
+            ):
+                errs.add(
+                    path,
+                    "item",
+                    f"unknown jettison item {item!r} in vehicle stage {stage!r}",
+                    hint=f"items defined there: "
+                    f"{', '.join(repr(j) for j in sorted(vehicle_stages[stage]['jettison'])) or 'none'}",
+                )
+                item = None
+            resolved["item"] = item
+    elif action == "pitch_program":
+        azimuth_deg = _req_num(
+            entry, path, "azimuth_deg", errs, units="deg", typical="0 to 360 (east of north)"
+        )
+        if azimuth_deg is not None and not (0.0 <= azimuth_deg < 360.0):
+            errs.add(
+                path,
+                "azimuth_deg",
+                f"must be within [0, 360), got {azimuth_deg!r}",
+                units="deg",
+                typical="0 to 360 (east of north)",
+            )
+            azimuth_deg = None
+        pitch_t_s = _validate_number_array(
+            entry, path, "pitch_t_s", errs, units="s", typical="strictly increasing from >= 0"
+        )
+        if pitch_t_s is not None and (
+            pitch_t_s[0] < 0.0 or any(b <= a for a, b in zip(pitch_t_s, pitch_t_s[1:]))
+        ):
+            errs.add(
+                path,
+                "pitch_t_s",
+                f"must be strictly increasing from >= 0, got {pitch_t_s!r}",
+                units="s",
+                typical="strictly increasing from >= 0",
+            )
+            pitch_t_s = None
+        pitch_deg = _validate_number_array(
+            entry, path, "pitch_deg", errs, units="deg", typical="-90 to 90 (above local horizontal)"
+        )
+        if pitch_deg is not None and not all(-90.0 <= p <= 90.0 for p in pitch_deg):
+            errs.add(
+                path,
+                "pitch_deg",
+                f"every entry must be within [-90, 90], got {pitch_deg!r}",
+                units="deg",
+                typical="-90 to 90 (above local horizontal)",
+            )
+            pitch_deg = None
+        if (
+            pitch_t_s is not None
+            and pitch_deg is not None
+            and len(pitch_t_s) != len(pitch_deg)
+        ):
+            errs.add(
+                path,
+                "pitch_deg",
+                f"must have one entry per pitch_t_s breakpoint, got {len(pitch_deg)} "
+                f"for {len(pitch_t_s)}",
+                hint="the two arrays are index-matched",
+            )
+            pitch_deg = None
+        resolved["azimuth_deg"] = azimuth_deg
+        resolved["pitch_t_s"] = pitch_t_s
+        resolved["pitch_deg"] = pitch_deg
+    elif action == "rate_command":
+        frame = _req_str(entry, path, "frame", errs, hint='"gcrf" or "body"')
+        if frame is not None and frame not in _RATE_FRAMES:
+            errs.add(
+                path,
+                "frame",
+                f'must be "gcrf" or "body", got {frame!r}',
+                hint="the FR-14 v1 rate-command frames",
+            )
+            frame = None
+        omega_dps = _req_vec3(
+            entry, path, "omega_dps", errs, units="deg/s", typical="component magnitudes 0 to 10"
+        )
+        resolved["frame"] = frame
+        resolved["omega_dps"] = omega_dps
+
+    resolved["name"] = name
+    resolved["trigger"] = trigger
+    resolved["action"] = action
+    if any(v is None for v in resolved.values()):
+        return None
+    return resolved
+
+
+def _validate_sequence(
+    entries: object,
+    errs: _Errors,
+    *,
+    duration_s: float | None,
+    central_body: str | None,
+    vehicle_present: bool,
+    vehicle_stages: dict | None,
+    initial_form: str | None,
+) -> list | None:
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        errs.add(
+            "root",
+            "sequence",
+            "expected an array of tables ([[sequence]] entries)",
+            hint="write each event as its own [[sequence]] table",
+        )
+        return None
+    if not entries:
+        errs.add(
+            "root",
+            "sequence",
+            "must contain at least one entry",
+            hint="remove the empty sequence or add an event",
+        )
+        return None
+    resolved = []
+    earlier_names: set = set()
+    releases = 0
+    ok = True
+    for i, entry in enumerate(entries, 1):
+        path = f"sequence.{i}"
+        r = _validate_sequence_entry(
+            entry,
+            path,
+            errs,
+            earlier_names=earlier_names,
+            duration_s=duration_s,
+            central_body=central_body,
+            vehicle_present=vehicle_present,
+            vehicle_stages=vehicle_stages,
+            initial_form=initial_form,
+        )
+        # Raw names still register for after_event chaining and duplicate
+        # detection even when the entry has other defects.
+        raw_name = entry.get("name")
+        if isinstance(raw_name, str) and raw_name.strip():
+            earlier_names.add(raw_name)
+        if isinstance(entry.get("action"), str) and entry["action"] == "pad_release":
+            releases += 1
+            if releases > 1:
+                errs.add(
+                    path,
+                    "action",
+                    "duplicate pad_release: the pad constraint can only be released once",
+                    hint="keep exactly one pad_release entry",
+                )
+                ok = False
+        if r is None:
+            ok = False
+        else:
+            resolved.append(r)
+    return resolved if ok else None
 
 
 def _validate_str_list(
@@ -659,20 +1199,50 @@ def _validate_environment(
     return resolved
 
 
-def _validate_document(doc: dict, errs: _Errors) -> dict | None:
+def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dict | None:
     # Pass 2: schema shape and unknown-key rejection (typos are errors, DX-2).
     for key in doc:
-        if key != "schema_version" and key not in _TOP_TABLES:
+        if key not in ("schema_version", "vehicle", "sequence") and key not in _TOP_TABLES:
             errs.add(
                 "root",
                 key,
                 "unknown key",
                 hint=(
                     "remove it or fix the spelling; allowed top-level entries are "
-                    "schema_version and the tables "
+                    "schema_version, vehicle, [[sequence]], and the tables "
                     + ", ".join(f"[{t}]" for t in _TOP_TABLES)
                 ),
             )
+
+    # --- vehicle reference (FR-13/FR-14) -----------------------------------
+    # Validated before the initial state and sequence, which cross-reference
+    # it. The vehicle file's errors accumulate into this report (each line
+    # already names the vehicle file as its source); its config hash enters
+    # the resolved config so the mission hash covers the vehicle (FR-15).
+    vehicle_present = "vehicle" in doc
+    vehicle_entry = None
+    vehicle_stages = None
+    if vehicle_present:
+        vpath = doc["vehicle"]
+        if not isinstance(vpath, str) or not vpath.strip():
+            errs.add(
+                "root",
+                "vehicle",
+                f"expected a non-empty string path to a vehicle TOML file, got {vpath!r}",
+                hint='e.g. vehicle = "vehicles/electron_class.toml"; relative paths '
+                "resolve against the working directory",
+            )
+        else:
+            from star_reacher.vehicle import validate_vehicle_file
+
+            vres, verrs, vwarns = validate_vehicle_file(vpath, strict=strict)
+            errs.items.extend(verrs)
+            if not strict:
+                for line in vwarns:
+                    warnings.warn(line, UserWarning, stacklevel=4)
+            if vres is not None:
+                vehicle_stages = _vehicle_ref_maps(vres)
+                vehicle_entry = {"path": vpath, "config_sha256": config_sha256(vres)}
 
     if "schema_version" not in doc:
         errs.add("root", "schema_version", "missing required key", hint="must equal 1, e.g. schema_version = 1")
@@ -868,9 +1438,12 @@ def _validate_document(doc: dict, errs: _Errors) -> dict | None:
         hint="must contain exactly one of the sub-tables cartesian, keplerian, geodetic",
     )
     initial_state_resolved = None
+    initial_form = None
     if initial_state is not None:
         known_forms = ("cartesian", "keplerian", "geodetic")
         forms = [k for k in known_forms if k in initial_state]
+        if len(forms) == 1:
+            initial_form = forms[0]
         for key in initial_state:
             if key not in known_forms:
                 errs.add(
@@ -884,7 +1457,8 @@ def _validate_document(doc: dict, errs: _Errors) -> dict | None:
                 "initial_state",
                 "cartesian|keplerian|geodetic",
                 "exactly one initial-state form is required, found none",
-                hint="provide [initial_state.cartesian] or [initial_state.keplerian] in Phase 1",
+                hint="provide [initial_state.cartesian], [initial_state.keplerian], "
+                "or [initial_state.geodetic] (the FR-14 launch-site form)",
             )
         elif len(forms) > 1:
             errs.add(
@@ -893,26 +1467,20 @@ def _validate_document(doc: dict, errs: _Errors) -> dict | None:
                 f"exactly one initial-state form is required, found {len(forms)}",
                 hint="keep one of the sub-tables and delete the others",
             )
-        if "geodetic" in forms:
-            # Recognized so the message can be specific, but its schema is
-            # defined in Phase 4 (FR-14 launch-site form), so its contents
-            # are not walked here.
-            errs.add(
-                "initial_state.geodetic",
-                "geodetic",
-                "recognized but not accepted: the geodetic launch-site form is supported from Phase 4",
-                hint="use cartesian or keplerian in Phase 1",
-            )
-        cart = kep = None
+        cart = kep = geo = None
         if "cartesian" in forms:
             cart = _validate_cartesian(initial_state["cartesian"], errs)
         if "keplerian" in forms:
             kep = _validate_keplerian(initial_state["keplerian"], errs)
+        if "geodetic" in forms:
+            geo = _validate_geodetic(initial_state["geodetic"], errs)
         if len(forms) == 1:
             if forms[0] == "cartesian" and cart is not None:
                 initial_state_resolved = {"cartesian": cart}
             elif forms[0] == "keplerian" and kep is not None:
                 initial_state_resolved = {"keplerian": kep}
+            elif forms[0] == "geodetic" and geo is not None:
+                initial_state_resolved = {"geodetic": geo}
 
     environment = _get_table(doc, "environment", errs, required=True, hint="must define central_body")
     environment_resolved = None
@@ -920,6 +1488,52 @@ def _validate_document(doc: dict, errs: _Errors) -> dict | None:
         environment_resolved = _validate_environment(
             environment, errs, cd_a_over_m=cd_a_over_m, cr_a_over_m=cr_a_over_m
         )
+    central_body = environment_resolved["central_body"] if environment_resolved else None
+
+    # --- event sequence (FR-14) ---------------------------------------------
+    sequence_resolved = None
+    if "sequence" in doc:
+        sequence_resolved = _validate_sequence(
+            doc["sequence"],
+            errs,
+            duration_s=duration_s,
+            central_body=central_body,
+            vehicle_present=vehicle_present,
+            vehicle_stages=vehicle_stages,
+            initial_form=initial_form,
+        )
+
+    # Geodetic cross rules (FR-14): the launch-site form starts on a rotating
+    # Earth pad with pad-fixed attitude, so it is meaningless without a
+    # vehicle, an Earth central body, and a release event to end the
+    # constraint.
+    if initial_form == "geodetic":
+        if not vehicle_present:
+            errs.add(
+                "root",
+                "vehicle",
+                "the geodetic (launch-site) initial-state form requires a vehicle reference",
+                hint='set vehicle = "vehicles/<file>.toml"',
+            )
+        if central_body is not None and central_body != "earth":
+            errs.add(
+                "initial_state.geodetic",
+                "lat_deg",
+                f'the geodetic launch form requires central_body = "earth", got {central_body!r}',
+                hint="the pad co-rotation velocity v = omega_earth x r is Earth-specific (FR-14)",
+            )
+        raw_sequence = doc.get("sequence")
+        has_release = isinstance(raw_sequence, list) and any(
+            isinstance(e, dict) and e.get("action") == "pad_release" for e in raw_sequence
+        )
+        if not has_release:
+            errs.add(
+                "root",
+                "sequence",
+                "the geodetic initial-state form requires a [[sequence]] entry with "
+                'action = "pad_release"',
+                hint="the vehicle holds pad-fixed attitude until released (FR-14)",
+            )
 
     truth_rate_hz = _DEFAULT_TRUTH_RATE_HZ
     logging_tbl = _get_table(doc, "logging", errs, required=False, hint="optional table with truth_rate_hz")
@@ -1003,7 +1617,7 @@ def _validate_document(doc: dict, errs: _Errors) -> dict | None:
         spacecraft_resolved["cd_a_over_m_m2pkg"] = cd_a_over_m
     if cr_a_over_m is not None:
         spacecraft_resolved["cr_a_over_m_m2pkg"] = cr_a_over_m
-    return {
+    resolved = {
         "schema_version": SCHEMA_VERSION,
         "mission": {"name": name, "epoch_utc": epoch, "duration_s": duration_s},
         "run": {"seed": seed},
@@ -1013,6 +1627,13 @@ def _validate_document(doc: dict, errs: _Errors) -> dict | None:
         "environment": environment_resolved,
         "logging": {"truth_rate_hz": truth_rate_hz},
     }
+    # Phase 4 keys enter the resolved config only when the mission uses them,
+    # so pre-Phase-4 missions keep their byte-identical resolution and hash.
+    if vehicle_entry is not None:
+        resolved["vehicle"] = vehicle_entry
+    if sequence_resolved is not None:
+        resolved["sequence"] = sequence_resolved
+    return resolved
 
 
 def _warn_if_epoch_past_leap_expiry(epoch_utc: str) -> None:
@@ -1054,12 +1675,15 @@ def _warn_if_epoch_past_leap_expiry(epoch_utc: str) -> None:
         )
 
 
-def validate_mission_file(path) -> tuple[dict | None, list[str]]:
+def validate_mission_file(path, *, strict: bool = False) -> tuple[dict | None, list[str]]:
     """Validate one mission TOML file.
 
     Returns ``(resolved, errors)``: on success ``resolved`` is the
     defaults-applied configuration dict and ``errors`` is empty; on failure
     ``resolved`` is None and ``errors`` holds every DX-2 formatted error line.
+    A referenced vehicle file is validated too: its errors join this report,
+    and ``strict=True`` promotes its warning tier to errors (FR-15); without
+    it, vehicle warnings surface through ``warnings.warn``.
     """
     source = str(path)
     errs = _Errors(source)
@@ -1074,7 +1698,7 @@ def validate_mission_file(path) -> tuple[dict | None, list[str]]:
         # class of error that cannot be accumulated with others.
         errs.items.append(f"{source}: TOML parse error: {exc}. No default applied; run aborted.")
         return None, errs.items
-    resolved = _validate_document(doc, errs)
+    resolved = _validate_document(doc, errs, strict=strict)
     if errs.items:
         return None, errs.items
     _warn_if_epoch_past_leap_expiry(resolved["mission"]["epoch_utc"])
