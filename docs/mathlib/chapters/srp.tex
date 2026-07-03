@@ -376,6 +376,26 @@ evaluated at integrator-requested states. Implementation notes:
     the property the determinism gates and the force-by-source log
     channels rely on. The umbra case of the acceleration is exactly
     zero because $\nu = 0$ multiplies the finite coefficient.
+  \item \textbf{Conditioning of the partial branch.} In
+    equation~\eqref{eq:srp:overlap} the occulter-disk term
+    $a_{o}^{2} \arccos\bigl((\theta - x_{c})/a_{o}\bigr)$ evaluates its
+    $\arccos$ near argument $1$ when the occulter disk is much larger
+    than the solar disk (LEO Earth shadow: $a_{o} \approx
+    \qty{1.2}{\radian}$ vs.\ $a_{s} \approx \qty{4.7e-3}{\radian}$),
+    amplifying ulp-level angle errors by $a_{o}^{2} / \bigl( \pi
+    a_{s}^{2} \sqrt{1 - ((\theta - x_{c})/a_{o})^{2}} \bigr) \sim
+    10^{6}$--$10^{7}$ after the $\pi a_{s}^{2}$ normalization. The
+    double-precision partial-phase $\nu$ therefore carries an absolute
+    error of order $10^{-9}$ at such geometries (observed worst
+    \num{1.0e-9} at the committed penumbra states), while small-occulter
+    partial and annular geometries stay at $10^{-12}$. This is retained
+    deliberately: the formula is the cited standard, the error is
+    $\sim 10^{-9}$ of the SRP force during a seconds-long transit ---
+    far below the $C_R$ knowledge of assumption 1 and the physical
+    fidelity bounds of assumptions 4--6 --- and the regime boundaries
+    and exact $0$/$1$ branches are unaffected. The golden tolerance
+    (\num{1e-8} absolute on partial values) encodes exactly this
+    bound.
   \item \textbf{Constants.} $c$, au, $\Phi_{1\,\mathrm{au}}$,
     $P_{1\,\mathrm{au}} = \Phi_{1\,\mathrm{au}}/c$ (a compile-time
     quotient of the two cited constants), and $R_{\odot}$ live in
@@ -424,7 +444,9 @@ provenance and tolerances are recorded in
       11 committed geometries covering every branch: exact $1$/$0$ in
       full sun and umbra (bit equality), penumbra depths, annular and
       off-axis annular, partial lunar occultation, Moon-occulter umbra
-      (abs $10^{-12}$ on partial values). \\
+      (abs $10^{-8}$ on partial values per the conditioning bound of
+      Section~\ref{sec:srp:implementation}; observed worst
+      \num{1.0e-9}). \\
     \testid{srp_cannonball_accel_golden} &
       Equation~\eqref{eq:srp:cannonball} vs.\ extended-precision
       references at 5 committed states, norm-relative $10^{-12}$,
