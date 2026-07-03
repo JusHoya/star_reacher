@@ -100,3 +100,17 @@ this policy.
   `frames_mars_iau_golden`, and `frames_series_transcription` (and by the
   Python binding tests). See `frames/manifest.toml` for provenance and
   tolerances.
+
+## Phase 3 contents
+
+- `atmosphere/` — atmosphere and orbital-drag golden vectors (FR-8, FR-9):
+  USSA76 published table rows and 86–1000 km density nodes transcribed
+  from the official 1976 document with per-row page provenance, the
+  Harris–Priester min/max density coefficient table (Montenbruck & Gill;
+  transcription cross-checked against the Orekit reference implementation),
+  Mars piecewise-exponential nodes (flagged `confidence: low` per PRD A-3),
+  and mpmath-computed off-node and cannonball-drag reference values.
+  Consumed by the doctest cases `ATM-USSA76-ROWS`,
+  `ATM-USSA76-UPPER-NODES`, `ATM-HP-NODES`, `ATM-HP-OFFNODE`,
+  `ATM-MARS-NODES`, `ATM-MARS-CONT`, and `DRAG-CANNONBALL-GOLDEN`. See
+  `atmosphere/manifest.toml` for provenance and tolerances.
