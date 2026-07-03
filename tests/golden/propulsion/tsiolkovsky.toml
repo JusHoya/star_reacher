@@ -1,0 +1,30 @@
+# Vacuum-burn Tsiolkovsky golden scenarios (Phase 4 exit criterion
+# 3): full-throttle fixed-attitude burns in vacuum, with
+# m1 = m0 - mdot t_burn and dv = g0 Isp_vac ln(m0 / m1)
+# (chapter ch:propulsion, eq:propulsion:tsiolkovsky), g0 = 9.80665
+# m/s^2 exact. Evaluated with mpmath at 60 significant decimal
+# digits from the exact binary64 inputs and rounded once to
+# binary64. The consuming test integrates the same burn through the
+# model's mdot and thrust and gates the accumulated dv at 0.1 %
+# relative. Provenance and tolerances in manifest.toml. Regenerated
+# by generate.py.
+
+[[case]]
+name = "kick_stage_full_burn"
+thrust_vac_N = "0x1.7700000000000p+14"
+isp_vac_s = "0x1.4000000000000p+8"
+m0_kg = "0x1.c200000000000p+10"
+t_burn_s = "0x1.e000000000000p+6"
+m1_kg = "0x1.b920b1384678ep+9"
+dv_mps = "0x1.17b596c391620p+11"
+dv_decimal = "2237.6746538009173"
+
+[[case]]
+name = "deep_throttle_long_burn"
+thrust_vac_N = "0x1.f400000000000p+11"
+isp_vac_s = "0x1.c400000000000p+8"
+m0_kg = "0x1.28e0000000000p+13"
+t_burn_s = "0x1.2c00000000000p+9"
+m1_kg = "0x1.17f4764c75622p+13"
+dv_mps = "0x1.041dd9d2653a2p+8"
+dv_decimal = "260.11660494777071"
