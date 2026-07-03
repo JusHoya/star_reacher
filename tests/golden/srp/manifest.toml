@@ -1,0 +1,45 @@
+# Provenance manifest for the SRP and conical-shadow golden vectors in this
+# directory (FR-22 layer 1: uncited golden = lint failure; schema documented
+# in tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "srp"
+date = "2026-07-02"
+generation = """
+Both value files are written by tests/golden/srp/generate.py (mpmath 1.3.0,
+CPython 3.14.0, 60 significant decimal digits). References are evaluated in
+extended precision from the exact binary64 inputs and rounded once to
+binary64. The mpmath evaluation mirrors the model formulation of
+math-library chapter ch:srp branch for branch but shares no binary64
+rounding with the C++ path, so the committed values check the
+double-precision implementation to its own rounding floor. Shadow cases
+cover every branch of the piecewise illumination fraction: full sunlight
+and total umbra (exact 1 and 0 by construction), three penumbra depths
+placed from the analytic umbra/penumbra cone-crossing angles of a
+6778.137 km circular orbit (eq:srp:umbracone / eq:srp:penumbracone),
+annular and off-axis-annular Moon transits, a partial lunar occultation,
+and a Moon-occulter umbra seen from low lunar orbit. Occulter radii
+(6378137 m Earth-like, 1.7374e6 m Moon-like) are representative test
+geometry - the model takes all radii from the caller - while the solar
+radius 6.957e8 m and au = 149597870700 m are the cited constants the model
+ships. Regenerating is `python tests/golden/srp/generate.py`; output is
+byte-deterministic.
+"""
+
+[[file]]
+name = "shadow_fraction.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the apparent-disk overlap illumination fraction from the exact binary64 inputs, rounded once to binary64"
+citation = "Apparent-disk (dual-cone umbra/penumbra) shadow model per Montenbruck, O. and Gill, E., Satellite Orbits: Models, Methods and Applications, Springer (2000), Sec. 3.4; solar radius 6.957e8 m per IAU 2015 Resolution B3 (Prsa et al. 2016, AJ 152, 41); derivation reproduced in full in math-library chapter ch:srp"
+generation = "shadow_cases table in generate.py; penumbra-depth positions at 0.1/0.5/0.9 of the analytic penumbra-to-umbra crossing window computed in mpmath by the ch:srp cone construction; annular/partial/lunar cases from round-decimal representative geometries"
+date = "2026-07-02"
+tolerance = "consuming doctest compares the C++ shadow_fraction against nu: kind=exact cases require exact equality with 0.0 or 1.0 (the piecewise model returns the constants outside the penumbra; determinism demands bit-exact 0/1); kind=partial cases at abs 1e-12 (the C++ path differs from the correctly-rounded mpmath mirror only through libm asin/acos/atan2 at 1-2 ulp, amplified by the overlap-area conditioning to ~1e-13 worst case at these interior points, so 1e-12 carries an order of margin while a branch or geometry error shows as >= 1e-3)"
+
+[[file]]
+name = "accel.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the cannonball SRP acceleration from the exact binary64 inputs, rounded once to binary64; radiation-pressure constant as the exact rational 1361/299792458"
+citation = "Cannonball SRP model per Montenbruck and Gill (2000), Sec. 3.4; total solar irradiance 1361 W/m^2 per IAU 2015 Resolution B3 (Prsa et al. 2016, AJ 152, 41); speed of light 299792458 m/s exact per BIPM SI Brochure, 9th ed. (2019); au = 149597870700 m exact per IAU 2012 Resolution B2; derivation in math-library chapter ch:srp"
+generation = "accel_cases table in generate.py: full sun at 1 au, generic half-illuminated penumbra state, exact-zero umbra state, inverse-square check at Mars heliocentric distance (1.52 au), and a quarter-illuminated generic state; Cr*A/m values are round representative spacecraft ballistic coefficients"
+date = "2026-07-02"
+tolerance = "consuming doctest compares the C++ srp_accel against a_ref_mps2 at norm-relative 1e-12 per case (the C++ evaluation accumulates ~5 IEEE roundings plus the sub-ulp difference between the compiled 1361.0/299792458.0 constant and the exact rational, ~1e-15 total, so 1e-12 carries ~3 orders of margin); the nu = 0 umbra case requires every component numerically equal to zero"
