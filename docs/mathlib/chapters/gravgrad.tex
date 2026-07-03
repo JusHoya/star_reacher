@@ -1,0 +1,310 @@
+% Chapter — Gravity-gradient torque (FR-1). Follows the mandatory FR-29
+% six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. The equation labels eq:gravgrad:torque, eq:gravgrad:pitch,
+% eq:gravgrad:libfreq, and eq:gravgrad:pendulum are echoed verbatim in
+% comments in cpp/src/models/gravgrad.cpp and cpp/tests/test_gravgrad.cpp
+% (FR-29 equation-label-to-code traceability); renaming them breaks that
+% trace.
+\chapter{Gravity-Gradient Torque}
+\label{ch:gravgrad}
+
+\section{Purpose}
+\label{sec:gravgrad:purpose}
+
+This chapter documents the gravity-gradient torque model (FR-1): the torque
+a finite rigid body experiences about its center of mass because the
+central body's gravitational field is stronger on the near side than on the
+far side. It is the one environmental torque the PRD models --- on-orbit
+aerodynamic, solar-radiation-pressure, and magnetic disturbance torques are
+Non-Goals (their exclusion is bounded in
+Section~\ref{sec:gravgrad:domain}). The model is implemented in
+\texttt{cpp/src/models/gravgrad.cpp} with its interface in
+\texttt{cpp/include/star/models/gravgrad.hpp}; it is purely algebraic in
+its inputs $(\mu, \vv{r}^{I}, \quat{q}_{i2b}, \mat{I})$ --- the
+gravitational parameter of the current central body, the
+central-body-to-vehicle position in the inertial frame, the attitude, and
+the inertia tensor, all quantities the FR-1 state and mass-property layers
+already carry --- and depends on no environment or vehicle structure. The
+chapter also derives the pitch-libration frequency of a gravity-gradient
+stabilized body, the analytic reference for Phase~4 exit criterion~9.
+
+\section{Assumptions and domain of validity}
+\label{sec:gravgrad:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Point-mass central field.} The torque is computed from the
+    spherically symmetric $-\mu\vv{r}/r^3$ field. The field's harmonic
+    structure (Chapter~\ref{ch:gravity}) also has a gradient across the
+    body, but its contribution is smaller than the retained term by the
+    relative size of the harmonic field itself,
+    $\mathcal{O}\bigl(J_2 (R_\oplus/r)^2\bigr) \sim 10^{-3}$ in LEO, and
+    is neglected --- consistent with the standard formulation.
+  \item \textbf{First-order tidal expansion.} The field is linearized
+    across the body: for a vehicle of extent $c$ at distance $r$, the
+    first neglected term is smaller by $\mathcal{O}(c/r)$
+    ($\sim 10^{-6}$ for $c \sim \qty{10}{\metre}$ in LEO). The expansion
+    is the same tidal limit as the third-body discussion of
+    Chapter~\ref{ch:thirdbody}, applied here to the attitude channel.
+  \item \textbf{Torque about the instantaneous center of mass}, with
+    $\mat{I}$ the same center-of-mass, body-axes inertia tensor the
+    dynamics of Chapter~\ref{ch:rigidbody} uses, and $\vv{r}$ the vector
+    \emph{from the current central body to the vehicle} (FR-1: "about the
+    current central body, using states and inertia already available").
+    Only the direction of $\vv{r}$ and its magnitude enter.
+  \item \textbf{Unit attitude quaternion.} $\quat{q}_{i2b}$ carries the
+    caller's unit-norm invariant (maintained by the FR-1 post-step
+    normalization); a non-unit quaternion scales the returned torque by
+    $\norm{\quat{q}}^{4}$ (the DCM enters twice), a relative error of
+    $4(\norm{\quat{q}} - 1)$ for small deviations --- negligible under the
+    drift bound of Chapter~\ref{ch:rigidbody} but stated so the invariant
+    is explicit.
+  \item \textbf{Prescribed-orbit libration analysis.} The libration
+    derivation of Section~\ref{sec:gravgrad:libration} and its validation
+    test place the body on a \emph{prescribed} circular orbit of radius
+    $r$ with mean motion $n = \sqrt{\mu/r^3}$: attitude does not feed back
+    into translation. This is the module-level validation configuration;
+    the fully coupled translational--rotational vehicle lands with the
+    Phase~4 integration workstream, and the attitude-to-orbit coupling
+    neglected here is of relative order $(c/r)^2$ in the orbit.
+\end{enumerate}
+
+Excluded-torque bounds, recorded once so the exclusion is quantitative:
+for a vehicle of characteristic area $A$, center-of-pressure offset $d$,
+and residual dipole $\vv{m}$, the excluded torques are bounded by
+$\tau_{\mathrm{srp}} \le P_{1\mathrm{au}} A d\,(1 + C_R)$ with
+$P_{1\mathrm{au}} = \qty{4.54e-6}{\newton\per\metre\squared}$
+(Chapter~\ref{ch:srp}), $\tau_{\mathrm{aero}} \le \tfrac{1}{2}\rho v^2
+C_D A d$ with $\rho$ from the atmosphere chapters
+(Chapters~\ref{ch:ussa76}--\ref{ch:harrispriester}), and
+$\tau_{\mathrm{mag}} = \norm{\vv{m} \times \vv{B}}$, parametric in the
+vehicle's residual dipole and the local field (no field model ships with
+the core). For a representative $\qty{100}{\kilogram}$-class LEO vehicle
+($A \sim \qty{1}{\metre\squared}$, $d \sim \qty{0.1}{\metre}$,
+$\mat{I} \sim \qty{100}{\kilogram\metre\squared}$) the modeled
+gravity-gradient torque at $r = \qty{7e6}{\metre}$ is of order
+$3\mu\,\Delta I/(2 r^3) \sim \qty{7e-5}{\newton\metre}$, one to two orders
+above the SRP bound ($\sim \qty{1e-6}{\newton\metre}$) and above the aero
+bound outside the densest drag regimes.
+
+Domain of validity: any state with $\vv{r} \neq \vv{0}$. Out-of-domain
+behavior, matching the code exactly: at $\vv{r} = \vv{0}$ the
+normalization divides by zero and IEEE non-finite values propagate; the
+model does not throw (deterministic-loop rule; a spacecraft coincident
+with a body center is excluded by configuration validation, as in
+Chapter~\ref{ch:thirdbody}).
+
+\section{Derivation}
+\label{sec:gravgrad:derivation}
+
+\subsection{The torque integral}
+
+Let $\vv{x}$ run over the body's mass elements measured from the center of
+mass ($\int \vv{x}\,\mathrm{d}m = \vv{0}$), and let $\vv{r}$ point from the
+central body to the center of mass, $r = \norm{\vv{r}}$, $\hat{\vv{r}} =
+\vv{r}/r$. Each element feels the point-mass field of
+equation~\eqref{eq:twobody:newton}, so the torque about the center of mass
+is
+\begin{equation}
+  \vv{\tau} = \int \vv{x} \times
+    \left( -\,\mu\, \frac{\vv{r} + \vv{x}}{\norm{\vv{r} + \vv{x}}^{3}}
+    \right) \mathrm{d}m
+  = -\,\mu \int \frac{\vv{x} \times \vv{r}}
+      {\norm{\vv{r} + \vv{x}}^{3}}\, \mathrm{d}m ,
+  \label{eq:gravgrad:torqueint}
+\end{equation}
+using $\vv{x} \times \vv{x} = \vv{0}$. Expanding the denominator to first
+order in $\norm{\vv{x}}/r$,
+\begin{equation}
+  \norm{\vv{r} + \vv{x}}^{-3}
+    = r^{-3} \Bigl( 1 - 3\, \frac{\hat{\vv{r}} \cdot \vv{x}}{r}
+      + \mathcal{O}\bigl(\norm{\vv{x}}^2/r^2\bigr) \Bigr),
+  \label{eq:gravgrad:expansion}
+\end{equation}
+the zeroth-order term integrates to $(\int \vv{x}\,\mathrm{d}m) \times
+\vv{r} = \vv{0}$ (center-of-mass property), leaving
+\begin{equation}
+  \vv{\tau} = \frac{3\mu}{r^{3}} \int (\hat{\vv{r}} \cdot \vv{x})
+    \,(\vv{x} \times \hat{\vv{r}})\, \mathrm{d}m
+    + \mathcal{O}\!\left(\frac{c}{r}\right)\vv{\tau} .
+  \label{eq:gravgrad:firstorder}
+\end{equation}
+The integral is an inertia-tensor contraction: with $\mat{I} = \int
+(\norm{\vv{x}}^2 \mat{I}_3 - \vv{x}\vv{x}^{\mathsf T})\,\mathrm{d}m$,
+\begin{equation}
+  \hat{\vv{r}} \times (\mat{I}\hat{\vv{r}})
+  = \int \Bigl( \norm{\vv{x}}^2\, \hat{\vv{r}} \times \hat{\vv{r}}
+    - (\vv{x} \cdot \hat{\vv{r}})\, (\hat{\vv{r}} \times \vv{x})
+    \Bigr) \mathrm{d}m
+  = \int (\hat{\vv{r}} \cdot \vv{x})\,(\vv{x} \times \hat{\vv{r}})\,
+    \mathrm{d}m ,
+  \label{eq:gravgrad:identity}
+\end{equation}
+so the gravity-gradient torque, evaluated with every vector resolved in
+body axes ($\hat{\vv{r}}^{B} = \dcm{I}{B}\,\hat{\vv{r}}^{I}$, since
+$\mat{I}$ lives in body axes), is
+\begin{equation}
+  \boxed{\;
+  \vv{\tau}^{B}_{gg}
+    = \frac{3\mu}{r^{3}}\;
+      \hat{\vv{r}}^{B} \times \bigl( \mat{I}\, \hat{\vv{r}}^{B} \bigr) ,
+  \;}
+  \label{eq:gravgrad:torque}
+\end{equation}
+the standard result (Markley and Crassidis~\cite{markley2014}). Three
+structural properties follow directly and are gated bit-exactly by the
+property tests: the torque vanishes when $\mat{I}$ is spherical
+($\mat{I}\hat{\vv{r}} \parallel \hat{\vv{r}}$) and when $\hat{\vv{r}}$ is
+any principal axis (eigenvector) of $\mat{I}$; and its magnitude is
+bounded by $\norm{\vv{\tau}} \le \tfrac{3\mu}{2r^{3}}
+(I_{\max} - I_{\min})$, the extremum occurring with $\hat{\vv{r}}$ at
+$45^{\circ}$ between the extreme principal axes.
+
+\subsection{Pitch libration on a circular orbit}
+\label{sec:gravgrad:libration}
+
+Place the body on a prescribed circular orbit of radius $r$ in the
+inertial $xy$ plane, orbit angle $\nu = n t$, $n = \sqrt{\mu/r^3}$, and
+let the body track the local-vertical frame with a pitch offset: body
+$\hat{\vv{y}}_B$ along the inertial orbit normal $+\hat{\vv{z}}_I$ (the
+pitch axis), body $\hat{\vv{z}}_B$ at angle $\theta$ from the zenith
+direction $\hat{\vv{r}}$, so the body's total rotation angle about the
+orbit normal is $\alpha = \nu + \theta$ and $\vv{\omega}^{B} = (0,\,
+n + \dot{\theta},\, 0)$. Resolving the zenith direction in body axes
+gives $\hat{\vv{r}}^{B} = (-\sin\theta,\, 0,\, \cos\theta)$, and for a
+principal-axes inertia $\mat{I} = \mathrm{diag}(I_x, I_y, I_z)$ ($x$
+along-track, $y$ pitch, $z$ nadir at $\theta = 0$),
+equation~\eqref{eq:gravgrad:torque} reduces to a pure pitch torque
+$\vv{\tau}^{B} = (0, \tau_y, 0)$ with $\tau_y = -3 n^2 (I_x - I_z)
+\sin\theta \cos\theta$. This planar configuration is \emph{exactly}
+self-consistent: with $\vv{\omega}$ on the pitch axis the gyroscopic term
+$\vv{\omega} \times (\mat{I}\vv{\omega})$ vanishes identically, the
+torque stays on the pitch axis, and roll/yaw remain exactly zero.
+Euler's equation~\eqref{eq:rigidbody:euler} about the pitch axis, with
+$\ddot{\alpha} = \ddot{\theta}$ on the circular orbit, is then the exact
+pendulum
+\begin{equation}
+  I_y\, \ddot{\theta}
+    = -\,3 n^2 (I_x - I_z) \sin\theta \cos\theta
+    = -\,\tfrac{3}{2}\, n^2 (I_x - I_z) \sin 2\theta .
+  \label{eq:gravgrad:pitch}
+\end{equation}
+Linearizing for small $\theta$ gives simple harmonic pitch libration at
+\begin{equation}
+  \boxed{\;
+  \omega_{\mathrm{lib}}
+    = n\, \sqrt{\frac{3\,(I_x - I_z)}{I_y}} ,
+  \;}
+  \label{eq:gravgrad:libfreq}
+\end{equation}
+stable (oscillatory) precisely when $I_x > I_z$ --- the along-track moment
+exceeding the nadir moment, i.e.\ the long axis pointing at the central
+body, the classical gravity-gradient-stable configuration. This is the
+analytic value of Phase~4 exit criterion~9.
+
+At finite amplitude the measured frequency is predictably lower. In
+$u = 2\theta$, equation~\eqref{eq:gravgrad:pitch} is $\ddot{u} =
+-\omega_{\mathrm{lib}}^2 \sin u$; its energy integral $\tfrac{1}{2}
+\dot{u}^2 = \omega_{\mathrm{lib}}^2 (\cos u - \cos u_0)$ for release from
+rest at amplitude $u_0$ gives the quarter period $\int_0^{u_0}
+\mathrm{d}u / \dot{u}$, which the substitution $\sin(u/2) =
+\sin(u_0/2)\sin\chi$ reduces to the complete elliptic integral of the
+first kind $K(m) = \int_0^{\pi/2} (1 - m \sin^2\chi)^{-1/2}\,
+\mathrm{d}\chi$ with parameter $m = \sin^2(u_0/2)$. The oscillation
+frequency at initial pitch offset $\theta_0$ (so $u_0 = 2\theta_0$, $m =
+\sin^2\theta_0$) is therefore
+\begin{equation}
+  \omega_{\mathrm{pend}}(\theta_0)
+    = \omega_{\mathrm{lib}}\, \frac{\pi}{2\,K(\sin^2\theta_0)}
+    = \omega_{\mathrm{lib}}
+      \Bigl(1 - \tfrac{1}{4}\theta_0^{2}
+      + \mathcal{O}(\theta_0^{4})\Bigr) ,
+  \label{eq:gravgrad:pendulum}
+\end{equation}
+a $-2.5 \times 10^{-5}$ relative offset at the committed $\theta_0 =
+\qty{0.01}{\radian}$ --- forty times inside the exit-criterion gate, and
+the basis of the tighter secondary check in the validation test.
+
+\section{Discretization and implementation}
+\label{sec:gravgrad:implementation}
+
+There is no discretization: the model is a pointwise algebraic map from
+$(\mu, \vv{r}^{I}, \quat{q}_{i2b}, \mat{I})$ to $\vv{\tau}^{B}$.
+Implementation notes:
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/gravgrad.cpp}; the source comments echo
+    \texttt{eq:gravgrad:torque} verbatim, and the validation test echoes
+    \texttt{eq:gravgrad:pitch}, \texttt{eq:gravgrad:libfreq}, and
+    \texttt{eq:gravgrad:pendulum}.
+  \item \textbf{Evaluation order.} The position is normalized in the
+    inertial frame ($\hat{\vv{r}}^{I} = \vv{r}/r$) and rotated with
+    \texttt{star::rotation::quat\_transform}, the single project code path
+    for frame transformation (Chapter~\ref{ch:rotations}), then contracted
+    per equation~\eqref{eq:gravgrad:torque}. Fixed order, IEEE basic
+    operations plus one square root, no allocation (D-10).
+  \item \textbf{Scale factor once.} $3\mu/r^{3}$ is formed as one scalar
+    and applied to the cross product, so the structural zeros of the
+    property tests (spherical $\mat{I}$, principal-axis alignment) are
+    exact: every floating-point product in the cross-product difference
+    either carries a zero factor or subtracts two identically rounded
+    copies of the same real product.
+  \item \textbf{Data ownership.} $\mu$ is supplied by the caller (the
+    force-composition layer passes the current central body's value); the
+    module defines no body constants.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:gravgrad:validation}
+
+Table~\ref{tab:gravgrad:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
+provenance and tolerance derivations are recorded in
+\texttt{tests/golden/attitude/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the gravity-gradient model (doctest,
+    \texttt{cpp/tests/test\_gravgrad.cpp}).}
+  \label{tab:gravgrad:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{gravgrad_torque_golden} &
+      Equation~\eqref{eq:gravgrad:torque} against extended-precision
+      references (mpmath, 60 significant digits) at six committed states
+      --- generic LEO/lunar/GEO geometries with full and diagonal inertia
+      tensors, plus the planar pitch case cross-checked at generation
+      time against the closed form of
+      equation~\eqref{eq:gravgrad:pitch} --- to norm-relative
+      $\le 10^{-12}$. \\
+    \testid{gravgrad_exact_zero_geometries} &
+      Structural zeros bit-exact: spherical inertia (any attitude and
+      position) and central-body direction along a principal axis both
+      return exactly $\vv{0}$, per the properties of
+      equation~\eqref{eq:gravgrad:torque}. \\
+    \testid{gravgrad_libration_frequency} &
+      Phase~4 exit criterion 9: the libration frequency of a
+      gravity-gradient-stabilized body on the prescribed circular
+      reference orbit, measured from event-located pitch zero crossings
+      over $\sim$11 periods, matches the analytic
+      $\omega_{\mathrm{lib}}$ of equation~\eqref{eq:gravgrad:libfreq}
+      to within 0.1\,\% (the known finite-amplitude offset is
+      $2.5 \times 10^{-5}$), and matches the amplitude-corrected
+      $\omega_{\mathrm{pend}}$ of equation~\eqref{eq:gravgrad:pendulum}
+      to within $10^{-7}$ relative. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:gravgrad:references}
+
+This chapter relies on Markley and Crassidis~\cite{markley2014} for the
+standard gravity-gradient torque result (re-derived above from the tidal
+expansion) and on the IERS Conventions (2010)~\cite{iers2010} for the
+geocentric gravitational constant used by the committed validation
+geometry. Full bibliographic details appear in the bibliography.
