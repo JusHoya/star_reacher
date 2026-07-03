@@ -1,11 +1,12 @@
 # ADR 0002: Lunar ephemeris validation against Horizons (DE441 vs DE440)
 
-- Status: Accepted. This decision is a documented interpretation of Phase 2
-  exit criterion 2 as written, recorded pending ratification of the PRD text
-  by the project author.
+- Status: Accepted. Ratified by the project author on 2026-07-02; the PRD
+  text of exit criterion 2 is amended in the same change to codify the
+  split gate this ADR records.
 - Date: 2026-07-02
 - Decided by: Phase 2 integration workstream, from the measured evidence in
-  `tests/golden/ephemeris/full_span_validation.md`
+  `tests/golden/ephemeris/full_span_validation.md`; ratified by
+  Melvin Hoyer III (project author)
 
 ## Context
 
@@ -90,10 +91,9 @@ Phase 2 exit criterion 2 is applied as follows:
   manifest gate the six shared quantities at 1 m vs Horizons, the lunar
   quantities at 1 mm vs jplephem/DE440, and the lunar quantities at 10 m vs
   Horizons as an envelope.
-- The PRD text of exit criterion 2 is unchanged by this ADR; this document
-  records the operative interpretation and stands for ratification by the
-  project author. If ratification amends the criterion text instead, this
-  ADR should be updated to Superseded accordingly.
+- The PRD text of exit criterion 2 is amended alongside this ADR's
+  ratification to state the split gate directly; this document records the
+  evidence and rationale behind the amendment.
 - Any future re-validation against a Horizons configuration that serves
   DE440 lunar states (or a repack built from DE441) may retire the split
   gate and apply the verbatim criterion to all eight quantities.
