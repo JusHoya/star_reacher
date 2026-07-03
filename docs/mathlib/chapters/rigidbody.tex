@@ -1,0 +1,450 @@
+% Chapter — Rigid-body attitude dynamics (FR-1). Follows the mandatory
+% FR-29 six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. The equation labels eq:rigidbody:qdot, eq:rigidbody:euler,
+% eq:rigidbody:omegadot, and eq:rigidbody:normdrift are echoed verbatim in
+% comments in cpp/src/models/rigidbody.cpp and cpp/tests/test_rigidbody.cpp
+% (FR-29 equation-label-to-code traceability); renaming them breaks that
+% trace.
+\chapter{Rigid-Body Attitude Dynamics}
+\label{ch:rigidbody}
+
+\section{Purpose}
+\label{sec:rigidbody:purpose}
+
+This chapter documents the rotational core of the FR-1 six-degree-of-freedom
+vehicle model: the quaternion attitude kinematics and Euler's equation for a
+rigid body with time-varying inertia, including the $\dot{\mat{I}}\vv{\omega}$
+term. The module supplies the attitude piece of the vehicle equations of
+motion as a pure right-hand-side map: given the attitude quaternion
+$\quat{q}_{i2b}$, the body rate $\vv{\omega}^{B}$, the inertia tensor
+$\mat{I}$, its time derivative $\dot{\mat{I}}$, and the total body torque
+$\vv{\tau}^{B}$, it returns $(\dot{\quat{q}}, \dot{\vv{\omega}})$ for
+embedding in a larger state vector. The Phase~4 vehicle layer supplies
+$\mat{I}$, $\dot{\mat{I}}$, and $\vv{\tau}^{B}$ from mass properties,
+actuators, and environmental torques (Chapter~\ref{ch:gravgrad}); this module
+depends on none of those structures. It is implemented in
+\texttt{cpp/src/models/rigidbody.cpp} with its interface in
+\texttt{cpp/include/star/models/rigidbody.hpp}. The chapter also derives the
+quaternion norm-drift bound that the FR-1 post-step normalization policy
+rests on.
+
+\section{Assumptions and domain of validity}
+\label{sec:rigidbody:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Quasi-rigid body.} The vehicle is rigid at every instant;
+    mass variation enters only through the externally supplied pair
+    $\bigl(\mat{I}(t), \dot{\mat{I}}(t)\bigr)$, both expressed in body axes
+    about the \emph{instantaneous} center of mass, with $\mat{I}$ symmetric
+    positive definite and the pair mutually consistent (the Phase~4
+    mass-properties model owns that consistency). Momentum carried by
+    internal relative motion of the depleting mass (propellant swirl, jet
+    damping) is excluded: the $\dot{\mat{I}}\vv{\omega}$ form is the
+    standard quasi-rigid depletion approximation.
+  \item \textbf{Torque completeness.} $\vv{\tau}^{B}$ is the total external
+    plus actuator torque about the instantaneous center of mass, resolved in
+    body axes. The module does not distinguish torque sources.
+  \item \textbf{Attitude convention.} $\quat{q}_{i2b}$ is the Hamilton,
+    scalar-first, inertial-to-body frame-transformation quaternion of
+    Section~\ref{sec:notation:quaternion} (decision D-7);
+    $\vv{\omega}^{B}$ is the angular velocity of $B$ with respect to $I$,
+    resolved in $B$.
+  \item \textbf{Norm handling.} The kinematics of
+    equation~\eqref{eq:rigidbody:qdot} is degree-one homogeneous in
+    $\quat{q}$ and preserves $\norm{\quat{q}}$ exactly
+    (equation~\eqref{eq:rigidbody:qnorm}), so the right-hand side is valid
+    for any nonzero quaternion. Consumers of the attitude (the DCM of
+    equation~\eqref{eq:notation:quat2dcm}) require unit norm; the post-step
+    normalization policy of Section~\ref{sec:rigidbody:implementation}
+    maintains it.
+\end{enumerate}
+
+Domain of validity: any state with $\mat{I}$ invertible. Out-of-domain
+behavior, matching the code exactly: a singular $\mat{I}$ makes the
+closed-form $3 \times 3$ inverse divide by a zero determinant and IEEE
+non-finite values propagate; no right-hand-side function of this module
+throws, because it runs inside the deterministic time loop and excluding
+non-physical mass properties is the configuration validator's job. The one
+between-step helper, post-step renormalization, throws
+\texttt{std::domain\_error} on a zero or non-finite quaternion norm rather
+than fabricating an attitude, mirroring
+\texttt{star::rotation::quat\_normalize}: a state that degenerate means the
+integration has already failed, and the deterministic response is a loud
+abort.
+
+\section{Derivation}
+\label{sec:rigidbody:derivation}
+
+\subsection{Quaternion kinematics}
+
+Differentiate the coordinate-transformation sandwich of
+equation~\eqref{eq:notation:sandwich} for a vector fixed in the inertial
+frame, $\dot{\tilde{\vv{v}}}^{I} = 0$, using
+$\mathrm{d}(\quat{q}^{-1})/\mathrm{d}t = -\quat{q}^{-1} \quatmul
+\dot{\quat{q}} \quatmul \quat{q}^{-1}$:
+\begin{equation}
+  \dot{\tilde{\vv{v}}}^{B}
+    = -\quat{q}^{-1} \dot{\quat{q}} \quatmul \tilde{\vv{v}}^{B}
+      + \tilde{\vv{v}}^{B} \quatmul \quat{q}^{-1} \dot{\quat{q}} .
+  \label{eq:rigidbody:sandwichdot}
+\end{equation}
+A vector fixed in $I$ appears in $B$ to rotate with
+$-\vv{\omega}^{B}$: $\dot{\vv{v}}^{B} = -\vv{\omega}^{B} \times
+\vv{v}^{B}$. Setting $\quat{q}^{-1} \dot{\quat{q}} =
+\tfrac{1}{2}\tilde{\vv{\omega}}$ with the pure quaternion
+$\tilde{\vv{\omega}} = [\,0, \vv{\omega}^{B}\,]$ makes the right side of
+equation~\eqref{eq:rigidbody:sandwichdot} equal
+$\tfrac{1}{2}(\tilde{\vv{v}} \quatmul \tilde{\vv{\omega}} -
+\tilde{\vv{\omega}} \quatmul \tilde{\vv{v}})$, which by the Hamilton
+product~\eqref{eq:notation:hamiltonproduct} is the pure quaternion with
+vector part $\vv{v}^{B} \times \vv{\omega}^{B}$ --- exactly the required
+rate. Hence the attitude kinematics in the project convention is
+\begin{equation}
+  \boxed{\;
+  \dot{\quat{q}}_{i2b}
+    = \tfrac{1}{2}\, \quat{q}_{i2b} \quatmul
+      [\,0, \vv{\omega}^{B}\,] ,
+  \;}
+  \label{eq:rigidbody:qdot}
+\end{equation}
+the standard result (Markley and Crassidis~\cite{markley2014}, ch.~3)
+transcribed to the Hamilton scalar-first $\quat{q}_{i2b}$ convention of
+Chapter~\ref{ch:notation}. The norm is a first integral of
+equation~\eqref{eq:rigidbody:qdot} for \emph{any} $\quat{q}$: the scalar
+part of $\quat{q}^{*} \quatmul (\quat{q} \quatmul \tilde{\vv{\omega}}) =
+\norm{\quat{q}}^{2}\, \tilde{\vv{\omega}}$ is zero, so
+\begin{equation}
+  \frac{\mathrm{d}}{\mathrm{d}t} \norm{\quat{q}}^{2}
+    = 2\, \quat{q} \cdot \dot{\quat{q}} = 0 .
+  \label{eq:rigidbody:qnorm}
+\end{equation}
+Homogeneity has a second consequence used below: if $\quat{q}(t)$ solves
+equation~\eqref{eq:rigidbody:qdot} then so does $c\,\quat{q}(t)$ for any
+constant $c > 0$, and both represent the same attitude history, so a small
+norm error is a pure bookkeeping error --- it never feeds back into the
+attitude or the rates.
+
+\subsection{Euler's equation with time-varying inertia}
+
+The angular momentum about the center of mass is $\vv{H}^{B} =
+\mat{I}\vv{\omega}^{B}$, and Newton--Euler dynamics equates its
+\emph{inertial} derivative to the applied torque. The transport theorem
+between the inertial and body derivatives of any vector gives
+$\dot{\vv{H}}\big|_{I} = \dot{\vv{H}}\big|_{B} + \vv{\omega} \times
+\vv{H}$, so
+\begin{equation}
+  \mat{I}\dot{\vv{\omega}}
+    + \dot{\mat{I}}\vv{\omega}
+    + \vv{\omega} \times (\mat{I}\vv{\omega})
+    = \vv{\tau}^{B} ,
+  \qquad\text{i.e.}\qquad
+  \mat{I}\dot{\vv{\omega}}
+    = \vv{\tau}^{B}
+      - \vv{\omega} \times (\mat{I}\vv{\omega})
+      - \dot{\mat{I}}\vv{\omega} ,
+  \label{eq:rigidbody:euler}
+\end{equation}
+(Markley and Crassidis~\cite{markley2014}, ch.~3, with the
+$\dot{\mat{I}}\vv{\omega}$ term retained per FR-1). The implemented form
+solves the $3 \times 3$ system explicitly:
+\begin{equation}
+  \boxed{\;
+  \dot{\vv{\omega}}
+    = \mat{I}^{-1}\bigl( \vv{\tau}^{B}
+      - \vv{\omega} \times (\mat{I}\vv{\omega})
+      - \dot{\mat{I}}\vv{\omega} \bigr) .
+  \;}
+  \label{eq:rigidbody:omegadot}
+\end{equation}
+
+For $\vv{\tau} = 0$ and $\dot{\mat{I}} = 0$ the motion has two first
+integrals, the acceptance instruments of the intermediate-axis test:
+\begin{align}
+  \vv{H}^{I} &= \bigl(\dcm{I}{B}\bigr)^{\mathsf T} \mat{I}\vv{\omega}^{B}
+    = \text{const}, \label{eq:rigidbody:H} \\
+  T &= \tfrac{1}{2}\, \vv{\omega}^{\mathsf T} \mat{I} \vv{\omega}
+    = \text{const}, \label{eq:rigidbody:T}
+\end{align}
+the first because $\dot{\vv{H}}\big|_{I} = \vv{\tau} = 0$, the second
+because $\dot{T} = \vv{\omega} \cdot \mat{I}\dot{\vv{\omega}} =
+\vv{\omega} \cdot (\vv{\tau} - \vv{\omega} \times (\mat{I}\vv{\omega})) =
+\vv{\omega} \cdot \vv{\tau} = 0$.
+
+\subsection{Closed-form torque-free motion of an axisymmetric body}
+\label{sec:rigidbody:coning}
+
+Let $\mat{I} = \mathrm{diag}(I_T, I_T, I_A)$ in body principal axes with
+symmetry axis $\hat{\vv{e}}_3$, $\vv{\tau} = 0$, $\dot{\mat{I}} = 0$.
+Equation~\eqref{eq:rigidbody:euler} componentwise gives $\dot{\omega}_3 =
+0$ and $\dot{\omega}_1 = -\omega_p \omega_2$, $\dot{\omega}_2 = \omega_p
+\omega_1$ with the constant relative-spin (body precession) rate
+\begin{equation}
+  \omega_p = \frac{I_A - I_T}{I_T}\, \omega_3 .
+  \label{eq:rigidbody:omegap}
+\end{equation}
+The attitude solution is classical (Markley and
+Crassidis~\cite{markley2014}, ch.~3); it is re-derived here in the project
+convention because every sign in it is load-bearing for the golden vectors.
+Since $\vv{H}^{I}$ is fixed, define an auxiliary inertial frame $N$ with
+$\hat{\vv{z}}_N = \vv{H}^{I}/H$, $H = \norm{\vv{H}}$, and parametrize
+$\dcm{N}{B} = \mat{R}_3(\psi)\mat{R}_1(\theta)\mat{R}_3(\phi)$ with the
+3-1-3 angles of equation~\eqref{eq:rotations:e313}. Resolving $\vv{H} = H
+\hat{\vv{z}}_N$ in body axes and equating to
+$\mat{I}\vv{\omega}^{B}$:
+\begin{equation}
+  H \begin{bmatrix} \sin\theta\sin\psi \\ \sin\theta\cos\psi \\
+     \cos\theta \end{bmatrix}
+  = \begin{bmatrix} I_T\,\omega_1 \\ I_T\,\omega_2 \\ I_A\,\omega_3
+    \end{bmatrix}
+  \quad\Longrightarrow\quad
+  \cos\theta = \frac{I_A\,\omega_3}{H}, \qquad
+  \tan\psi = \frac{\omega_1}{\omega_2},
+  \label{eq:rigidbody:coningparams}
+\end{equation}
+so the nutation angle $\theta$ is constant. For the chained rotation
+$\quat{q}_{n2b} = \quat{q}_z(\phi) \quatmul \quat{q}_x(\theta) \quatmul
+\quat{q}_z(\psi)$ with $\dot{\theta} = 0$, angular-velocity addition
+(each elementary rate about its own current axis, resolved in $B$;
+Markley and Crassidis~\cite{markley2014}, ch.~3) gives the 3-1-3 rate map
+\begin{equation}
+  \vv{\omega}^{B}
+  = \dot{\phi}
+    \begin{bmatrix} \sin\theta\sin\psi \\ \sin\theta\cos\psi \\
+      \cos\theta \end{bmatrix}
+    + \dot{\psi}
+    \begin{bmatrix} 0 \\ 0 \\ 1 \end{bmatrix} .
+  \label{eq:rigidbody:eulerrates}
+\end{equation}
+Matching equations~\eqref{eq:rigidbody:coningparams}
+and~\eqref{eq:rigidbody:eulerrates} component by component yields constant
+rates
+\begin{equation}
+  \dot{\phi} = \frac{H}{I_T},
+  \qquad
+  \dot{\psi} = \omega_3 - \dot{\phi}\cos\theta
+             = \omega_3 \Bigl(1 - \frac{I_A}{I_T}\Bigr)
+             = -\,\omega_p ,
+  \label{eq:rigidbody:coningrates}
+\end{equation}
+consistent with the Euler-equation solution above. The full attitude
+history from an arbitrary initial quaternion $\quat{q}_0$ (which fixes the
+constant offset $\quat{q}_{i2n}$, with the free angle $\phi_0 = 0$
+absorbing the choice of $\hat{\vv{x}}_N$) is
+\begin{equation}
+  \boxed{\;
+  \quat{q}_{i2b}(t)
+    = \quat{q}_{i2n} \quatmul
+      \quat{q}_{313}\bigl(\dot{\phi}\,t,\; \theta,\;
+        \psi_0 + \dot{\psi}\,t\bigr),
+  \qquad
+  \quat{q}_{i2n} = \quat{q}_0 \quatmul
+      \quat{q}_{313}(0, \theta, \psi_0)^{-1} .
+  \;}
+  \label{eq:rigidbody:coning}
+\end{equation}
+This is the reference for the coning golden vectors
+(\texttt{tests/golden/attitude/coning.toml}); the generator additionally
+verifies equations~\eqref{eq:rigidbody:coning}
+and~\eqref{eq:rigidbody:eulerrates} against
+equations~\eqref{eq:rigidbody:qdot} and~\eqref{eq:rigidbody:euler} by
+extended-precision central finite differences before writing, so the
+committed reference is machine-checked to be the unique solution of the
+committed initial-value problem.
+
+\subsection{Instability of intermediate-axis spin}
+
+For distinct principal moments $I_1 > I_2 > I_3$, linearize
+equation~\eqref{eq:rigidbody:euler} (torque-free, constant $\mat{I}$)
+about the intermediate-axis spin $\vv{\omega} = (0, \omega_2, 0)$:
+$\dot{\omega}_1 = \frac{I_2 - I_3}{I_1}\omega_2\,\omega_3$ and
+$\dot{\omega}_3 = \frac{I_1 - I_2}{I_3}\omega_1\,\omega_2$ with $\omega_2$
+constant to first order, so $\ddot{\omega}_1 = \lambda^2 \omega_1$ with
+the real growth rate
+\begin{equation}
+  \lambda = |\omega_2| \sqrt{\frac{(I_2 - I_3)(I_1 - I_2)}{I_1 I_3}} > 0 .
+  \label{eq:rigidbody:lambda}
+\end{equation}
+A small transverse perturbation therefore grows as $e^{\lambda t}$ until
+the nonlinear terms produce the finite flip (the Dzhanibekov effect). Two
+testing consequences, recorded in the golden manifest: state-level
+reference checkpoints are meaningful only over horizons where
+$e^{\lambda t}$ has not yet amplified the checkpoint tolerance to the gate
+(here $t \le \qty{15}{\second}$, $e^{\lambda t} \le 49$), and across the
+flip itself only the invariants~\eqref{eq:rigidbody:H}
+and~\eqref{eq:rigidbody:T} are testable --- which is exactly what Phase~4
+exit criterion~4 gates.
+
+\subsection{Quaternion norm drift under Runge--Kutta integration}
+\label{sec:rigidbody:normdrift}
+
+In the packed coordinates $\vv{y}_q = [q_w, q_x, q_y, q_z]^{\mathsf T}$,
+equation~\eqref{eq:rigidbody:qdot} is the linear system $\dot{\vv{y}}_q =
+\tfrac{1}{2}\mat{\Omega}(\vv{\omega})\,\vv{y}_q$ with the skew-symmetric
+right-multiplication matrix
+\begin{equation}
+  \mat{\Omega}(\vv{\omega}) =
+  \begin{bmatrix}
+    0 & -\omega_x & -\omega_y & -\omega_z \\
+    \omega_x & 0 & \omega_z & -\omega_y \\
+    \omega_y & -\omega_z & 0 & \omega_x \\
+    \omega_z & \omega_y & -\omega_x & 0
+  \end{bmatrix},
+  \qquad
+  \mat{\Omega}^2 = -\norm{\vv{\omega}}^2 \mat{I}_4 ,
+  \label{eq:rigidbody:bigomega}
+\end{equation}
+where the square follows from associativity: $(\quat{q} \quatmul
+\tilde{\vv{\omega}}) \quatmul \tilde{\vv{\omega}} = \quat{q} \quatmul
+(\tilde{\vv{\omega}} \quatmul \tilde{\vv{\omega}}) =
+-\norm{\vv{\omega}}^2 \quat{q}$. For \emph{constant} $\vv{\omega}$, one
+classical RK4 step of size $h$ (Chapter~\ref{ch:integrators}) maps
+$\vv{y}_q \mapsto \mat{P}\vv{y}_q$ with $\mat{P} = \sum_{k=0}^{4}
+(h\mat{\Omega}/2)^k / k!$, the degree-4 truncation of the exponential ---
+the stability polynomial $R(z)$ of RK4 evaluated at the matrix argument
+(Hairer and Wanner~\cite{hairer1996}, ch.~IV). Using
+equation~\eqref{eq:rigidbody:bigomega}, $\mat{P} = a\,\mat{I}_4 +
+b\,\hat{\mat{\Omega}}$ with $\theta = h\norm{\vv{\omega}}/2$,
+$\hat{\mat{\Omega}} = \mat{\Omega}/\norm{\vv{\omega}}$ (orthogonal and
+skew), $a = 1 - \theta^2/2 + \theta^4/24$, and $b = \theta - \theta^3/6$.
+Because $\vv{y}^{\mathsf T}\hat{\mat{\Omega}}\vv{y} = 0$ and
+$\norm{\hat{\mat{\Omega}}\vv{y}} = \norm{\vv{y}}$, every step scales the
+norm by exactly
+\begin{equation}
+  \rho(\theta) = \sqrt{a^2 + b^2}
+    = \sqrt{1 - \frac{\theta^6}{72} + \frac{\theta^8}{576}}
+    = 1 - \frac{\theta^6}{144} + \mathcal{O}(\theta^8),
+  \label{eq:rigidbody:rk4norm}
+\end{equation}
+so after $N$ fixed steps the drift is, to leading order,
+\begin{equation}
+  \bigl|\norm{\quat{q}_N} - 1\bigr|
+    = N\,\frac{\theta^6}{144}
+      \bigl(1 + \mathcal{O}(\theta^2)\bigr),
+  \qquad
+  \theta = \frac{h \norm{\vv{\omega}}}{2} .
+  \label{eq:rigidbody:normdrift}
+\end{equation}
+This bound is exact for constant $\vv{\omega}$ and is machine-checked by
+\testid{rigidbody_quaternion_norm_drift}. For general motion under the
+adaptive RKF7(8) driver, the per-step norm change is bounded by that
+step's local error, which the controller holds at the group tolerances
+(Chapter~\ref{ch:integrators}), so the drift accumulates at most linearly:
+$|\norm{\quat{q}} - 1| \lesssim N_{\mathrm{steps}} (\mathrm{atol}_q +
+\mathrm{rtol})$; the coning acceptance test measures it. Post-step
+normalization $\quat{q} \mapsto \quat{q}/\norm{\quat{q}}$ removes the
+drift entirely while leaving the represented attitude \emph{exactly}
+unchanged (the DCM of equation~\eqref{eq:notation:quat2dcm} is degree-2
+homogeneous, so rescaling touches only its overall $\norm{\quat{q}}^2$
+factor), which is why FR-1 mandates it as the norm-control policy rather
+than any projection that would alter the attitude.
+
+\section{Discretization and implementation}
+\label{sec:rigidbody:implementation}
+
+There is no discretization: the module is a pointwise algebraic map,
+evaluated inside the vehicle right-hand side at whatever states the
+integrator (Chapter~\ref{ch:integrators}) requests. Implementation notes:
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/rigidbody.cpp}. The source comments echo the
+    labels \texttt{eq:rigidbody:qdot}, \texttt{eq:rigidbody:euler},
+    \texttt{eq:rigidbody:omegadot}, and \texttt{eq:rigidbody:normdrift}
+    verbatim.
+  \item \textbf{Packed state slice.} The raw-pointer entry point
+    \texttt{rigidbody\_rhs} operates on the seven-component slice
+    $[q_w, q_x, q_y, q_z, \omega_x, \omega_y, \omega_z]$ (scalar-first,
+    per Table~\ref{tab:notation:eigenmap} rule 1), the layout the Phase~4
+    vehicle state vector embeds.
+  \item \textbf{Explicit $3 \times 3$ inverse.} The solve in
+    equation~\eqref{eq:rigidbody:omegadot} uses the closed-form cofactor
+    inverse (\texttt{Eigen::Matrix3d::inverse()}): IEEE basic operations
+    only, in a fixed order, no pivot search, no allocation --- the
+    relative error is bounded by a small multiple of
+    $\kappa(\mat{I})\,\varepsilon$, and physical inertia tensors are
+    well conditioned ($\kappa < 10^2$ for any credible vehicle).
+  \item \textbf{No normalization inside the right-hand side.} Normalizing
+    $\quat{q}$ inside the RHS would change the ODE the integrator sees and
+    corrupt the embedded error estimate; by
+    equation~\eqref{eq:rigidbody:qnorm} it is also unnecessary.
+    Normalization is applied \emph{between} steps by the propagation
+    layer via \texttt{rigidbody\_renormalize}, which returns the signed
+    pre-normalization deviation $\norm{\quat{q}} - 1$ so callers can
+    monitor the documented drift bound~\eqref{eq:rigidbody:normdrift}.
+  \item \textbf{Determinism.} No heap allocation, single-threaded, fixed
+    evaluation order, IEEE basic operations only (D-10); the golden
+    generator's mpmath mirror reproduces the same formulation from the
+    same committed binary64 inputs.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:rigidbody:validation}
+
+Table~\ref{tab:rigidbody:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
+provenance and tolerance derivations are recorded in
+\texttt{tests/golden/attitude/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the rigid-body attitude model (doctest,
+    \texttt{cpp/tests/test\_rigidbody.cpp}).}
+  \label{tab:rigidbody:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{rigidbody_rhs_golden} &
+      Equations~\eqref{eq:rigidbody:qdot}
+      and~\eqref{eq:rigidbody:omegadot} against extended-precision
+      references (mpmath, 60 significant digits) at six committed states
+      covering full inertia tensors, nonzero $\dot{\mat{I}}$, and torque:
+      norm-relative $\le 10^{-12}$; structural exact-zero outputs
+      bit-exact. \\
+    \testid{rigidbody_zero_torque_properties} &
+      Exact structural zeros: principal-axis spin and power-of-two
+      spherical inertia give $\dot{\vv{\omega}} = \vv{0}$ exactly, a rest
+      state gives $\dot{\quat{q}} = 0$ exactly; and under RK4 integration
+      of the spherical case $\vv{\omega}$ stays bitwise constant while
+      the attitude precesses. \\
+    \testid{rigidbody_coning_closed_form} &
+      Phase~4 exit criterion 4 (coning clause): RKF7(8) propagation of
+      equations~\eqref{eq:rigidbody:qdot}--\eqref{eq:rigidbody:euler}
+      against the closed form~\eqref{eq:rigidbody:coning} at eight
+      checkpoints over five precession periods; attitude error angle
+      $\le 10^{-9}$ rad and rate error $\le 10^{-9}$ norm-relative
+      (measured worst case captured in the test output). \\
+    \testid{rigidbody_intermediate_axis_flip} &
+      Phase~4 exit criterion 4 (flip clause): across an intermediate-axis
+      flip, $\vv{H}^{I}$ (magnitude and direction,
+      equation~\eqref{eq:rigidbody:H}) and $T$
+      (equation~\eqref{eq:rigidbody:T}) conserved to $10^{-10}$ relative
+      at every accepted step; early-time rates match the independent
+      mpmath trajectory to $10^{-9}$ norm-relative within the
+      $e^{\lambda t}$ horizon of
+      equation~\eqref{eq:rigidbody:lambda}; the flip itself reproduced
+      ($\min \omega_2 < -0.9\,\omega_2(0)$). \\
+    \testid{rigidbody_quaternion_norm_drift} &
+      FR-1 norm-drift bound: measured RK4 drift matches
+      equation~\eqref{eq:rigidbody:normdrift} to within 5\,\% over 400
+      fixed steps of the constant-rate spin; adaptive-driver drift stays
+      below the linear-accumulation bound; \texttt{rigidbody\_renormalize}
+      restores unit norm to machine rounding and leaves the rate slice
+      and the represented attitude untouched. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:rigidbody:references}
+
+This chapter relies on Markley and Crassidis~\cite{markley2014} for the
+standard forms of the quaternion kinematics, Euler's rotational equation,
+and the classical torque-free axisymmetric solution (all re-derived above
+in the project convention), and on Hairer and Wanner~\cite{hairer1996} for
+the Runge--Kutta stability-function machinery behind the norm-drift bound,
+with the local-error accumulation argument per Hairer, N{\o}rsett, and
+Wanner~\cite{hairer1993}. Full bibliographic details appear in the
+bibliography.

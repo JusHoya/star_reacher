@@ -166,3 +166,22 @@ this policy.
   `ATM-USSA76-UPPER-NODES`, `ATM-HP-NODES`, `ATM-HP-OFFNODE`,
   `ATM-MARS-NODES`, `ATM-MARS-CONT`, and `DRAG-CANNONBALL-GOLDEN`. See
   `atmosphere/manifest.toml` for provenance and tolerances.
+
+## Phase 4 contents
+
+- `attitude/` — rigid-body attitude dynamics and gravity-gradient torque
+  golden set (FR-1, Phase 4 exit criteria 4 and 9): pointwise quaternion-
+  kinematics and Euler-equation RHS vectors (including structural
+  exact-zero cases), gravity-gradient torques with the planar pitch case
+  cross-checked against the closed-form pitch torque, closed-form
+  torque-free axisymmetric coning checkpoints (machine-verified at
+  generation time against the kinematics and dynamics ODEs by
+  extended-precision finite differences), intermediate-axis (Dzhanibekov)
+  flip references (conserved H/T plus early-time mpmath Taylor-integration
+  checkpoints), and the analytic pitch-libration frequency with its
+  finite-amplitude pendulum correction. Consumed by the doctest cases
+  `rigidbody_rhs_golden`, `rigidbody_zero_torque_properties`,
+  `rigidbody_coning_closed_form`, `rigidbody_intermediate_axis_flip`,
+  `rigidbody_quaternion_norm_drift`, `gravgrad_torque_golden`,
+  `gravgrad_exact_zero_geometries`, and `gravgrad_libration_frequency`.
+  See `attitude/manifest.toml` for provenance and tolerances.

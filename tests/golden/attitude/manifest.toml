@@ -1,0 +1,72 @@
+# Provenance manifest for the rigid-body attitude and gravity-gradient
+# golden vectors in this directory (FR-22 layer 1: uncited golden = lint
+# failure; schema documented in tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "attitude"
+date = "2026-07-03"
+generation = """
+All five value files are written by tests/golden/attitude/generate.py
+(mpmath 1.3.0, CPython 3.14.0, 60 significant decimal digits; the
+Dzhanibekov trajectory reference at 50 digits). References are evaluated
+in extended precision from the exact binary64 inputs and rounded once to
+binary64. The quaternion algebra mirrors the ratified project convention
+exactly (Hamilton product, scalar-first, q_i2b frame transformation, DCM
+of eq:notation:quat2dcm; chapter ch:notation, decision D-7). Before
+writing, the generator machine-checks its own references: the coning
+closed form is differentiated by extended-precision central finite
+differences and compared against the kinematics (eq:rigidbody:qdot) and
+dynamics (eq:rigidbody:euler) it claims to solve, the planar
+gravity-gradient case is compared against the closed-form pitch torque
+(eq:gravgrad:pitch), the Dzhanibekov trajectory reference is checked for
+conservation of H and T and for the occurrence of the flip, and all
+structural exact-zero outputs are asserted to be exactly zero. Inertia
+tensors, rates, and geometries are representative test inputs (the
+models take every physical quantity from the caller); mu in the
+gravity-gradient and libration cases is the IERS Conventions (2010)
+GM_earth carried by star/constants.hpp, and the consuming tests assert
+that equality. Regenerating is `python tests/golden/attitude/generate.py`;
+output is byte-deterministic (mpmath arithmetic is platform-independent).
+"""
+
+[[file]]
+name = "rhs.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the quaternion kinematics and of Euler's equation (LU solve of the 3x3 inertia system) from the exact binary64 inputs, rounded once to binary64"
+citation = "Quaternion attitude kinematics qdot = (1/2) q (x) [0, omega] and Euler's rotational equation with time-varying inertia I omega_dot = tau - omega x (I omega) - Idot omega per Markley, F. L. and Crassidis, J. L., Fundamentals of Spacecraft Attitude Determination and Control, Springer (2014), ch. 3, transcribed to the project's Hamilton scalar-first q_i2b convention (ch:notation, D-7); derivation reproduced in full in math-library chapter ch:rigidbody"
+generation = "cases table in gen_rhs(): generic full inertia tensor with nonzero Idot and torque, diagonal-inertia generic case, principal-axis spin (structural zero omega_dot), power-of-two spherical inertia (structural zero omega_dot for any rate), isolated Idot term, and rest state (structural zero qdot)"
+date = "2026-07-03"
+tolerance = "consuming doctest compares the C++ rigidbody_rhs outputs against qdot_ref/wdot_ref_radps2: cases flagged qdot_exact/wdot_exact require bit equality (the zeros are structural - every floating-point product carries a zero factor, or subtracts two identically rounded copies of the same real product - and the principal-axis qdot involves only exact binary products); all other components compare at norm-relative 1e-12. Derivation of the bound: the C++ path accumulates ~10 IEEE roundings through the Hamilton product and the gyroscopic term plus the 3x3 cofactor-inverse solve, giving ~kappa(I)*eps <= 1e-14 for the committed well-conditioned inertia tensors (kappa < 10); 1e-12 carries two orders of margin while an algebra or sign error registers at O(1) or at the 1e-2 level of the smallest committed term. Observed worst case 1.4e-16 (qdot) / 1.4e-15 (wdot) norm-relative (MSVC x64 /fp:strict, 2026-07-03)"
+
+[[file]]
+name = "gravgrad.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the gravity-gradient torque from the exact binary64 inputs, rounded once to binary64"
+citation = "Gravity-gradient torque tau = (3 mu / r^3) rhat_b x (I rhat_b) about the vehicle center of mass in a point-mass central field, the standard first-order tidal result, per Markley and Crassidis (2014); full derivation from the tidal expansion of the gravitational force in math-library chapter ch:gravgrad; GM_earth = 3.986004418e14 m^3/s^2 per IERS Conventions (2010), IERS TN 36, Table 1.1 (the star/constants.hpp value); the Moon-like mu is representative test geometry (the model takes mu from the caller)"
+generation = "cases table in gen_gravgrad(): generic LEO state with full inertia tensor, lunar-orbit and GEO far-field cases, power-of-two spherical inertia (structural exact zero), principal-axis alignment at identity attitude (structural exact zero), and the planar pitch-offset case cross-checked in-generator against the closed-form pitch torque -3 n^2 (I_x - I_z) sin(theta) cos(theta) to 1e-13 relative (the committed q carries one binary64 rounding)"
+date = "2026-07-03"
+tolerance = "consuming doctest compares the C++ gravgrad_torque against tau_ref_nm: exact_zero cases require every component exactly zero (structural zeros as above); all other cases at norm-relative 1e-12. Derivation of the bound: the C++ path accumulates ~12 IEEE roundings (normalize, quaternion-to-DCM rotation, matrix-vector product, cross product, scale) and the cross product amplifies component roundoff by |I rhat|/|rhat x (I rhat)| <= 10 for the committed geometries, giving <= 1e-14; 1e-12 carries two orders of margin while a frame-direction or convention error registers at O(1). Observed worst case 7.3e-16 norm-relative (MSVC x64 /fp:strict, 2026-07-03)"
+
+[[file]]
+name = "coning.toml"
+source = "generate.py: closed-form torque-free axisymmetric solution evaluated with mpmath 1.3.0 (mp.dps = 60) from the exact binary64 (q0, w0, I_T, I_A) and rounded once to binary64"
+citation = "Closed-form torque-free motion of an axisymmetric rigid body (constant nutation angle, uniform precession about the inertially fixed angular momentum, uniform relative spin) per Markley and Crassidis (2014), ch. 3; derived in full in math-library chapter ch:rigidbody (eq:rigidbody:coning, eq:rigidbody:eulerrates) and machine-verified at generation time against the kinematics and dynamics ODEs by extended-precision central finite differences (max residual < 1e-25 at four probe times), so the reference is the unique solution of the committed initial-value problem"
+generation = "gen_coning(): I_T = 100, I_A = 60 kg m^2, w0 = (0.15, 0.05, 0.25) rad/s, q0 the normalized-and-rounded generic attitude; checkpoints every 18 s over 144 s (five body-precession periods of 28.829 s)"
+date = "2026-07-03"
+tolerance = "consuming doctest propagates the C++ rigid-body dynamics with the RKF7(8) adaptive driver (rtol = atol = 1e-13) and gates the attitude error angle 2*atan2(|dq_v|, |dq_w|) of dq = q_ref^-1 (x) q at every checkpoint to <= 1e-9 rad (Phase 4 exit criterion 4 verbatim) and the rate error to <= 1e-9 rad/s norm-relative. Error budget: per-step local error <= the controller tolerance 1e-13 accumulating linearly over the ~10^2-10^3 accepted steps gives an expected O(1e-11) rad worst case, two orders under the gate; the golden itself carries a single rounding (5e-17). Observed worst case (MSVC x64 /fp:strict, 2026-07-03): 1.5e-13 rad attitude, 2.0e-15 rate, four orders inside the gate"
+
+[[file]]
+name = "dzhanibekov.toml"
+source = "generate.py: conserved quantities from the exact binary64 initial state (mpmath, 60 digits, rounded once); trajectory checkpoints from mp.odefun (Taylor-series method, 50 significant digits, tol 1e-40) integration of Euler's equations"
+citation = "Conservation of inertial angular momentum H and rotational kinetic energy T for torque-free rigid-body motion, and the instability of spin about the intermediate principal axis with linearized growth rate lambda = w2 sqrt((I2-I3)(I1-I2)/(I1 I3)), per Markley and Crassidis (2014), ch. 3; both derived in full in math-library chapter ch:rigidbody (eq:rigidbody:H, eq:rigidbody:T, eq:rigidbody:lambda). Trajectory reference: mpmath 1.3.0 odefun Taylor-series integration, self-checked at generation time for H/T conservation to < 1e-35 relative and for the flip (w2(45 s) < -0.4 rad/s)"
+generation = "gen_dzhanibekov(): I = diag(3, 2, 1) kg m^2, w0 = (1e-4, 0.45, 0) rad/s, identity initial attitude, 120 s span; w_ref checkpoints at t = 5, 10, 15 s only, because near-separatrix motion amplifies any state difference as exp(lambda t) (lambda = 0.2598 1/s), which makes late-time state checkpoints meaningless while leaving the conserved quantities exact"
+date = "2026-07-03"
+tolerance = "consuming doctest gates (a) |H_I(t) - h0_i| / h0_mag and |T(t) - t0| / t0 at <= 1e-10 relative at every accepted step across the flip (Phase 4 exit criterion 4 verbatim; covers magnitude AND direction of H), expected O(1e-12) from the rtol = 1e-13 adaptive tolerance; (b) w(t) against w_ref at the three early checkpoints to <= 1e-9 norm-relative - the integrator's O(1e-13) local errors amplified by at most exp(lambda*15) = 49 stay below 5e-11, and the mpmath reference is exact to 1e-40, so the gate carries an order of margin while a dynamics sign error diverges at O(1); (c) the flip itself: min over the run of w2 < -0.9 * w2(0). Observed (MSVC x64 /fp:strict, 2026-07-03): max |dH|/|H| 8.4e-14 vector (2.1e-15 magnitude-only), max |dT|/T 4.0e-15, worst checkpoint 4.4e-16, min w2 = -0.45 (full reversal)"
+
+[[file]]
+name = "libration.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the analytic libration frequencies from the exact binary64 (mu, r, I, theta0), rounded once to binary64"
+citation = "Small-angle pitch libration frequency omega_lib = n sqrt(3 (I_x - I_z) / I_y) of a gravity-gradient-stabilized rigid body on a circular orbit, from the exact planar pitch pendulum equation I_y theta'' = -3 n^2 (I_x - I_z) sin(theta) cos(theta) derived in math-library chapter ch:gravgrad (eq:gravgrad:pitch, eq:gravgrad:libfreq; standard result, cf. Markley and Crassidis 2014); finite-amplitude correction pi / (2 K(sin^2 theta0)) from the complete elliptic integral of the first kind (derived in ch:gravgrad, eq:gravgrad:pendulum); GM_earth per IERS Conventions (2010), IERS TN 36, Table 1.1"
+generation = "gen_libration(): mu = GM_earth, r = 7e6 m, I = diag(120, 100, 80) kg m^2 (I_x along-track > I_z nadir: the gravity-gradient-stable pitch configuration), theta0 = 0.01 rad, 65000 s span (~12 libration periods of 5320.7 s); in-generator sanity checks: K(0) = pi/2 and pendulum correction magnitude 2.5e-5"
+date = "2026-07-03"
+tolerance = "consuming doctest simulates the rigid body under gravity-gradient torque only on the prescribed circular orbit and measures the libration frequency from the event-located increasing zero crossings of the pitch angle over ~11 full periods, then gates (a) |omega_measured / omega_lib_radps - 1| < 1e-3 (Phase 4 exit criterion 9 verbatim; the known finite-amplitude offset is 2.5e-5, forty times under the gate) and (b) |omega_measured / omega_lib_pendulum_radps - 1| < 1e-7 as the tight secondary check. Budget for (b): cubic-Hermite dense-output error at h_max = 120 s displaces each located crossing by <= theta0 (omega_lib h)^4 / 384 / (theta0 omega_lib) ~ 9e-4 s, i.e. ~2e-8 relative over the ~58500 s measurement baseline; integrator phase drift at rtol 1e-13 and the 1e-9 s event tolerance are negligible against it. Observed (MSVC x64 /fp:strict, 2026-07-03): 2.50001e-5 vs small-angle (the predicted finite-amplitude offset to six digits) and 1.4e-10 vs the pendulum-corrected value - the controller chose ~27 s steps, well under h_max, so the interpolant term landed far below budget"
