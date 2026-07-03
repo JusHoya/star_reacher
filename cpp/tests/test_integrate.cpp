@@ -47,7 +47,10 @@ struct ReferenceOrbit {
 ReferenceOrbit load_reference_orbit() {
   const auto cases = star_tests::load_golden_cases(
       std::string(STAR_GOLDEN_DIR) + "/integrators/kepler_orbit.toml");
-  const star_tests::GoldenCase& def = find_case(cases, "definition");
+  // By value: GCC 13's -Wdangling-reference heuristic flags a reference bound
+  // through find_case (the string-literal temporary trips it); a copy of the
+  // small test-support struct sidesteps the warning at negligible cost.
+  const star_tests::GoldenCase def = find_case(cases, "definition");
   ReferenceOrbit orb;
   orb.mu = star_tests::parse_hex_double(def.scalar("mu_m3ps2"));
   orb.r0 = vec3(def, "r0_m");

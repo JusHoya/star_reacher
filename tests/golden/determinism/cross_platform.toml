@@ -31,11 +31,18 @@
 schema_version = 1
 
 [record]
-status = "pending-first-measurement"
+status = "measured"
 mission = "missions/twobody_leo.toml"
 legs = ["ubuntu-24.04", "ubuntu-24.04-arm", "macos-15", "windows-2022"]
 bound_rel = 1e-9
-# Filled by the update procedure above once the first CI measurement exists:
-# measured_max_rel = <float, the max_rel value from the commit status>
-# ci_run_url = "<GitHub Actions run URL, the measurement's provenance>"
-# date = "<YYYY-MM-DD>"
+# First measurement (commit status "determinism/cross-platform" on
+# 6bde73ca01a16454751be8a25cee6d4c525538a8: "max_rel=0.000e+00 (bound 1e-9,
+# 4 legs)"): the four legs produced bit-identical final truth records. The
+# reference propagation's arithmetic is add/subtract/multiply/divide/sqrt
+# only - all IEEE-754 correctly-rounded operations with FMA contraction
+# disabled (D-10) - so exact cross-platform agreement is the expected
+# outcome for this case, not an anomaly; libm-induced divergence enters
+# only with the transcendental-bearing models of later phases.
+measured_max_rel = 0.0
+ci_run_url = "https://github.com/JusHoya/star_reacher/actions/runs/28632023620"
+date = "2026-07-02"
