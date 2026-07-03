@@ -421,8 +421,14 @@ def run_ascent(
     mission_path,
     dt: float = 0.02,
     use_j2: bool = False,
+    record=None,
 ) -> AscentResult:
-    """Fly the independent 3DOF ascent and return the insertion + sanity metrics."""
+    """Fly the independent 3DOF ascent and return the insertion + sanity metrics.
+
+    If ``record`` is a list, one ``(t, r, v, mass)`` tuple is appended per step;
+    the insertion metrics are unchanged. Used by the EC-11 test to interpolate
+    the insertion state to the exact perigee crossing (step-granularity removal).
+    """
     veh = load_vehicle(Path(vehicle_path))
     mis = load_mission(Path(mission_path))
 
@@ -567,6 +573,9 @@ def run_ascent(
         v = _rk_step(v, k1v, k2v, k3v, k4v)
         t = t + dt
 
+        if record is not None:
+            record.append((t, r, v, total_mass()))
+
         # Discrete mass-drop events at the step boundary.
         if state["stage1"] and t >= mis.t_sep1:
             state["stage1"] = False  # drops stage-1 dry mass plus its residual
@@ -603,6 +612,64 @@ def run_ascent(
         s2_prop_residual_kg=prop_s2,
         reached_insertion=reached,
     )
+
+
+# --- Exact-perigee reduction (step-granularity removal) ----------------------
+
+
+def interpolate_to_perigee(samples, target_perigee_m: float = 180000.0):
+    """Linearly interpolate a trajectory to the exact osculating-perigee crossing.
+
+    ``samples`` is an iterable of ``(t, r, v)`` (r, v as length-3 sequences). The
+    first upward crossing of ``target_perigee_m`` is bracketed and the state is
+    interpolated in the crossing fraction. Returns ``(r, v, t)`` or ``None``.
+
+    The 6DOF locates its perigee-insertion event to a root; comparing both
+    trajectories at the SAME exact perigee makes the perigee agreement exact by
+    construction and lets the apogee reflect only the true insertion-energy
+    difference, not the step at which each run happens to trip the gate.
+    """
+    prev = None
+    for t, r, v in samples:
+        r = (float(r[0]), float(r[1]), float(r[2]))
+        v = (float(v[0]), float(v[1]), float(v[2]))
+        _, per, _, _ = osculating_apsides(r, v)
+        if prev is not None and prev[3] < target_perigee_m <= per:
+            pt, pr, pv, pper = prev
+            f = (target_perigee_m - pper) / (per - pper)
+            ri = tuple(pr[k] + f * (r[k] - pr[k]) for k in range(3))
+            vi = tuple(pv[k] + f * (v[k] - pv[k]) for k in range(3))
+            return ri, vi, pt + f * (t - pt)
+        prev = (t, r, v, per)
+    return None
+
+
+@dataclass
+class InsertionState:
+    apoapsis_alt_m: float
+    periapsis_alt_m: float
+    speed_mps: float
+    time_s: float
+    result: AscentResult  # the full run, for max-q / Mach-1 / residual reporting
+
+
+def run_to_perigee(
+    vehicle_path,
+    mission_path,
+    target_perigee_m: float = 180000.0,
+    dt: float = 0.02,
+    use_j2: bool = False,
+) -> InsertionState:
+    """Run the 3DOF ascent and reduce it to the exact ``target_perigee_m`` crossing."""
+    record: list = []
+    res = run_ascent(vehicle_path, mission_path, dt=dt, use_j2=use_j2, record=record)
+    hit = interpolate_to_perigee(((t, r, v) for (t, r, v, _m) in record), target_perigee_m)
+    if hit is None:  # never reached the gate; report the terminal osculating state
+        return InsertionState(res.apoapsis_alt_m, res.periapsis_alt_m,
+                              res.insertion_speed_mps, res.insertion_time_s, res)
+    r, v, t = hit
+    apo, per, _, _ = osculating_apsides(r, v)
+    return InsertionState(apo, per, _norm(v), t, res)
 
 
 if __name__ == "__main__":

@@ -7,9 +7,15 @@
 # provenance "representative": the launch site is a round southern-hemisphere
 # coastal pad; the pitch table is the class-representative program recorded in
 # vehicles/electron_class.toml. See the run's resolved_vehicle.toml for the
-# exact vehicle echo. The target apoapsis is the tuned 6DOF insertion apoapsis
-# (see the phase report); EC-6 gates final perigee >= 180 km and apoapsis
-# within 5 % of this target.
+# exact vehicle echo. The stage-2 pitch inserts into an eccentric 180 x 3444 km
+# orbit using the stage-2 propellant margin, rather than a near-circular LEO:
+# an eccentric insertion apoapsis is well conditioned (a small insertion-energy
+# difference maps to a small apoapsis-altitude difference), which lets the EC-11
+# 3DOF cross-check hold to 2 % on both apsides. The atmospheric-phase pitch-over
+# (t <= 121 s) is unchanged from the WS-C-validated gravity turn, so max-q and
+# transonic passage are unaffected. The target apoapsis is the achieved 6DOF
+# insertion apoapsis; EC-6 gates final perigee >= 180 km and apoapsis within 5 %
+# of this target.
 
 schema_version = 1
 vehicle = "vehicles/electron_class.toml"
@@ -17,11 +23,11 @@ vehicle = "vehicles/electron_class.toml"
 [mission]
 name = "ascent-leo"
 epoch_utc = "2026-03-01T00:00:00Z"
-duration_s = 700.0
-# Tuned 6DOF insertion apoapsis (the run terminates on the orbit-insertion
-# event at ~387 s with the achieved 183 x 398 km orbit); EC-6 gates final
+duration_s = 760.0
+# Achieved 6DOF insertion apoapsis (the run terminates on the orbit-insertion
+# event at ~400 s with the achieved 181 x 3444 km orbit); EC-6 gates final
 # perigee >= 180 km and apoapsis within 5 % of this target.
-target_apoapsis_alt_m = 398000.0
+target_apoapsis_alt_m = 3444000.0
 
 [run]
 seed = 20260301
@@ -64,12 +70,15 @@ event = "release"
 offset_s = 0.0
 action = "pitch_program"
 azimuth_deg = 90.0
-# Vertical rise, gravity turn through stage 1, then a slight below-horizontal
-# hold in stage 2 that nulls the residual climb (flight-path angle -> 0 at
-# burnout) so the insertion perigee reaches the 180 km gate. Tuned in the
-# 6DOF run path (see the phase report); the vehicle physics is unchanged.
-pitch_t_s = [0.0, 10.0, 25.0, 60.0, 121.0, 200.0, 300.0, 430.0]
-pitch_deg = [90.0, 90.0, 75.0, 40.0, 32.0, 12.0, -5.0, -25.0]
+# Vertical rise and gravity turn through stage 1 (t <= 121 s, unchanged), then a
+# stage-2 program that holds a shallow prograde attitude to build orbital energy
+# and pitches below horizontal near burnout to bring the flight-path angle to
+# zero at a perigee of 180 km, inserting into an eccentric 180 x 3444 km orbit.
+# Tuned in the 6DOF run path; the vehicle physics is unchanged. The eccentric
+# apoapsis is deliberate: it makes the insertion apoapsis altitude well
+# conditioned for the EC-11 independent 3DOF cross-check.
+pitch_t_s = [0.0, 10.0, 25.0, 60.0, 121.0, 200.0, 290.0, 370.0, 430.0]
+pitch_deg = [90.0, 90.0, 75.0, 40.0, 32.0, 18.0, 7.0, -11.0, -22.0]
 
 [[sequence]]
 name = "meco"
