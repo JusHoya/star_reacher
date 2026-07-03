@@ -45,3 +45,13 @@ label = "ch:rotations"
 module = "cpp/src/frames.cpp"
 chapter = "docs/mathlib/chapters/frames.tex"
 label = "ch:frames"
+
+[[chapter]]
+module = "cpp/src/models/thirdbody.cpp"
+chapter = "docs/mathlib/chapters/thirdbody.tex"
+label = "ch:thirdbody"
+
+[[chapter]]
+module = "cpp/src/models/srp.cpp"
+chapter = "docs/mathlib/chapters/srp.tex"
+label = "ch:srp"
