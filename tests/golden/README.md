@@ -134,6 +134,19 @@ this policy.
   all mpmath-generated (60 digits); consumed by the doctest cases
   `srp_shadow_fraction_golden` and `srp_cannonball_accel_golden`. See
   `srp/manifest.toml` for provenance and tolerances.
+- `ephemeris/excerpt_de440s_crosstool.sreph` — a second, CONTINUOUS DE440
+  excerpt (the Phase 2 excerpt holds isolated records around discrete test
+  epochs and cannot feed a multi-day run): verbatim sun/emb/earth/moon
+  Chebyshev records covering the `missions/leo_drag_hp.toml` 7-day window
+  plus margin, cut by `ephemeris/generate_crosstool.py` and consumed by
+  that mission, `tests/python/test_crosstool_missions.py`, and the doctest
+  composition cases. Provenance in `ephemeris/manifest.toml`.
+- `crosstool/` — the replication specification for the two Phase 3
+  cross-tool missions (D-15: GMAT for the gravity-only case, Orekit for
+  the Harris–Priester drag case): exact initial conditions, epoch, frames,
+  constants, and model settings an external maintainer needs to freeze the
+  truth. The frozen external outputs land here with their own provenance
+  manifest when generated (workstream E).
 - `atmosphere/` — atmosphere and orbital-drag golden vectors (FR-8, FR-9):
   USSA76 published table rows and 86–1000 km density nodes transcribed
   from the official 1976 document with per-row page provenance, the

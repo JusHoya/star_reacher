@@ -201,7 +201,7 @@ def test_geodetic_recognized_but_rejected_until_phase_4(tmp_path):
         ({"initial_state.cartesian.r_m": "r_m = [1.0, 2.0]"}, "[initial_state.cartesian] r_m:"),
         ({"initial_state.cartesian.r_m": "r_m = [0.0, 0.0, 0.0]"}, "[initial_state.cartesian] r_m:"),
         ({"initial_state.cartesian.v_mps": "v_mps = [0.0, nan, 0.0]"}, "[initial_state.cartesian] v_mps:"),
-        ({"environment.central_body": 'central_body = "moon"'}, "[environment] central_body:"),
+        ({"environment.central_body": 'central_body = "pluto"'}, "[environment] central_body:"),
     ],
 )
 def test_field_range_and_type_errors(tmp_path, replace, needle):
@@ -404,3 +404,310 @@ def test_keplerian_to_cartesian_invariants_general_case():
     assert math.isclose(np.linalg.norm(h), math.sqrt(GM_EARTH * p), rel_tol=1e-12)
     inc = math.degrees(math.acos(h[2] / np.linalg.norm(h)))
     assert math.isclose(inc, elems["inc_deg"], rel_tol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 surface: [environment] model selection, [spacecraft] ballistic
+# parameters, the rkf78 integrator block, and the FR-6/FR-15 regime rules.
+# ---------------------------------------------------------------------------
+
+_FIELD_POSIX = (REPO_ROOT / "tests" / "golden" / "gravity" / "earth_egm2008_n20.srgrav").as_posix()
+_EPH_POSIX = (
+    REPO_ROOT / "tests" / "golden" / "ephemeris" / "excerpt_de440s_crosstool.sreph"
+).as_posix()
+
+_RKF78_BLOCK = (
+    "rtol = 1e-11\natol_pos_m = 1e-6\natol_vel_mps = 1e-9\nh_init_s = 30.0\nh_max_s = 30.0"
+)
+
+
+def test_rkf78_mission_validates_and_resolves(tmp_path):
+    # The adaptive keys must land inside [integrator]: splice them into the
+    # dt_s slot via replace (extra_lines land in the last table).
+    text = _mission_text(
+        replace={
+            "integrator.type": 'type = "rkf78"',
+            "integrator.dt_s": _RKF78_BLOCK,
+        }
+    )
+    resolved, errors = _validate_text(tmp_path, text)
+    assert errors == []
+    integ = resolved["integrator"]
+    assert integ["type"] == "rkf78"
+    assert integ["rtol"] == 1e-11
+    assert integ["h_max_s"] == 30.0
+    assert "dt_s" not in integ
+
+
+@pytest.mark.parametrize(
+    ("replace", "needle"),
+    [
+        # rk4 with an adaptive-only key.
+        ({"integrator.dt_s": "dt_s = 0.1\nrtol = 1e-11"}, "[integrator] rtol:"),
+        # rkf78 with dt_s present.
+        (
+            {
+                "integrator.type": 'type = "rkf78"',
+                "integrator.dt_s": "dt_s = 0.1\n" + _RKF78_BLOCK,
+            },
+            "[integrator] dt_s:",
+        ),
+        # rkf78 with a missing control.
+        (
+            {
+                "integrator.type": 'type = "rkf78"',
+                "integrator.dt_s": "rtol = 1e-11\natol_pos_m = 1e-6\natol_vel_mps = 1e-9\nh_init_s = 30.0",
+            },
+            "[integrator] h_max_s:",
+        ),
+        # h_init above h_max.
+        (
+            {
+                "integrator.type": 'type = "rkf78"',
+                "integrator.dt_s": "rtol = 1e-11\natol_pos_m = 1e-6\natol_vel_mps = 1e-9\nh_init_s = 60.0\nh_max_s = 30.0",
+            },
+            "[integrator] h_init_s:",
+        ),
+    ],
+)
+def test_integrator_phase3_errors(tmp_path, replace, needle):
+    resolved, errors = _validate_text(tmp_path, _mission_text(replace=replace))
+    assert resolved is None
+    assert any(needle in e for e in errors), errors
+
+
+def test_lunar_regime_requires_earth_and_sun_third_bodies(tmp_path):
+    # FR-15: central_body = "moon" with the Earth third body disabled is
+    # rejected (here: no third_bodies at all).
+    text = _mission_text(replace={"environment.central_body": 'central_body = "moon"'})
+    resolved, errors = _validate_text(tmp_path, text)
+    assert resolved is None
+    assert any(
+        "[environment] third_bodies:" in e and "lunar-regime" in e for e in errors
+    ), errors
+    # Sun-only is likewise rejected (Earth still disabled).
+    text = _mission_text(
+        replace={"environment.central_body": 'central_body = "moon"'},
+        extra_lines=('third_bodies = ["sun"]',),
+    )
+    resolved, errors = _validate_text(tmp_path, text)
+    assert resolved is None
+    assert any("lunar-regime" in e for e in errors), errors
+
+
+def test_earth_regime_third_bodies_require_sun_and_moon(tmp_path):
+    # FR-6: enabling any third body in the Earth regime requires Sun + Moon.
+    text = _mission_text(extra_lines=('third_bodies = ["sun"]',))
+    resolved, errors = _validate_text(tmp_path, text)
+    assert resolved is None
+    assert any(
+        "[environment] third_bodies:" in e and "always on" in e for e in errors
+    ), errors
+
+
+def test_central_body_cannot_be_third_body(tmp_path):
+    text = _mission_text(extra_lines=('third_bodies = ["sun", "moon", "earth"]',))
+    resolved, errors = _validate_text(tmp_path, text)
+    assert resolved is None
+    assert any("cannot also be a third body" in e for e in errors), errors
+
+
+def test_third_bodies_resolve_in_canonical_order(tmp_path):
+    text = _mission_text(
+        extra_lines=(
+            f'ephemeris = "{_EPH_POSIX}"',
+            'third_bodies = ["moon", "jupiter", "sun"]',
+        )
+    )
+    resolved, errors = _validate_text(tmp_path, text)
+    assert errors == []
+    # Canonical order (the core's fixed summation order, D-10), not file order.
+    assert resolved["environment"]["third_bodies"] == ["sun", "moon", "jupiter"]
+    assert resolved["environment"]["ephemeris"] == _EPH_POSIX
+
+
+def test_unused_ephemeris_key_rejected(tmp_path):
+    text = _mission_text(extra_lines=(f'ephemeris = "{_EPH_POSIX}"',))
+    resolved, errors = _validate_text(tmp_path, text)
+    assert resolved is None
+    assert any(
+        "[environment] ephemeris:" in e and "no configured model consumes" in e
+        for e in errors
+    ), errors
+
+
+def test_missing_ephemeris_file_aborts(tmp_path, monkeypatch):
+    # With third bodies enabled and no explicit path, the default
+    # data/de440s_2020_2060.sreph is resolved against the working directory;
+    # from an empty directory the validator must abort with the fetch hint.
+    monkeypatch.chdir(tmp_path)
+    text = _mission_text(extra_lines=('third_bodies = ["sun", "moon"]',))
+    resolved, errors = _validate_text(tmp_path, text)
+    assert resolved is None
+    assert any(
+        "[environment] ephemeris:" in e and "star data fetch de440s" in e for e in errors
+    ), errors
+
+
+def test_gravity_harmonic_validates_and_bounds_degree(tmp_path):
+    good = _mission_text(
+        extra_lines=(
+            "[environment.gravity]",
+            'model = "harmonic"',
+            f'field = "{_FIELD_POSIX}"',
+            "degree = 8",
+            "order = 8",
+        )
+    )
+    resolved, errors = _validate_text(tmp_path, good)
+    assert errors == []
+    assert resolved["environment"]["gravity"] == {
+        "model": "harmonic",
+        "field": _FIELD_POSIX,
+        "degree": 8,
+        "order": 8,
+    }
+
+    # Beyond the stored band: the committed excerpt is 20x20.
+    over = good.replace("degree = 8", "degree = 25")
+    resolved, errors = _validate_text(tmp_path, over)
+    assert resolved is None
+    assert any(
+        "[environment.gravity] degree:" in e and "stored" in e for e in errors
+    ), errors
+
+    # Order above degree.
+    bad_order = good.replace("order = 8", "order = 9")
+    resolved, errors = _validate_text(tmp_path, bad_order)
+    assert resolved is None
+    assert any("[environment.gravity] order:" in e for e in errors), errors
+
+    # Unreadable field file.
+    missing = good.replace(_FIELD_POSIX, (tmp_path / "nope.srgrav").as_posix())
+    resolved, errors = _validate_text(tmp_path, missing)
+    assert resolved is None
+    assert any(
+        "[environment.gravity] field:" in e and "cannot load" in e for e in errors
+    ), errors
+
+
+def test_gravity_pointmass_rejects_field_keys(tmp_path):
+    text = _mission_text(
+        extra_lines=(
+            "[environment.gravity]",
+            'model = "pointmass"',
+            f'field = "{_FIELD_POSIX}"',
+        )
+    )
+    resolved, errors = _validate_text(tmp_path, text)
+    assert resolved is None
+    assert any('not accepted for model = "pointmass"' in e for e in errors), errors
+
+
+def _with_spacecraft_key(text: str, line: str) -> str:
+    # Splice a [spacecraft] table ahead of [environment] so the added key
+    # stays in its own table (TOML: keys belong to the preceding header).
+    return text.replace("[environment]", f"[spacecraft]\n{line}\n\n[environment]", 1)
+
+
+def test_drag_requires_spacecraft_ballistic_parameter(tmp_path):
+    text = _mission_text(
+        extra_lines=(
+            f'ephemeris = "{_EPH_POSIX}"',
+            "[environment.drag]",
+            'atmosphere = "harris_priester"',
+        )
+    )
+    resolved, errors = _validate_text(tmp_path, text)
+    assert resolved is None
+    assert any(
+        "[environment.drag]" in e and "cd_a_over_m_m2pkg is missing" in e for e in errors
+    ), errors
+
+
+def test_srp_requires_spacecraft_ballistic_parameter(tmp_path):
+    text = _mission_text(
+        extra_lines=(f'ephemeris = "{_EPH_POSIX}"', "[environment.srp]")
+    )
+    resolved, errors = _validate_text(tmp_path, text)
+    assert resolved is None
+    assert any(
+        "[environment.srp]" in e and "cr_a_over_m_m2pkg is missing" in e for e in errors
+    ), errors
+
+
+def test_srp_occulters_default_to_central_body(tmp_path):
+    text = _mission_text(
+        extra_lines=(f'ephemeris = "{_EPH_POSIX}"', "[environment.srp]")
+    )
+    text = _with_spacecraft_key(text, "cr_a_over_m_m2pkg = 0.02")
+    resolved, errors = _validate_text(tmp_path, text)
+    assert errors == []
+    # The defaulted occulter set is applied here and recorded, never silent.
+    assert resolved["environment"]["srp"] == {"occulters": ["earth"]}
+    assert resolved["spacecraft"]["cr_a_over_m_m2pkg"] == 0.02
+
+
+def test_drag_atmosphere_regime_rules(tmp_path):
+    # mars_exponential on Earth is rejected.
+    text = _mission_text(
+        extra_lines=("[environment.drag]", 'atmosphere = "mars_exponential"')
+    )
+    text = _with_spacecraft_key(text, "cd_a_over_m_m2pkg = 0.0044")
+    resolved, errors = _validate_text(tmp_path, text)
+    assert resolved is None
+    assert any("[environment.drag] atmosphere:" in e for e in errors), errors
+
+    # hp_exponent_n outside [2, 6] is rejected.
+    text = _mission_text(
+        extra_lines=(
+            f'ephemeris = "{_EPH_POSIX}"',
+            "[environment.drag]",
+            'atmosphere = "harris_priester"',
+            "hp_exponent_n = 8.0",
+        )
+    )
+    text = _with_spacecraft_key(text, "cd_a_over_m_m2pkg = 0.0044")
+    resolved, errors = _validate_text(tmp_path, text)
+    assert resolved is None
+    assert any("[environment.drag] hp_exponent_n:" in e for e in errors), errors
+
+
+def test_hp_default_exponent_recorded(tmp_path):
+    text = _mission_text(
+        extra_lines=(
+            f'ephemeris = "{_EPH_POSIX}"',
+            "[environment.drag]",
+            'atmosphere = "harris_priester"',
+        )
+    )
+    text = _with_spacecraft_key(text, "cd_a_over_m_m2pkg = 0.0044")
+    resolved, errors = _validate_text(tmp_path, text)
+    assert errors == []
+    # The default exponent is applied here and recorded, never silent (D-2).
+    assert resolved["environment"]["drag"] == {
+        "atmosphere": "harris_priester",
+        "hp_exponent_n": 4.0,
+    }
+
+
+def test_phase3_errors_accumulate(tmp_path):
+    # A file broken across several Phase 3 surfaces reports every error in
+    # one pass (DX-2).
+    text = _mission_text(
+        replace={"environment.central_body": 'central_body = "moon"'},
+        extra_lines=(
+            'third_bodies = ["sun"]',
+            "[environment.gravity]",
+            'model = "warp"',
+            "[environment.drag]",
+            'atmosphere = "harris_priester"',
+        ),
+    )
+    resolved, errors = _validate_text(tmp_path, text)
+    assert resolved is None
+    joined = "\n".join(errors)
+    assert "lunar-regime" in joined
+    assert "[environment.gravity] model:" in joined
+    assert "[environment.drag] atmosphere:" in joined
+    assert len(errors) >= 3

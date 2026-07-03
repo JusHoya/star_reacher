@@ -14,6 +14,13 @@
 
 #include "star/ephemeris.hpp"
 #include "star/frames.hpp"
+#include "star/models/atmosphere_hp.hpp"
+#include "star/models/atmosphere_mars.hpp"
+#include "star/models/atmosphere_ussa76.hpp"
+#include "star/models/drag.hpp"
+#include "star/models/gravity.hpp"
+#include "star/models/srp.hpp"
+#include "star/models/thirdbody.hpp"
 #include "star/rng.hpp"
 #include "star/rotation.hpp"
 #include "star/run.hpp"
@@ -311,9 +318,7 @@ std::array<double, 9> gcrf_to_marsfixed(std::int64_t day, double sec) {
   return mat_out(star::frames::c_gcrf_to_marsfixed({day, sec}));
 }
 
-py::dict run_and_summarize(const star::RunConfig& cfg,
-                           const std::string& out_path) {
-  const star::RunSummary s = star::run_twobody(cfg, out_path);
+py::dict summary_dict(const star::RunSummary& s) {
   py::dict d;
   d["steps"] = s.steps;
   d["final_r_m"] = s.final_r_m;
@@ -324,12 +329,84 @@ py::dict run_and_summarize(const star::RunConfig& cfg,
   return d;
 }
 
+py::dict run_and_summarize(const star::RunConfig& cfg,
+                           const std::string& out_path) {
+  return summary_dict(star::run_twobody(cfg, out_path));
+}
+
+py::dict run_env_and_summarize(const star::RunConfig& cfg,
+                               const std::string& out_path) {
+  return summary_dict(star::run_env(cfg, out_path));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 model surface (verify checks V014+ and the pytest suites exercise
+// the compiled models directly through these thin wrappers).
+// ---------------------------------------------------------------------------
+
+star::models::GravityTier tier_from_name(const std::string& tier) {
+  if (tier == "pointmass") return star::models::GravityTier::kPointMass;
+  if (tier == "j2") return star::models::GravityTier::kJ2Only;
+  if (tier == "full") return star::models::GravityTier::kFull;
+  throw std::invalid_argument(
+      "tier must be \"pointmass\", \"j2\", or \"full\"");
+}
+
+std::array<double, 3> gravity_accel(const std::string& srgrav_path,
+                                    const std::string& tier, int degree,
+                                    int order,
+                                    const std::array<double, 3>& r_bf_m) {
+  // Loads the field per call: this entry point serves verification and
+  // testing, not the propagation loop (run_env constructs its evaluator
+  // once, before the time loop).
+  star::models::PinesGravity model(
+      star::models::GravityField::load_file(srgrav_path));
+  return from_vec3(
+      model.acceleration(to_vec3(r_bf_m), tier_from_name(tier), degree, order));
+}
+
+std::array<double, 3> thirdbody_accel(double gm_third,
+                                      const std::array<double, 3>& r_sc_m,
+                                      const std::array<double, 3>& r_third_m) {
+  return from_vec3(star::models::thirdbody_accel(gm_third, to_vec3(r_sc_m),
+                                                 to_vec3(r_third_m)));
+}
+
+double shadow_fraction(const std::array<double, 3>& r_sc_m,
+                       const std::array<double, 3>& r_sun_m,
+                       double radius_sun_m,
+                       const std::array<double, 3>& r_occ_m,
+                       double radius_occ_m) {
+  return star::models::shadow_fraction(to_vec3(r_sc_m), to_vec3(r_sun_m),
+                                       radius_sun_m, to_vec3(r_occ_m),
+                                       radius_occ_m);
+}
+
+std::array<double, 3> srp_accel(double cr_a_over_m, double nu,
+                                const std::array<double, 3>& r_sc_m,
+                                const std::array<double, 3>& r_sun_m) {
+  return from_vec3(star::models::srp_accel(cr_a_over_m, nu, to_vec3(r_sc_m),
+                                           to_vec3(r_sun_m)));
+}
+
+std::array<double, 3> drag_accel(double rho_kgpm3, double cd_a_over_m,
+                                 const std::array<double, 3>& v_rel_mps) {
+  return from_vec3(
+      star::models::drag_accel(rho_kgpm3, cd_a_over_m, to_vec3(v_rel_mps)));
+}
+
+double geodetic_altitude(const std::array<double, 3>& r_ecef_m, double a_m,
+                         double inv_f) {
+  return star::models::geodetic_altitude(to_vec3(r_ecef_m), a_m, inv_f);
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_core, m) {
   m.doc() =
-      "star_reacher deterministic C++ core: two-body propagation, SRLOG "
-      "writing, and named-stream RNG (Phase 1 surface).";
+      "star_reacher deterministic C++ core: two-body and composed-"
+      "environment propagation, SRLOG writing, time/frame/ephemeris kernel, "
+      "environment force models, and named-stream RNG.";
 
   py::class_<star::RunConfig>(m, "RunConfig",
                               "Mission run configuration. Populate every "
@@ -347,17 +424,100 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite("master_seed", &star::RunConfig::master_seed)
       .def_readwrite("truth_rate_hz", &star::RunConfig::truth_rate_hz)
       .def_readwrite("config_sha256", &star::RunConfig::config_sha256)
-      .def_readwrite("oracle", &star::RunConfig::oracle);
+      .def_readwrite("oracle", &star::RunConfig::oracle)
+      // Phase 3 extension (consumed by run_env only; run() ignores it).
+      .def_readwrite("epoch_tai_day", &star::RunConfig::epoch_tai_day)
+      .def_readwrite("epoch_tai_sec", &star::RunConfig::epoch_tai_sec)
+      .def_readwrite("rtol", &star::RunConfig::rtol)
+      .def_readwrite("atol_pos_m", &star::RunConfig::atol_pos_m)
+      .def_readwrite("atol_vel_mps", &star::RunConfig::atol_vel_mps)
+      .def_readwrite("h_init_s", &star::RunConfig::h_init_s)
+      .def_readwrite("h_max_s", &star::RunConfig::h_max_s)
+      .def_readwrite("gravity_model", &star::RunConfig::gravity_model)
+      .def_readwrite("gravity_field_path", &star::RunConfig::gravity_field_path)
+      .def_readwrite("gravity_degree", &star::RunConfig::gravity_degree)
+      .def_readwrite("gravity_order", &star::RunConfig::gravity_order)
+      .def_readwrite("third_bodies", &star::RunConfig::third_bodies)
+      .def_readwrite("srp_enabled", &star::RunConfig::srp_enabled)
+      .def_readwrite("cr_a_over_m_m2pkg", &star::RunConfig::cr_a_over_m_m2pkg)
+      .def_readwrite("srp_occulters", &star::RunConfig::srp_occulters)
+      .def_readwrite("drag_enabled", &star::RunConfig::drag_enabled)
+      .def_readwrite("atmosphere", &star::RunConfig::atmosphere)
+      .def_readwrite("cd_a_over_m_m2pkg", &star::RunConfig::cd_a_over_m_m2pkg)
+      .def_readwrite("hp_exponent_n", &star::RunConfig::hp_exponent_n)
+      .def_readwrite("ephemeris_path", &star::RunConfig::ephemeris_path);
 
   m.def("run", &run_and_summarize, py::arg("config"), py::arg("out_path"),
         "Propagate the configured two-body case and write an SRLOG v1.0 file "
         "to out_path. Returns a summary dict (steps, final_r_m, final_v_mps, "
-        "truth_records, event_records, records_written).");
+        "truth_records, event_records, records_written). This Phase 1 path "
+        "is byte-frozen; it ignores the Phase 3 RunConfig extension.");
+
+  m.def("run_env", &run_env_and_summarize, py::arg("config"),
+        py::arg("out_path"),
+        "Propagate the composed-environment case (Phase 3: gravity tiers, "
+        "third bodies, SRP, drag; rk4 or adaptive rkf78) and write an SRLOG "
+        "v1.0 file to out_path. Returns the same summary dict as run().");
 
   m.def("gm", &star::gm, py::arg("body"),
         "Gravitational parameter GM [m^3/s^2] of a named central body "
-        "(Phase 1: \"earth\" only; IERS Conventions 2010, TN No. 36). The "
-        "single home of the constant - use this for Keplerian conversions.");
+        "(\"earth\": IERS Conventions 2010, TN No. 36; \"moon\", \"mars\": "
+        "DE440 header values, Park et al. 2021). The single home of the "
+        "constant - use this for Keplerian conversions.");
+
+  // -- Phase 3 model surface (verification and test access) ----------------
+
+  m.def("gravity_accel", &gravity_accel, py::arg("srgrav_path"),
+        py::arg("tier"), py::arg("degree"), py::arg("order"),
+        py::arg("r_bf_m"),
+        "Spherical-harmonic gravitational acceleration [m/s^2] at body-fixed "
+        "position r_bf_m from an SRGRAV v1 field file (FR-5). tier is "
+        "\"pointmass\", \"j2\", or \"full\"; degree/order of -1 mean the "
+        "stored band. Loads the field per call (verification surface, not "
+        "the propagation loop).");
+
+  m.def("thirdbody_accel", &thirdbody_accel, py::arg("gm_third_m3ps2"),
+        py::arg("r_sc_m"), py::arg("r_third_m"),
+        "Battin f(q) differential third-body acceleration [m/s^2] (FR-6); "
+        "both positions relative to the central body in a common frame.");
+
+  m.def("shadow_fraction", &shadow_fraction, py::arg("r_sc_m"),
+        py::arg("r_sun_m"), py::arg("radius_sun_m"), py::arg("r_occ_m"),
+        py::arg("radius_occ_m"),
+        "Conical-shadow illumination fraction nu in [0, 1] (FR-7): exactly "
+        "1 in full sunlight, exactly 0 in total umbra, smooth through the "
+        "penumbra, annular case handled.");
+
+  m.def("srp_accel", &srp_accel, py::arg("cr_a_over_m_m2pkg"), py::arg("nu"),
+        py::arg("r_sc_m"), py::arg("r_sun_m"),
+        "Cannonball SRP acceleration [m/s^2] (FR-7), pushing away from the "
+        "Sun, scaled by the illumination fraction nu.");
+
+  m.def("ussa76_density", &star::models::ussa76_density, py::arg("z_m"),
+        "U.S. Standard Atmosphere 1976 density [kg/m^3] for geometric "
+        "altitude z_m in [-5 km, 1000 km] (FR-8): analytic below 86 km, "
+        "committed-node log-linear interpolation above.");
+
+  m.def("hp_density", &star::models::hp_density, py::arg("alt_m"),
+        py::arg("cos_psi"), py::arg("n"),
+        "Harris-Priester density [kg/m^3] at geodetic altitude alt_m with "
+        "cos_psi the cosine of the diurnal-bulge angle and n the bulge "
+        "exponent in [2, 6] (FR-8; Montenbruck & Gill Sect. 3.5.2, "
+        "Orekit-compatible).");
+
+  m.def("mars_density", &star::models::mars_density, py::arg("z_m"),
+        "Mars piecewise-exponential density [kg/m^3] (FR-8, PRD A-3: "
+        "provenance provisional, confidence low).");
+
+  m.def("drag_accel", &drag_accel, py::arg("rho_kgpm3"),
+        py::arg("cd_a_over_m_m2pkg"), py::arg("v_rel_mps"),
+        "Cannonball drag acceleration [m/s^2] (FR-9) for the given density "
+        "and air-relative velocity v_rel = v - omega x r (FR-8).");
+
+  m.def("geodetic_altitude", &geodetic_altitude, py::arg("r_ecef_m"),
+        py::arg("a_m"), py::arg("inv_f"),
+        "Geodetic altitude [m] of a body-fixed Cartesian position above the "
+        "(a, 1/f) ellipsoid (Bowring's closed form with one refinement).");
 
   m.def("core_version", &star::core_version,
         "Semantic version of the compiled core, e.g. \"0.1.0\".");

@@ -80,3 +80,8 @@ label = "ch:marsatmosphere"
 module = "cpp/src/models/drag.cpp"
 chapter = "docs/mathlib/chapters/drag.tex"
 label = "ch:drag"
+
+[[chapter]]
+module = "cpp/src/models/environment.cpp"
+chapter = "docs/mathlib/chapters/environment.tex"
+label = "ch:environment"

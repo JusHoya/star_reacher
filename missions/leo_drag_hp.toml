@@ -1,0 +1,62 @@
+# Cross-tool case 2 (Phase 3 exit criterion 5, D-15): 7-day ~500 km LEO
+# propagation under Earth EGM2008 8x8 harmonic gravity plus Harris-Priester
+# drag - no third-body force, no SRP - so the frozen Orekit truth isolates
+# drag agreement on top of the gravity baseline (gate: position RMS < 100 m;
+# Orekit is the baseline because GMAT does not implement Harris-Priester,
+# D-15). Every setting is exact and round-numbered for external replication;
+# the full replication specification is tests/golden/crosstool/README.md.
+#
+# Harris-Priester needs the Sun direction, so the ephemeris points at the
+# committed continuous DE440 excerpt covering this mission's window
+# (tests/golden/ephemeris/excerpt_de440s_crosstool.sreph, provenance in
+# tests/golden/ephemeris/manifest.toml): the mission runs on a clean clone
+# and in CI with no fetched data.
+
+schema_version = 1
+
+[mission]
+name = "leo-drag-hp"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 604800.0
+
+[run]
+seed = 20260302
+
+[integrator]
+type = "rkf78"
+rtol = 1e-11
+atol_pos_m = 1e-6
+atol_vel_mps = 1e-9
+h_init_s = 30.0
+h_max_s = 30.0
+
+[spacecraft]
+mass_kg = 500.0
+# Cd*A/m = 0.0044 m^2/kg: Cd = 2.2 (the FR-9 documented cannonball default)
+# times A = 1 m^2 over m = 500 kg.
+cd_a_over_m_m2pkg = 0.0044
+
+[initial_state.cartesian]
+r_m = [6878000.0, 0.0, 0.0]
+v_mps = [0.0, 7350.0, 2000.0]
+frame = "GCRF"
+
+[environment]
+central_body = "earth"
+ephemeris = "tests/golden/ephemeris/excerpt_de440s_crosstool.sreph"
+
+[environment.gravity]
+model = "harmonic"
+field = "tests/golden/gravity/earth_egm2008_n20.srgrav"
+degree = 8
+order = 8
+
+[environment.drag]
+atmosphere = "harris_priester"
+# Diurnal-bulge cosine exponent: 4.0 is the documented default and matches
+# the Orekit reference implementation; recorded explicitly so the external
+# configuration is unambiguous.
+hp_exponent_n = 4.0
+
+[logging]
+truth_rate_hz = 1

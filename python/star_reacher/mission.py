@@ -42,8 +42,20 @@ _TOP_TABLES = (
 # so no value is ever silently defaulted out of sight.
 _DEFAULT_MASS_KG = 1.0
 _DEFAULT_TRUTH_RATE_HZ = 10
+_DEFAULT_EPHEMERIS = "data/de440s_2020_2060.sreph"  # `star data fetch de440s`
+_DEFAULT_HP_EXPONENT_N = 4.0  # Orekit-compatible bulge exponent (ch:harrispriester)
 
 _U64_MAX = 2**64 - 1
+
+_CENTRAL_BODIES = ("earth", "moon", "mars")
+# Canonical third-body order: the resolved config records the enabled set in
+# this order, which is also the core's fixed force-summation order (D-10), so
+# two missions enabling the same set hash identically regardless of file
+# order.
+_THIRD_BODY_ORDER = ("sun", "earth", "moon", "venus", "mars", "jupiter")
+_OCCULTER_BODIES = ("earth", "moon", "mars")
+_EARTH_ATMOSPHERES = ("ussa76", "harris_priester")
+_MARS_ATMOSPHERES = ("mars_exponential",)
 
 
 class MissionValidationError(Exception):
@@ -274,6 +286,379 @@ def _validate_keplerian(table: object, errs: _Errors) -> dict | None:
     return values
 
 
+def _validate_str_list(
+    table: dict, path: str, key: str, errs: _Errors, *, allowed: tuple, hint: str
+) -> list[str] | None:
+    """A list of unique strings drawn from ``allowed``; None on any defect."""
+    value = table[key]
+    if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+        errs.add(path, key, "expected an array of strings", hint=hint)
+        return None
+    bad = [x for x in value if x not in allowed]
+    if bad:
+        errs.add(
+            path,
+            key,
+            f"unknown name(s) {bad!r}",
+            hint=f"allowed: {', '.join(allowed)}",
+        )
+        return None
+    if len(set(value)) != len(value):
+        errs.add(path, key, f"duplicate name(s) in {value!r}", hint=hint)
+        return None
+    return list(value)
+
+
+def _validate_environment(
+    env: dict, errs: _Errors, *, cd_a_over_m: float | None, cr_a_over_m: float | None
+) -> dict | None:
+    """Validate [environment] (FR-5..FR-9 model selection, FR-6/FR-15 regime
+    rules) and return the resolved sub-dict.
+
+    Feature keys enter the resolved config only when the mission enables the
+    feature, so pre-Phase-3 mission files resolve byte-identically to their
+    Phase 1/2 form (the config-SHA reproducibility anchor, FR-15).
+    """
+    path = "environment"
+    _reject_unknown(
+        env, path, {"central_body", "ephemeris", "third_bodies", "gravity", "srp", "drag"}, errs
+    )
+    central = _req_str(env, path, "central_body", errs, hint='"earth", "moon", or "mars"')
+    if central is not None and central not in _CENTRAL_BODIES:
+        errs.add(
+            path,
+            "central_body",
+            f'must be one of "earth", "moon", "mars", got {central!r}',
+            hint="FR-3/FR-5 central bodies",
+        )
+        central = None
+
+    resolved: dict = {"central_body": central}
+
+    # --- gravity model selection (FR-5 tiers) ------------------------------
+    gravity_resolved = None
+    if "gravity" in env:
+        gpath = "environment.gravity"
+        gtable = env["gravity"]
+        if not isinstance(gtable, dict):
+            errs.add(path, "gravity", "expected a table", hint='e.g. [environment.gravity] with model = "harmonic", field, degree, order')
+            gtable = None
+        if gtable is not None:
+            _reject_unknown(gtable, gpath, {"model", "field", "degree", "order"}, errs)
+            model = _req_str(gtable, gpath, "model", errs, hint='"pointmass", "j2", or "harmonic"')
+            if model is not None and model not in ("pointmass", "j2", "harmonic"):
+                errs.add(
+                    gpath,
+                    "model",
+                    f'must be "pointmass", "j2", or "harmonic", got {model!r}',
+                    hint="the FR-5 fidelity tiers",
+                )
+                model = None
+            field_header = None
+            field = None
+            if model in ("j2", "harmonic"):
+                field = _req_str(
+                    gtable,
+                    gpath,
+                    "field",
+                    errs,
+                    hint="path to an SRGRAV v1 field file, e.g. data/egm2008_n70.srgrav "
+                    "(produced by `star data fetch egm2008|grgm1200a|mro120f`)",
+                )
+                if field is not None:
+                    from star_reacher.data_fetch import DataFetchError, read_srgrav
+
+                    try:
+                        field_header = read_srgrav(Path(field))
+                    except (OSError, DataFetchError) as exc:
+                        errs.add(
+                            gpath,
+                            "field",
+                            f"cannot load SRGRAV field {field!r}: {exc}",
+                            hint="fetch it with `star data fetch <dataset>` or fix the path "
+                            "(relative paths resolve against the working directory)",
+                        )
+                        field = None
+            elif model == "pointmass":
+                for key in ("field", "degree", "order"):
+                    if key in gtable:
+                        errs.add(
+                            gpath,
+                            key,
+                            'not accepted for model = "pointmass"',
+                            hint="the point-mass tier uses the central body's GM only; remove it",
+                        )
+            if model == "j2":
+                for key in ("degree", "order"):
+                    if key in gtable:
+                        errs.add(
+                            gpath,
+                            key,
+                            'not accepted for model = "j2"',
+                            hint="the J2 tier evaluates exactly degree 0 plus C(2,0); remove it",
+                        )
+                if field_header is not None and field_header.n_max < 2:
+                    errs.add(
+                        gpath,
+                        "field",
+                        f"field stores n_max = {field_header.n_max}, but the J2 tier needs C(2,0)",
+                        hint="use a field of degree >= 2",
+                    )
+                    field = None
+                if field is not None:
+                    gravity_resolved = {"model": "j2", "field": field}
+            elif model == "harmonic":
+                degree = order = None
+                for key, lo in (("degree", 2), ("order", 0)):
+                    if key not in gtable:
+                        errs.add(gpath, key, "missing required key", units="1", typical=f"{lo} to the field's stored band")
+                    elif not _is_int(gtable[key]) or gtable[key] < lo:
+                        errs.add(
+                            gpath,
+                            key,
+                            f"expected an integer >= {lo}, got {gtable[key]!r}",
+                            units="1",
+                            typical=f"{lo} to the field's stored band",
+                        )
+                    elif key == "degree":
+                        degree = gtable[key]
+                    else:
+                        order = gtable[key]
+                if degree is not None and order is not None and order > degree:
+                    errs.add(
+                        gpath,
+                        "order",
+                        f"must be <= degree, got order = {order} > degree = {degree}",
+                        units="1",
+                        typical="0 to degree",
+                    )
+                    order = None
+                if field_header is not None and degree is not None and degree > field_header.n_max:
+                    errs.add(
+                        gpath,
+                        "degree",
+                        f"exceeds the field's stored degree band (requested {degree}, "
+                        f"stored n_max = {field_header.n_max})",
+                        hint="the file carries no information above its band; fetch a deeper "
+                        "repack or lower the request (FR-5: the core never silently degrades fidelity)",
+                    )
+                    degree = None
+                if field_header is not None and order is not None and order > field_header.m_max:
+                    errs.add(
+                        gpath,
+                        "order",
+                        f"exceeds the field's stored order band (requested {order}, "
+                        f"stored m_max = {field_header.m_max})",
+                        hint="the file carries no information above its band",
+                    )
+                    order = None
+                if field is not None and degree is not None and order is not None:
+                    gravity_resolved = {"model": "harmonic", "field": field, "degree": degree, "order": order}
+            elif model == "pointmass":
+                gravity_resolved = {"model": "pointmass"}
+    if gravity_resolved is not None:
+        resolved["gravity"] = gravity_resolved
+
+    # --- third bodies (FR-6) -------------------------------------------------
+    third_bodies: list[str] | None = []
+    if "third_bodies" in env:
+        third_bodies = _validate_str_list(
+            env,
+            path,
+            "third_bodies",
+            errs,
+            allowed=_THIRD_BODY_ORDER,
+            hint='e.g. third_bodies = ["sun", "moon"]',
+        )
+        if third_bodies is not None and central is not None and central in third_bodies:
+            errs.add(
+                path,
+                "third_bodies",
+                f"the central body {central!r} cannot also be a third body",
+                hint="remove it from the list",
+            )
+            third_bodies = None
+    # Regime rules (FR-6/FR-15), applied to the effective set (absent = off):
+    if third_bodies is not None and central is not None:
+        enabled = set(third_bodies)
+        if central == "earth" and enabled and not {"sun", "moon"} <= enabled:
+            errs.add(
+                path,
+                "third_bodies",
+                f"in the Earth regime the Sun and Moon are always on when third-body "
+                f"perturbations are enabled, got {sorted(enabled)!r}",
+                hint='FR-6; add "sun" and "moon" (or disable third bodies entirely for '
+                "a validation isolation case by omitting the key)",
+            )
+        if central == "moon" and not {"sun", "earth"} <= enabled:
+            errs.add(
+                path,
+                "third_bodies",
+                f"lunar-regime configurations require the Earth and Sun third bodies, "
+                f"got {sorted(enabled)!r}",
+                hint='FR-15 regime consistency; set third_bodies = ["sun", "earth"] at minimum',
+            )
+    if third_bodies:
+        resolved["third_bodies"] = [b for b in _THIRD_BODY_ORDER if b in third_bodies]
+
+    # --- SRP (FR-7) -----------------------------------------------------------
+    srp_enabled = False
+    if "srp" in env:
+        spath = "environment.srp"
+        stable = env["srp"]
+        if not isinstance(stable, dict):
+            errs.add(path, "srp", "expected a table", hint="e.g. [environment.srp] with optional occulters")
+        else:
+            srp_enabled = True
+            _reject_unknown(stable, spath, {"occulters"}, errs)
+            occulters = [central] if central is not None else None
+            if "occulters" in stable:
+                occulters = _validate_str_list(
+                    stable,
+                    spath,
+                    "occulters",
+                    errs,
+                    allowed=_OCCULTER_BODIES,
+                    hint='e.g. occulters = ["earth", "moon"]',
+                )
+                if occulters is not None and central is not None and central not in occulters:
+                    errs.add(
+                        spath,
+                        "occulters",
+                        f"must include the central body {central!r} (FR-7: the current "
+                        f"central body always occults), got {occulters!r}",
+                        hint="add it to the list",
+                    )
+                    occulters = None
+            if cr_a_over_m is None:
+                errs.add(
+                    spath,
+                    "occulters" if "occulters" in stable else "srp",
+                    "SRP is enabled but [spacecraft] cr_a_over_m_m2pkg is missing",
+                    units="m^2/kg",
+                    typical="0.001 to 0.05 (Cr*A/m)",
+                )
+            elif occulters is not None:
+                resolved["srp"] = {"occulters": [b for b in _OCCULTER_BODIES if b in occulters]}
+
+    # --- drag (FR-8/FR-9) ------------------------------------------------------
+    drag_atmosphere = None
+    if "drag" in env:
+        dpath = "environment.drag"
+        dtable = env["drag"]
+        if not isinstance(dtable, dict):
+            errs.add(path, "drag", "expected a table", hint='e.g. [environment.drag] with atmosphere = "harris_priester"')
+        else:
+            _reject_unknown(dtable, dpath, {"atmosphere", "hp_exponent_n"}, errs)
+            atmo = _req_str(
+                dtable,
+                dpath,
+                "atmosphere",
+                errs,
+                hint='"ussa76" or "harris_priester" (Earth), "mars_exponential" (Mars)',
+            )
+            if atmo is not None and central is not None:
+                if central == "earth" and atmo not in _EARTH_ATMOSPHERES:
+                    errs.add(
+                        dpath,
+                        "atmosphere",
+                        f'must be "ussa76" or "harris_priester" for central_body = "earth", got {atmo!r}',
+                        hint="FR-8 Earth atmospheres",
+                    )
+                    atmo = None
+                elif central == "mars" and atmo not in _MARS_ATMOSPHERES:
+                    errs.add(
+                        dpath,
+                        "atmosphere",
+                        f'must be "mars_exponential" for central_body = "mars", got {atmo!r}',
+                        hint="FR-8 Mars atmosphere (PRD A-3, confidence low)",
+                    )
+                    atmo = None
+                elif central == "moon":
+                    errs.add(
+                        dpath,
+                        "atmosphere",
+                        "the Moon has no atmosphere model; drag cannot be enabled in the lunar regime",
+                        hint="remove the [environment.drag] table",
+                    )
+                    atmo = None
+            hp_n = _DEFAULT_HP_EXPONENT_N
+            if "hp_exponent_n" in dtable:
+                if atmo is not None and atmo != "harris_priester":
+                    errs.add(
+                        dpath,
+                        "hp_exponent_n",
+                        'only meaningful for atmosphere = "harris_priester"',
+                        hint="remove it",
+                    )
+                value = dtable["hp_exponent_n"]
+                if not _is_number(value) or not (2.0 <= float(value) <= 6.0):
+                    errs.add(
+                        dpath,
+                        "hp_exponent_n",
+                        f"expected a number within [2, 6], got {value!r}",
+                        units="1",
+                        typical="2 (equatorial) to 6 (polar); 4 matches the Orekit default",
+                    )
+                    hp_n = None
+                else:
+                    hp_n = float(value)
+            if cd_a_over_m is None:
+                errs.add(
+                    dpath,
+                    "atmosphere",
+                    "drag is enabled but [spacecraft] cd_a_over_m_m2pkg is missing",
+                    units="m^2/kg",
+                    typical="0.001 to 0.05 (Cd*A/m)",
+                )
+            elif atmo is not None and hp_n is not None:
+                drag_atmosphere = atmo
+                drag_resolved = {"atmosphere": atmo}
+                if atmo == "harris_priester":
+                    # The default exponent is recorded so it is never a
+                    # silent, out-of-sight default (D-2).
+                    drag_resolved["hp_exponent_n"] = hp_n
+                resolved["drag"] = drag_resolved
+
+    # --- ephemeris ---------------------------------------------------------------
+    # Consumers: any third body, SRP (Sun position), Harris-Priester (Sun
+    # direction), and the Moon central body (PA-frame librations).
+    needs_ephemeris = bool(third_bodies) or srp_enabled or (
+        drag_atmosphere == "harris_priester"
+    ) or central == "moon"
+    if "ephemeris" in env and not needs_ephemeris:
+        errs.add(
+            path,
+            "ephemeris",
+            "no configured model consumes an ephemeris (no third bodies, no SRP, "
+            "no Harris-Priester drag, central body not moon)",
+            hint="remove it: an unused path would perturb the resolved-config hash "
+            "without changing the physics",
+        )
+    elif needs_ephemeris:
+        eph = env.get("ephemeris", _DEFAULT_EPHEMERIS)
+        if not isinstance(eph, str):
+            errs.add(
+                path,
+                "ephemeris",
+                f"expected a string path, got {type(eph).__name__}",
+                hint=f'e.g. ephemeris = "{_DEFAULT_EPHEMERIS}"',
+            )
+        elif not Path(eph).is_file():
+            errs.add(
+                path,
+                "ephemeris",
+                f"ephemeris file not found: {eph!r}",
+                hint="fetch it with `star data fetch de440s` (default path "
+                f"{_DEFAULT_EPHEMERIS!r}) or point at a committed excerpt; relative "
+                "paths resolve against the working directory",
+            )
+        else:
+            resolved["ephemeris"] = eph
+
+    return resolved
+
+
 def _validate_document(doc: dict, errs: _Errors) -> dict | None:
     # Pass 2: schema shape and unknown-key rejection (typos are errors, DX-2).
     for key in doc:
@@ -353,27 +738,127 @@ def _validate_document(doc: dict, errs: _Errors) -> dict | None:
         else:
             seed = run["seed"]
 
-    integrator = _get_table(doc, "integrator", errs, required=True, hint="must define type and dt_s")
+    integrator = _get_table(
+        doc,
+        "integrator",
+        errs,
+        required=True,
+        hint='must define type ("rk4" with dt_s, or "rkf78" with rtol, '
+        "atol_pos_m, atol_vel_mps, h_init_s, h_max_s)",
+    )
+    integrator_resolved = None
     dt_s = None
+    h_max_s = None
     if integrator is not None:
-        _reject_unknown(integrator, "integrator", {"type", "dt_s"}, errs)
-        itype = _req_str(integrator, "integrator", "type", errs, hint='only "rk4" is accepted in Phase 1')
-        if itype is not None and itype != "rk4":
+        allowed_integ = {"type", "dt_s", "rtol", "atol_pos_m", "atol_vel_mps", "h_init_s", "h_max_s"}
+        _reject_unknown(integrator, "integrator", allowed_integ, errs)
+        itype = _req_str(integrator, "integrator", "type", errs, hint='"rk4" or "rkf78"')
+        if itype is not None and itype not in ("rk4", "rkf78"):
             errs.add(
                 "integrator",
                 "type",
-                f'only "rk4" is accepted in Phase 1, got {itype!r}',
-                hint="the adaptive RKF7(8) integrator lands in Phase 2",
+                f'must be "rk4" or "rkf78", got {itype!r}',
+                hint="fixed-step classical RK4 or the adaptive Fehlberg RKF7(8) (FR-11)",
             )
-        dt_s = _req_num(integrator, "integrator", "dt_s", errs, units="s", typical="0.01 to 10", positive=True)
+            itype = None
+        if itype == "rk4":
+            for key in ("rtol", "atol_pos_m", "atol_vel_mps", "h_init_s", "h_max_s"):
+                if key in integrator:
+                    errs.add(
+                        "integrator",
+                        key,
+                        'only meaningful for type = "rkf78"',
+                        hint="remove it, or select the adaptive integrator",
+                    )
+            dt_s = _req_num(integrator, "integrator", "dt_s", errs, units="s", typical="0.01 to 10", positive=True)
+            if dt_s is not None:
+                integrator_resolved = {"type": "rk4", "dt_s": dt_s}
+        elif itype == "rkf78":
+            if "dt_s" in integrator:
+                errs.add(
+                    "integrator",
+                    "dt_s",
+                    'only meaningful for type = "rk4"',
+                    hint="the adaptive step is controlled by rtol/atol and h_init_s/h_max_s",
+                )
+            rtol = _req_num(integrator, "integrator", "rtol", errs, units="1", typical="1e-13 to 1e-8", positive=True)
+            if rtol is not None and rtol > 1e-3:
+                errs.add(
+                    "integrator",
+                    "rtol",
+                    f"must be <= 1e-3, got {rtol!r}",
+                    units="1",
+                    typical="1e-13 to 1e-8",
+                )
+                rtol = None
+            atol_pos_m = _req_num(
+                integrator, "integrator", "atol_pos_m", errs, units="m", typical="1e-9 to 1e-3", positive=True
+            )
+            atol_vel_mps = _req_num(
+                integrator, "integrator", "atol_vel_mps", errs, units="m/s", typical="1e-12 to 1e-6", positive=True
+            )
+            h_init_s = _req_num(
+                integrator, "integrator", "h_init_s", errs, units="s", typical="1 to 300", positive=True
+            )
+            h_max_s = _req_num(
+                integrator, "integrator", "h_max_s", errs, units="s", typical="10 to 900", positive=True
+            )
+            if h_init_s is not None and h_max_s is not None and h_init_s > h_max_s:
+                errs.add(
+                    "integrator",
+                    "h_init_s",
+                    f"must be <= h_max_s, got h_init_s = {h_init_s!r} > h_max_s = {h_max_s!r}",
+                    units="s",
+                    typical="1 to 300",
+                )
+                h_init_s = None
+            values = {
+                "rtol": rtol,
+                "atol_pos_m": atol_pos_m,
+                "atol_vel_mps": atol_vel_mps,
+                "h_init_s": h_init_s,
+                "h_max_s": h_max_s,
+            }
+            if all(v is not None for v in values.values()):
+                integrator_resolved = {"type": "rkf78", **values}
 
     mass_kg = _DEFAULT_MASS_KG
-    spacecraft = _get_table(doc, "spacecraft", errs, required=False, hint="optional table with mass_kg")
+    cd_a_over_m = None
+    cr_a_over_m = None
+    spacecraft = _get_table(
+        doc,
+        "spacecraft",
+        errs,
+        required=False,
+        hint="optional table with mass_kg, cd_a_over_m_m2pkg, cr_a_over_m_m2pkg",
+    )
     if spacecraft is not None:
-        _reject_unknown(spacecraft, "spacecraft", {"mass_kg"}, errs)
+        _reject_unknown(
+            spacecraft, "spacecraft", {"mass_kg", "cd_a_over_m_m2pkg", "cr_a_over_m_m2pkg"}, errs
+        )
         if "mass_kg" in spacecraft:
             value = _req_num(spacecraft, "spacecraft", "mass_kg", errs, units="kg", typical="1 to 1e6", positive=True)
             mass_kg = value if value is not None else None
+        if "cd_a_over_m_m2pkg" in spacecraft:
+            cd_a_over_m = _req_num(
+                spacecraft,
+                "spacecraft",
+                "cd_a_over_m_m2pkg",
+                errs,
+                units="m^2/kg",
+                typical="0.001 to 0.05 (Cd*A/m, FR-9 cannonball)",
+                positive=True,
+            )
+        if "cr_a_over_m_m2pkg" in spacecraft:
+            cr_a_over_m = _req_num(
+                spacecraft,
+                "spacecraft",
+                "cr_a_over_m_m2pkg",
+                errs,
+                units="m^2/kg",
+                typical="0.001 to 0.05 (Cr*A/m, FR-7 cannonball)",
+                positive=True,
+            )
 
     initial_state = _get_table(
         doc,
@@ -430,16 +915,11 @@ def _validate_document(doc: dict, errs: _Errors) -> dict | None:
                 initial_state_resolved = {"keplerian": kep}
 
     environment = _get_table(doc, "environment", errs, required=True, hint="must define central_body")
+    environment_resolved = None
     if environment is not None:
-        _reject_unknown(environment, "environment", {"central_body"}, errs)
-        body = _req_str(environment, "environment", "central_body", errs, hint='only "earth" is accepted in Phase 1')
-        if body is not None and body != "earth":
-            errs.add(
-                "environment",
-                "central_body",
-                f'only "earth" is accepted in Phase 1, got {body!r}',
-                hint="lunar and Mars central bodies land with the Phase 2/3 ephemerides",
-            )
+        environment_resolved = _validate_environment(
+            environment, errs, cd_a_over_m=cd_a_over_m, cr_a_over_m=cr_a_over_m
+        )
 
     truth_rate_hz = _DEFAULT_TRUTH_RATE_HZ
     logging_tbl = _get_table(doc, "logging", errs, required=False, hint="optional table with truth_rate_hz")
@@ -485,17 +965,52 @@ def _validate_document(doc: dict, errs: _Errors) -> dict | None:
                 units="Hz",
                 typical="1 to 100",
             )
+    if (
+        integrator_resolved is not None
+        and integrator_resolved["type"] == "rkf78"
+        and duration_s is not None
+    ):
+        if truth_rate_hz is not None:
+            # With adaptive steps the truth log is sampled from the dense
+            # output at k / truth_rate_hz; the final record must land exactly
+            # on the duration.
+            records = duration_s * truth_rate_hz
+            if abs(records - round(records)) > _REL_TOL * abs(records):
+                errs.add(
+                    "logging",
+                    "truth_rate_hz",
+                    f"duration_s * truth_rate_hz must be an integer, got {records!r}; "
+                    f"the adaptive truth log is sampled at k / truth_rate_hz and the "
+                    f"final record must land on the duration",
+                    units="Hz",
+                    typical="1 to 100",
+                )
+        if h_max_s is not None and h_max_s > duration_s:
+            errs.add(
+                "integrator",
+                "h_max_s",
+                f"must be <= [mission] duration_s, got {h_max_s!r} > {duration_s!r}",
+                units="s",
+                typical="10 to 900",
+            )
 
     if errs.items:
         return None
+    spacecraft_resolved = {"mass_kg": mass_kg}
+    # Optional ballistic parameters enter the resolved config only when
+    # present, so pre-Phase-3 missions keep their byte-identical resolution.
+    if cd_a_over_m is not None:
+        spacecraft_resolved["cd_a_over_m_m2pkg"] = cd_a_over_m
+    if cr_a_over_m is not None:
+        spacecraft_resolved["cr_a_over_m_m2pkg"] = cr_a_over_m
     return {
         "schema_version": SCHEMA_VERSION,
         "mission": {"name": name, "epoch_utc": epoch, "duration_s": duration_s},
         "run": {"seed": seed},
-        "integrator": {"type": "rk4", "dt_s": dt_s},
-        "spacecraft": {"mass_kg": mass_kg},
+        "integrator": integrator_resolved,
+        "spacecraft": spacecraft_resolved,
         "initial_state": initial_state_resolved,
-        "environment": {"central_body": "earth"},
+        "environment": environment_resolved,
         "logging": {"truth_rate_hz": truth_rate_hz},
     }
 

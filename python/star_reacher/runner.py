@@ -70,6 +70,9 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None) -> Ru
 
     core = import_core()
 
+    env = resolved["environment"]
+    integ = resolved["integrator"]
+
     initial = resolved["initial_state"]
     if "cartesian" in initial:
         r0 = tuple(initial["cartesian"]["r_m"])
@@ -77,16 +80,17 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None) -> Ru
     else:
         # gm comes from the core so the gravitational parameter has exactly
         # one home (contract section 3); the conversion is pure NumPy.
-        r_vec, v_vec = keplerian_to_cartesian(initial["keplerian"], core.gm("earth"))
+        r_vec, v_vec = keplerian_to_cartesian(
+            initial["keplerian"], core.gm(env["central_body"])
+        )
         r0 = tuple(float(x) for x in r_vec)
         v0 = tuple(float(x) for x in v_vec)
 
     cfg = core.RunConfig()
     cfg.epoch_utc = resolved["mission"]["epoch_utc"]
     cfg.duration_s = resolved["mission"]["duration_s"]
-    cfg.dt_s = resolved["integrator"]["dt_s"]
-    cfg.integrator = resolved["integrator"]["type"]
-    cfg.central_body = resolved["environment"]["central_body"]
+    cfg.integrator = integ["type"]
+    cfg.central_body = env["central_body"]
     cfg.r0_m = r0
     cfg.v0_mps = v0
     cfg.mass_kg = resolved["spacecraft"]["mass_kg"]
@@ -95,11 +99,68 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None) -> Ru
     cfg.config_sha256 = config_sha
     cfg.oracle = False
 
+    # Path selection: a mission that uses none of the Phase 3 surface takes
+    # the byte-frozen Phase 1 two-body path, whose output is pinned by the
+    # committed determinism record (tests/golden/determinism/
+    # cross_platform.toml); anything else takes the composed-environment path.
+    env_features = ("gravity", "third_bodies", "srp", "drag", "ephemeris")
+    new_path = (
+        integ["type"] != "rk4"
+        or env["central_body"] != "earth"
+        or any(key in env for key in env_features)
+    )
+
+    if new_path:
+        # The core never parses text (D-2): the ISO epoch is converted here,
+        # through the bound leap-table conversion, into the two-part TAI
+        # epoch the environment model propagates from.
+        moment = datetime.fromisoformat(
+            resolved["mission"]["epoch_utc"]
+        ).astimezone(timezone.utc)
+        tai_day, tai_sec = core.utc_to_tai(
+            moment.year,
+            moment.month,
+            moment.day,
+            moment.hour,
+            moment.minute,
+            moment.second + moment.microsecond * 1e-6,
+        )
+        cfg.epoch_tai_day = tai_day
+        cfg.epoch_tai_sec = tai_sec
+        if integ["type"] == "rk4":
+            cfg.dt_s = integ["dt_s"]
+        else:
+            cfg.rtol = integ["rtol"]
+            cfg.atol_pos_m = integ["atol_pos_m"]
+            cfg.atol_vel_mps = integ["atol_vel_mps"]
+            cfg.h_init_s = integ["h_init_s"]
+            cfg.h_max_s = integ["h_max_s"]
+        gravity = env.get("gravity", {"model": "pointmass"})
+        cfg.gravity_model = gravity["model"]
+        cfg.gravity_field_path = gravity.get("field", "")
+        cfg.gravity_degree = gravity.get("degree", -1)
+        cfg.gravity_order = gravity.get("order", -1)
+        cfg.third_bodies = env.get("third_bodies", [])
+        if "srp" in env:
+            cfg.srp_enabled = True
+            cfg.cr_a_over_m_m2pkg = resolved["spacecraft"]["cr_a_over_m_m2pkg"]
+            cfg.srp_occulters = env["srp"]["occulters"]
+        if "drag" in env:
+            cfg.drag_enabled = True
+            cfg.atmosphere = env["drag"]["atmosphere"]
+            cfg.cd_a_over_m_m2pkg = resolved["spacecraft"]["cd_a_over_m_m2pkg"]
+            cfg.hp_exponent_n = env["drag"].get("hp_exponent_n", 4.0)
+        cfg.ephemeris_path = env.get("ephemeris", "")
+    else:
+        cfg.dt_s = integ["dt_s"]
+
     out.mkdir(parents=True, exist_ok=True)
     # Exactly the hashed bytes, so the file re-hashes to config_sha256.
     (out / "resolved_config.json").write_bytes(config_bytes)
 
-    summary = core.run(cfg, str(srlog_path))
+    summary = core.run_env(cfg, str(srlog_path)) if new_path else core.run(
+        cfg, str(srlog_path)
+    )
 
     srlog_sha = hashlib.sha256(srlog_path.read_bytes()).hexdigest()
 

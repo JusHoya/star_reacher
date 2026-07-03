@@ -1,0 +1,49 @@
+# Cross-tool case 1 (Phase 3 exit criterion 5, D-15): 7-day LEO propagation
+# under Earth EGM2008 8x8 harmonic gravity ONLY - no third body, no SRP, no
+# drag - so the frozen GMAT truth isolates gravity-plus-frames agreement
+# (gate: position RMS < 10 m). Every setting is exact and round-numbered for
+# external replication; the full replication specification (frames, time,
+# constants, field provenance) is tests/golden/crosstool/README.md.
+#
+# The gravity field is the committed EGM2008 20x20 excerpt truncated to 8x8
+# at evaluation time (bit-identical to a load-time 8x8 truncation, doctest
+# gravity_truncation_consistency), so the mission runs on a clean clone with
+# no fetched data.
+
+schema_version = 1
+
+[mission]
+name = "leo-gravity-8x8"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 604800.0
+
+[run]
+seed = 20260301
+
+[integrator]
+type = "rkf78"
+rtol = 1e-11
+atol_pos_m = 1e-6
+atol_vel_mps = 1e-9
+h_init_s = 30.0
+h_max_s = 30.0
+
+[spacecraft]
+mass_kg = 500.0
+
+[initial_state.cartesian]
+r_m = [7000000.0, 0.0, 0.0]
+v_mps = [0.0, 6900.0, 3000.0]
+frame = "GCRF"
+
+[environment]
+central_body = "earth"
+
+[environment.gravity]
+model = "harmonic"
+field = "tests/golden/gravity/earth_egm2008_n20.srgrav"
+degree = 8
+order = 8
+
+[logging]
+truth_rate_hz = 1
