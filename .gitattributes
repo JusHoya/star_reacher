@@ -4,3 +4,7 @@
 # SREPH ephemeris containers are binary; never normalize or diff as text
 # (the committed golden excerpts under tests/golden/ephemeris/ depend on it).
 *.sreph binary
+
+# SRGRAV gravity-coefficient containers are binary for the same reason
+# (committed golden excerpts under tests/golden/gravity/).
+*.srgrav binary
