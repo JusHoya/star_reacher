@@ -208,3 +208,15 @@ this policy.
   doctest cases `ACT-RCS-MIB`, `ACT-RCS-COUPLING-GOLDEN`, and
   `ACT-WHEEL-SATURATION`. See `actuators/manifest.toml` for provenance
   and tolerances.
+- `aero/` — axisymmetric ascent-aerodynamics golden set (FR-9, Phase 4
+  exit criterion 8): the committed fleet Mach-table columns copied at
+  generation time from the vehicles/ CSVs, exact-readout and midpoint
+  interpolation values, force/moment reconstruction at every
+  CA/CNalpha/xcp Mach breakpoint of both fleet tables, and the
+  formulation families (total-alpha sweep, crossflow roll orientations,
+  CG fore/aft of the center of pressure, pitch damping on/off, and the
+  pad structural zero with every output exactly zero), all
+  mpmath-generated (60 digits); consumed by the doctest cases
+  `AERO-INTERP-GOLDEN`, `AERO-BREAKPOINT-GOLDEN`, and
+  `AERO-FORCETORQUE-GOLDEN`. See `aero/manifest.toml` for provenance and
+  tolerances.
