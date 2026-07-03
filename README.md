@@ -24,7 +24,7 @@
 **star_reacher** is a high-fidelity 6DOF simulator for launch vehicles, satellites, and lunar/Mars missions, built as a small C++17/Eigen compute core behind a Python analysis frontend. It is a research instrument — for mission analysis, GNC algorithm development, and world-model and AI/ML spacecraft-navigation research — not a game and not an operational flight tool. The full specification lives in [`PRD.md`](PRD.md); this README is the front door.
 
 > [!IMPORTANT]
-> **Status: Phase 1 (skeleton, contracts, and doc scaffold).** The repository builds, installs, logs, and documents deterministically: the `star` CLI runs a two-body placeholder mission, the SRLOG v1 log format has a writer and a pure-Python reader, the documentation and citation machinery is CI-gated, and the license is decided (Apache-2.0, [ADR 0001](docs/adr/0001-license-and-visibility.md)). No production physics is implemented yet — that begins in Phase 2. Track what is actually built in the [Roadmap](#roadmap).
+> **Status: Phase 2 (math kernel).** On top of the Phase 1 skeleton (deterministic build/install/log/docs pipeline, `star` CLI, SRLOG v1, Apache-2.0 per [ADR 0001](docs/adr/0001-license-and-visibility.md)), the validated astrodynamic substrate is in place: TAI/UTC/TT/TDB time systems, the rotation kernel and GCRF/ITRF/Moon-PA/Mars-IAU frame family, the DE440s fetch-and-repack ephemeris pipeline with an in-core Chebyshev evaluator, RK4 and RKF7(8) integrators with dense output, and the event-detection framework — each with golden-vector validation and a derived, cited math-library chapter. Environment force models begin in Phase 3. Track what is actually built in the [Roadmap](#roadmap).
 
 ## Why
 
@@ -98,8 +98,8 @@ Eight independently shippable phases, each gated on red-team-checkable exit crit
 | Phase | Scope | Exit criteria (summary) | Status |
 | --- | --- | --- | --- |
 | — | **Spec baseline** — full PRD: 32 functional requirements, 19 keyed decisions, requirements traceability | Document set complete and internally consistent | Complete |
-| 1 | **Skeleton, contracts, doc scaffold** — repo builds/installs/logs deterministically; `star` CLI with two-body placeholder; SRLOG v1 writer + pure-Python loader; RNG streams; doc + citation machinery; CI matrix; license decision (D-19) | `pip install .` on all four CI legs; double-run SHA-256 identity; minor-version log read forward, major/corrupt rejected nonzero; CSV round-trips bit-exact; both PDFs build with zero LaTeX errors and chapter lint enforces model-without-chapter as red; `cffconvert --validate` + README BibTeX match; `verify --quick` < 60 s with `VERIFY: PASS` on the ARM leg | In progress (this change set) |
-| 2 | **Math kernel** — time systems, frames, DE440 repack + Chebyshev evaluator, RK4/RKF7(8) with dense output, event detection | Time/frame conversions match SOFA/ERFA (1e-9 s, 1e-11 matrix elements); ephemeris < 1 m vs Horizons; integrator convergence slopes 4.0 ± 0.2 / ≥ 7.5; events < 1 µs; cross-platform divergence measured and ≤ 1e-9 relative | Planned |
+| 1 | **Skeleton, contracts, doc scaffold** — repo builds/installs/logs deterministically; `star` CLI with two-body placeholder; SRLOG v1 writer + pure-Python loader; RNG streams; doc + citation machinery; CI matrix; license decision (D-19) | `pip install .` on all four CI legs; double-run SHA-256 identity; minor-version log read forward, major/corrupt rejected nonzero; CSV round-trips bit-exact; both PDFs build with zero LaTeX errors and chapter lint enforces model-without-chapter as red; `cffconvert --validate` + README BibTeX match; `verify --quick` < 60 s with `VERIFY: PASS` on the ARM leg | Complete |
+| 2 | **Math kernel** — time systems, frames, DE440 repack + Chebyshev evaluator, RK4/RKF7(8) with dense output, event detection | Time/frame conversions match SOFA/ERFA (1e-9 s, 1e-11 matrix elements); ephemeris < 1 m vs Horizons (lunar quantities gated < 1 mm against DE440 itself, [ADR 0002](docs/adr/0002-lunar-ephemeris-validation-de441.md)); integrator convergence slopes 4.0 ± 0.2 / ≥ 7.5; events < 1 µs; cross-platform divergence measured and ≤ 1e-9 relative | In progress (this change set) |
 | 3 | **Environment force models** — harmonic gravity, third-body, SRP + conical shadow, atmospheres and drag | Accelerations < 1e-12 relative vs independent synthesis; J2 secular rates within 0.5 %; shadow times within 0.1 s; LEO cross-tool RMS < 10 m (GMAT) and < 100 m with drag (Orekit) | Planned |
 | 4 | **Vehicle 6DOF** — KSP-lite schema + validator, mass properties, propulsion, aero, attitude, staging; starter fleet; ascent + TLI missions | Validator mutation tests; Tsiolkovsky closure within 0.1 %; torque-free attitude benchmarks; staging momentum conservation to 1e-12; ascent and TLI missions run in one command each with SHA-256-identical reruns | Planned |
 | 5 | **Data out** — `star plot`, `star view` HTML playback, NPZ/Parquet exporters, performance gates | Headless PNGs on a Pi 5; viewer opens offline with zero network requests; exports round-trip; Pi 5 gates (cislunar < 60 s wall, ascent ≥ 100× real time); dependency and wheel-size minimality gates live | Planned |
@@ -136,7 +136,7 @@ Citation metadata lives in [`CITATION.cff`](CITATION.cff) (validated by `cffconv
   title   = {star\_reacher},
   year    = {2026},
   url     = {https://github.com/JusHoya/star_reacher},
-  version = {0.1.0}
+  version = {0.2.0}
 }
 ```
 

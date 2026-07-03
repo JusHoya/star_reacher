@@ -1,8 +1,8 @@
 % Chapter 2 — Two-body point-mass placeholder model. Follows the mandatory
 % FR-29 six-section template: purpose; assumptions and domain of validity;
 % derivation; discretization and implementation; validation evidence;
-% references. The equation labels eq:twobody:accel and eq:twobody:rk4 are
-% echoed verbatim in comments in cpp/src/models/twobody.cpp (FR-29
+% references. The equation labels eq:twobody:accel and eq:twobody:firstorder
+% are echoed verbatim in comments in cpp/src/models/twobody.cpp (FR-29
 % equation-label-to-code traceability); renaming them breaks that trace.
 \chapter{Two-Body Point-Mass Placeholder Model}
 \label{ch:twobody}
@@ -136,32 +136,24 @@ system
   \begin{bmatrix} \vv{v} \\ -\,\mu\,\vv{r}/\norm{\vv{r}}^{3} \end{bmatrix},
   \label{eq:twobody:firstorder}
 \end{equation}
-using the classical fourth-order Runge--Kutta method (RK4) with a fixed step
-$h = \Delta t$; see Hairer, N{\o}rsett, and Wanner~\cite{hairer1993} for the
-method and its coefficients. One step from $\vv{y}_n$ to $\vv{y}_{n+1}$ is
-\begin{equation}
-  \begin{aligned}
-    \vv{k}_1 &= \vv{f}(\vv{y}_n), \\
-    \vv{k}_2 &= \vv{f}\!\bigl(\vv{y}_n + \tfrac{h}{2}\,\vv{k}_1\bigr), \\
-    \vv{k}_3 &= \vv{f}\!\bigl(\vv{y}_n + \tfrac{h}{2}\,\vv{k}_2\bigr), \\
-    \vv{k}_4 &= \vv{f}\!\bigl(\vv{y}_n + h\,\vv{k}_3\bigr), \\
-    \vv{y}_{n+1} &= \vv{y}_n
-      + \tfrac{h}{6}\,\bigl(\vv{k}_1 + 2\vv{k}_2 + 2\vv{k}_3 + \vv{k}_4\bigr),
-  \end{aligned}
-  \label{eq:twobody:rk4}
-\end{equation}
-with local truncation error $\mathcal{O}(h^{5})$ and global error
-$\mathcal{O}(h^{4})$~\cite{hairer1993}. Because the system is autonomous, no
-explicit time argument appears in the stage evaluations.
+using the shared fixed-step classical fourth-order Runge--Kutta method of
+the integrator library, equation~\eqref{eq:integrators:rk4} in
+Chapter~\ref{ch:integrators}, with fixed step $h = \Delta t$, local
+truncation error $\mathcal{O}(h^{5})$, and global error
+$\mathcal{O}(h^{4})$~\cite{hairer1993}. The model contributes only the
+right-hand side of equation~\eqref{eq:twobody:firstorder}; stepping,
+convergence-order evidence, and dense output are the integrator chapter's
+responsibility. Because the system is autonomous, the time argument passed
+through the integrator interface does not enter the stage evaluations.
 
 Implementation notes:
 \begin{enumerate}
   \item \textbf{Module and traceability.} The model lives in
     \texttt{cpp/src/models/twobody.cpp}. The source comments echo the labels
     \texttt{eq:twobody:accel} (the acceleration evaluation) and
-    \texttt{eq:twobody:rk4} (the RK4 stage update) verbatim, so each code
-    block traces to its defining equation and the chapter-manifest lint can
-    hold code and document together.
+    \texttt{eq:twobody:firstorder} (the right-hand-side assembly) verbatim,
+    so each code block traces to its defining equation and the
+    chapter-manifest lint can hold code and document together.
   \item \textbf{Gravitational parameter.} The Earth value is
     $\mu_\oplus = \qty{3.986004418e14}{\metre\cubed\per\second\squared}$,
     from the IERS Conventions (2010), Technical Note No.~36~\cite{iers2010}.

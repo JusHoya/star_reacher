@@ -1,0 +1,329 @@
+% Chapter — Planetary and lunar ephemerides: trimmed DE440 Chebyshev
+% evaluation. Follows the mandatory FR-29 six-section template: purpose;
+% assumptions and domain of validity; derivation; discretization and
+% implementation; validation evidence; references. The equation labels
+% eq:ephemeris:timescale, eq:ephemeris:recurrence, and eq:ephemeris:series
+% are echoed verbatim in comments in cpp/src/ephemeris.cpp and in
+% python/star_reacher/data_fetch.py (FR-29 equation-label-to-code
+% traceability); renaming them breaks that trace.
+\chapter{Planetary and Lunar Ephemerides}
+\label{ch:ephemeris}
+
+\section{Purpose}
+\label{sec:ephemeris:purpose}
+
+This chapter documents the ephemeris service (FR-4, decision D-8): the
+positions and velocities of the Sun, the Earth--Moon barycenter (EMB), the
+Earth, the Moon, and the Venus, Mars, and Jupiter barycenters, plus the
+lunar libration angles, over the span 2020--2060, for use by the force
+models, the frame chain (Moon principal-axis frame), and mission analysis.
+The data are the Chebyshev coefficients of the JPL DE440 development
+ephemeris~\cite{park2021}, copied \emph{verbatim} --- never refitted ---
+from the JPL-distributed kernels \texttt{de440s.bsp} (planets and Moon) and
+\texttt{moon\_pa\_de440\_200625.bpc} (lunar orientation) into the SREPH~v1
+container by the \texttt{star data fetch de440s} pipeline
+(\texttt{python/star\_reacher/data\_fetch.py}; format specification in
+\texttt{docs/formats/sreph\_v1.md}). The in-core evaluator is implemented in
+\texttt{cpp/src/ephemeris.cpp}; because the coefficients are verbatim, the
+container and evaluator contribute only floating-point evaluation error and
+the accuracy of every returned quantity is inherited from DE440 itself.
+
+\section{Assumptions and domain of validity}
+\label{sec:ephemeris:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Time argument.} All epochs are TDB seconds since J2000 TDB
+    (JD 2451545.0 TDB), carried as one binary64 value --- the native epoch
+    representation of the source kernels. Conversion from the simulator's
+    internal timescale (TAI, decision D-6) to TDB is the time-systems
+    chapter's responsibility, not this model's.
+  \item \textbf{Frames and centers.} Position components are resolved along
+    ICRF axes, the inertial axes of DE440~\cite{park2021}; the GCRF of
+    Table~\ref{tab:notation:frames} shares these axes. Each body is stored
+    relative to its DE440 center: the solar-system barycenter for the Sun,
+    EMB, Venus, Mars, and Jupiter entries; the EMB for the Earth and Moon
+    entries. The geocentric Moon state is composed at evaluation time as the
+    difference of the EMB-relative Moon and Earth states, so no coefficient
+    is refitted.
+  \item \textbf{Geometric states.} Returned positions are instantaneous
+    geometric states with no light-time or aberration correction, per the
+    FR-23 light-time policy (dynamics use geometric ephemeris positions;
+    optical sensor models apply their own corrections and bounds).
+  \item \textbf{Lunar orientation.} The libration output is the DE440 lunar
+    principal-axis orientation: the 3-1-3 Euler angles $\phi$, $\theta$,
+    $\psi$ of the Moon principal-axis frame relative to the ICRF equator,
+    with $\psi$ accumulating without wrapping, exactly as the source kernel
+    stores it. Construction of the Moon PA rotation matrix from these angles
+    belongs to the frames chapter.
+\end{enumerate}
+
+Domain of validity: epochs within the records stored in the loaded file.
+The standard repack covers 2020-01-01 through 2060-01-01 TDB, widened
+outward to whole Chebyshev-record boundaries per body (records are never
+split); the loader accepts user-supplied wider trims (FR-4).
+
+Out-of-domain behavior, matching the code: an epoch outside every stored
+record of the queried body throws \texttt{std::out\_of\_range} naming the
+body, the epoch, and the stored coverage; an unknown body name throws
+\texttt{std::invalid\_argument} listing the available bodies. The evaluator
+\emph{never} extrapolates a polynomial outside its record --- Chebyshev
+extrapolation diverges rapidly and silently, so the guard is a hard error
+rather than a documented error growth.
+
+Two accuracy boundaries inherited from the data are part of this domain
+statement. First, DE440 itself: its planetary and lunar trajectories carry
+the fit uncertainties documented by Park et~al.~\cite{park2021}; nothing in
+this simulator improves on them. Second, comparisons against ephemeris
+services that serve DE441 --- JPL Horizons among them --- see the published
+DE440/DE441 lunar difference: DE441 omits the lunar core--mantle tidal
+damping term so it can span 30\,000 years, and its lunar orbit consequently
+differs from DE440 by under \qty{2}{\metre} across 1970--2020, growing to
+roughly \qty{10}{\metre} per century away from the present, predominantly
+along-track~\cite{park2021}. The measured 1.8--\qty{5.4}{\metre} difference
+between this repack and DE441-sourced Horizons lunar states over 2020--2060
+(Section~\ref{sec:ephemeris:validation}) is that documented model
+difference, not a repack error.
+
+\section{Derivation}
+\label{sec:ephemeris:derivation}
+
+\subsection{Chebyshev representation of DE ephemerides}
+
+The JPL development ephemerides are distributed as piecewise Chebyshev
+polynomial fits~\cite{newhall1989,park2021}. Each body's trajectory is
+divided into contiguous records (granules) of fixed length $L$ seconds; the
+DE440 values are $L = 4$~days for the Moon and Earth (EMB-relative), 16~days
+for the Sun, EMB, and Venus, 32~days for the Mars and Jupiter barycenters,
+and 8~days for the lunar Euler angles. Within record $k$, beginning at epoch
+$t_k$, each component $p$ (a position coordinate in km, or an Euler angle in
+rad) is represented as
+\begin{equation}
+  p(t) = \sum_{j=0}^{N-1} c_j\, T_j(x),
+  \qquad
+  x = \frac{2\,(t - t_k)}{L} - 1 \;\in\; [-1, 1],
+  \label{eq:ephemeris:timescale}
+\end{equation}
+where $T_j$ is the Chebyshev polynomial of the first kind of degree $j$ and
+$N$ is the per-segment coefficient count ($N \le 14$ for every DE440
+segment). The coefficients $c_j$ are produced by JPL's constrained
+least-squares fit to the numerically integrated ephemeris; the fit
+constrains position \emph{and} velocity at every record boundary, so the
+piecewise representation is continuous and differentiable across
+records~\cite{newhall1989}. This constraint is what the record-boundary
+continuity tests of Section~\ref{sec:ephemeris:validation} exercise.
+
+Chebyshev polynomials satisfy $T_j(\cos\vartheta) = \cos(j\vartheta)$. With
+$x = \cos\vartheta$, the cosine addition identity
+$\cos((j{+}1)\vartheta) + \cos((j{-}1)\vartheta)
+ = 2\cos\vartheta\,\cos(j\vartheta)$
+gives the three-term recurrence
+\begin{equation}
+  T_0(x) = 1,
+  \qquad
+  T_1(x) = x,
+  \qquad
+  T_{j}(x) = 2x\,T_{j-1}(x) - T_{j-2}(x),
+  \quad j \ge 2.
+  \label{eq:ephemeris:recurrence}
+\end{equation}
+Differentiating equation~\eqref{eq:ephemeris:recurrence} with respect to $x$
+yields the companion recurrence for the derivatives
+$T'_j \equiv \mathrm{d}T_j/\mathrm{d}x$:
+\begin{equation}
+  T'_0(x) = 0,
+  \qquad
+  T'_1(x) = 1,
+  \qquad
+  T'_{j}(x) = 2\,T_{j-1}(x) + 2x\,T'_{j-1}(x) - T'_{j-2}(x),
+  \quad j \ge 2.
+  \label{eq:ephemeris:derivrecurrence}
+\end{equation}
+Both recurrences are numerically benign on $x \in [-1,1]$, where
+$|T_j(x)| \le 1$. The value and time derivative of the component follow by
+direct summation and the chain rule
+$\mathrm{d}x/\mathrm{d}t = 2/L$ from equation~\eqref{eq:ephemeris:timescale}:
+\begin{equation}
+  \boxed{\;
+  p(t) = \sum_{j=0}^{N-1} c_j\, T_j(x),
+  \qquad
+  \dot{p}(t) = \frac{2}{L} \sum_{j=0}^{N-1} c_j\, T'_j(x).
+  \;}
+  \label{eq:ephemeris:series}
+\end{equation}
+This ascending-recurrence evaluation is the scheme used by JPL's own
+ephemeris interpolators for the same data~\cite{newhall1989}.
+
+\subsection{Record selection}
+
+For a query epoch $t$ inside a segment whose records begin at $t_0$ with
+interval $L$, the evaluator selects record
+\begin{equation}
+  k = \left\lfloor \frac{t - t_0}{L} \right\rfloor,
+  \qquad
+  \text{clamped to } k = n - 1 \text{ when } t \text{ equals the segment end},
+  \label{eq:ephemeris:selection}
+\end{equation}
+where $n$ is the record count: a boundary epoch shared by records $k-1$ and
+$k$ belongs to the record that \emph{begins} there, and the final epoch of
+the segment evaluates in the last record at $x = +1$ exactly. Because the
+fit constrains both position and velocity at boundaries~\cite{newhall1989},
+either record yields the same values to floating-point precision; the fixed
+rule exists so that every implementation selects the same record and
+reproduces bit-identical results (D-10).
+
+\subsection{Units}
+
+SPK coefficients are in km (positions) and PCK coefficients in rad
+(angles)~\cite{naifspk}; coefficients are stored verbatim in those units,
+because rescaling them would round every coefficient. Kind-0 outputs are
+converted to SI at evaluation output by a single multiplication per
+component: $r_{\mathrm{m}} = 1000 \cdot r_{\mathrm{km}}$ and
+$v_{\mathrm{m/s}} = 1000 \cdot v_{\mathrm{km/s}}$ (the factor 1000 is exactly
+representable, so the conversion costs one correctly rounded operation).
+
+\section{Discretization and implementation}
+\label{sec:ephemeris:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The evaluator lives in
+    \texttt{cpp/src/ephemeris.cpp}; the repack pipeline and the Python
+    reference evaluator live in \texttt{python/star\_reacher/data\_fetch.py}.
+    Both echo the labels \texttt{eq:ephemeris:timescale},
+    \texttt{eq:ephemeris:recurrence}, and \texttt{eq:ephemeris:series}
+    verbatim at the corresponding code.
+  \item \textbf{Verbatim repack.} The pipeline copies the Type~2 coefficient
+    words byte-for-byte from the DAF arrays of the source kernels into the
+    SREPH~v1 container, dropping only the redundant per-record \textsc{mid}
+    and \textsc{radius} words after verifying they equal
+    $t_0 + (k + \tfrac12)L$ and $L/2$ (constant-interval DE
+    segments~\cite{naifspk}). Both source kernels are pinned by SHA-256 at
+    download, and the digests ride in the SREPH header for auditability.
+  \item \textbf{Executable specification and bit-identity.} The Python
+    reference evaluator implements
+    equations~\eqref{eq:ephemeris:timescale}--\eqref{eq:ephemeris:selection}
+    in the identical operation sequence as the C++ evaluator: same record
+    selection, same recurrences, same fixed ascending accumulation order for
+    the sums of equation~\eqref{eq:ephemeris:series}, same final scalings.
+    Under the D-10 build flags (no fast-math, floating-point contraction
+    off) every operation is a correctly rounded IEEE-754 binary64 operation
+    in both languages, so the two implementations agree \emph{bit for bit};
+    the committed golden vectors gate exactly this property, which in turn
+    pins the evaluator across platforms and compilers.
+  \item \textbf{Determinism.} Evaluation uses fixed-size stack buffers (the
+    coefficient count is bounded by 14 in DE440 and validated against a
+    hard cap of 32 at load), a single fixed evaluation order, and no
+    reductions or library transcendentals; the only \texttt{libm} call is
+    \texttt{std::floor}, which is exact.
+  \item \textbf{Epoch-quantization budget.} Near the 2060 end of the span,
+    $|t| \approx \qty{1.9e9}{\second}$ lies in the binade $[2^{30}, 2^{31})$,
+    so one ulp of the binary64 epoch is
+    $2^{30-52} \approx \qty{2.4e-7}{\second}$. At the fastest
+    stored motion (Venus barycenter, $\approx \qty{35}{\kilo\metre\per\second}$
+    about the SSB) an epoch rounded by half an ulp displaces the returned
+    position by at most $\approx \qty{8}{\milli\metre}$ --- three orders
+    below the \qty{1}{\metre} validation gate. The boundary-continuity
+    measurements of Section~\ref{sec:ephemeris:validation} reproduce this
+    number: the observed step across one epoch ulp at a record boundary is
+    the true motion over that interval.
+  \item \textbf{No text parsing in the core.} The SREPH container is a
+    fixed-layout little-endian binary file (96-byte header, 64-byte
+    directory entries, coefficient blocks); the loader decodes it with
+    fixed-width reads and rejects malformed files --- wrong magic,
+    unsupported major version, truncated directory, or a coefficient block
+    running past end of file --- with specific error messages
+    (D-2 boundary rule; format specification in
+    \texttt{docs/formats/sreph\_v1.md}).
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:ephemeris:validation}
+
+Table~\ref{tab:ephemeris:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}; tolerances and
+their derivations are recorded next to each test and in
+\texttt{tests/golden/ephemeris/manifest.toml}. The full-span comparison of
+the complete repack against JPL Horizons --- all 21 epochs for every
+quantity, executed once maintainer-side --- is committed as
+\texttt{tests/golden/ephemeris/full\_span\_validation.md} with the raw
+Horizons transcripts; the committed excerpts reproduce the same comparisons
+offline in CI. Horizons serves the Moon from DE441, so the lunar rows
+carry the published DE440/DE441 difference
+(Section~\ref{sec:ephemeris:domain}) and the authoritative sub-meter DE440
+lunar gate runs against an independent evaluation of the checksummed source
+kernel.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the ephemeris evaluator.}
+  \label{tab:ephemeris:validation}
+  \begin{tabular}{lp{3.2cm}p{6.2cm}}
+    \toprule
+    Test ID & Suite & Acceptance basis \\
+    \midrule
+    \testid{ephemeris_bitlevel_golden} &
+      doctest (\texttt{cpp/tests/}) &
+      Bit-exact agreement (binary64 equality) with the Python reference
+      evaluator at 40 golden cases --- span endpoints, mid-record epochs,
+      and two record boundaries per stored segment --- every value
+      cross-checked against jplephem at generation time. \\
+    \testid{ephemeris_segment_boundary_continuity} &
+      doctest (\texttt{cpp/tests/}) &
+      Evaluation at an interior record boundary versus
+      \texttt{nextafter} below it: position step
+      $< \qty{5e-2}{\metre}$ (measured \qty{8.4e-3}{\metre}, the true
+      motion across one epoch ulp), velocity step
+      $< \qty{5e-8}{\metre\per\second}$; librations
+      $< \qty{1e-9}{\radian}$, $< \qty{1e-19}{\radian\per\second}$. \\
+    \testid{ephemeris_error_paths} &
+      doctest (\texttt{cpp/tests/}) &
+      Unknown body $\to$ \texttt{std::invalid\_argument} naming it;
+      out-of-span and between-excerpt-run epochs $\to$
+      \texttt{std::out\_of\_range}; bad magic, truncated directory,
+      truncated coefficients, missing file $\to$ specific
+      \texttt{std::runtime\_error}. \\
+    \testid{test_repacked_positions_match_horizons} &
+      pytest (\texttt{tests/python/}) &
+      Repacked positions versus committed JPL Horizons geometric ICRF
+      vectors at 21 TDB-midnight epochs per quantity spanning 2020--2060,
+      including span endpoints and record boundaries:
+      $< \qty{1}{\metre}$ for Sun, EMB, Venus, Mars, Jupiter, Earth
+      (measured worst \qty{6.6e-2}{\metre});
+      $< \qty{10}{\metre}$ DE441-envelope for the lunar quantities
+      (measured 1.8--\qty{5.4}{\metre}, the published DE440/DE441 lunar
+      difference~\cite{park2021}). \\
+    \testid{test_moon_matches_de440_jplephem_reference} &
+      pytest (\texttt{tests/python/}) &
+      Lunar segments versus jplephem's independent evaluation of the
+      checksummed DE440 kernel at the same 21 epochs:
+      $< \qty{1e-3}{\metre}$ (measured worst \qty{8.6e-8}{\metre}) --- the
+      authoritative DE440 lunar fidelity gate. \\
+    \testid{test_lunar_librations_match_jplephem} &
+      pytest (\texttt{tests/python/}) &
+      Libration angles and rates versus jplephem's evaluation of the DE440
+      lunar PCK at 21 epochs: $< \qty{1e-10}{\radian}$ and
+      $< \qty{1e-19}{\radian\per\second}$ (measured \qty{9.1e-13}{\radian},
+      \qty{8.5e-22}{\radian\per\second}). \\
+    \testid{test_ephemeris_error_paths_via_bindings} &
+      pytest (\texttt{tests/python/}) &
+      The C++ error contract crosses pybind11 as typed Python exceptions
+      (\texttt{ValueError}, \texttt{IndexError}, \texttt{RuntimeError}). \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:ephemeris:references}
+
+This chapter relies on Park, Folkner, Williams, and
+Boggs~\cite{park2021} for DE440/DE441 --- data content, reference frame, and
+the lunar tidal-damping difference between the two ephemerides; on
+Newhall~\cite{newhall1989} for the Chebyshev representation of JPL
+ephemerides, the boundary-constrained fitting, and the interpolation scheme;
+on the NAIF SPK documentation~\cite{naifspk} for the Type~2 kernel record
+layout and units; on Giorgini et~al.~\cite{giorgini1996} for the Horizons
+system used as the external comparison authority; and on the jplephem
+package~\cite{jplephem} as the independent evaluation used to cross-check
+every committed golden value. Full bibliographic details appear in the
+bibliography.

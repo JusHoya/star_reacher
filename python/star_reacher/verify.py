@@ -3,15 +3,22 @@
 Deliberately not pytest: pytest is a dev-only dependency, and verification is
 the documented first command on a bare wheel install, so it can depend on
 nothing beyond the package itself. Fixture bytes are synthesized in memory
-via ``star_reacher._fixtures`` (binary fixtures are never committed).
+via ``star_reacher._fixtures`` (binary fixtures are never committed), and
+reference values are inlined with citations rather than read from
+``tests/golden/`` because an installed wheel carries no source tree.
 
 Checks that need the compiled core import it lazily and FAIL, never skip,
 when it is missing: a verification pass must mean the whole surface works.
+V001-V008 cover the Phase 1 surface (determinism, SRLOG contract, RNG);
+V009-V013 cover the Phase 2 math kernel (time, rotations, frames,
+ephemeris evaluator, integrators/events) as quick variants of the full
+golden suites in ``tests/``.
 """
 
 from __future__ import annotations
 
 import math
+import random
 import struct
 import tempfile
 from pathlib import Path
@@ -323,6 +330,355 @@ def _check_v008(ctx: dict) -> None:
             raise CheckFailure(f"{label}: truncated file was loaded without error")
 
 
+# --------------------------------------------------------------------------
+# Phase 2 checks (V009-V013): quick, self-contained variants of the golden
+# acceptance suites, exercised through the installed core bindings.
+# --------------------------------------------------------------------------
+
+# UTC -> TAI -> TT golden epochs, transcribed from the committed golden file
+# tests/golden/time/utc_tai_tt.toml (provenance and tolerances in
+# tests/golden/time/manifest.toml). Citations: leap-second history per the
+# IERS Bulletin C series, verified through Bulletin C 71 (January 2026:
+# no leap second at the end of June 2026, TAI-UTC = 37 s); TT = TAI +
+# 32.184 s exactly per IAU 1991 Resolution A4 (Kaplan, USNO Circular 179,
+# 2005); the 2007-04-05 anchor is the published worked example in the IAU
+# SOFA cookbook "SOFA Tools for Earth Attitude". Comparisons are binary64
+# bit equality, the same discipline the golden manifest records: the
+# compiled core performs the identical IEEE-754 operation sequence under
+# the D-10 strict-FP build flags, so any difference is an algorithmic
+# deviation, not roundoff.
+_V009_EPOCHS = [
+    # (name, (y, mo, d, h, mi, s), tai_day, tai_sec_hex, tt_jd1_hex, tt_jd2_hex)
+    (
+        "sofa_cookbook_2007_04_05",
+        (2007, 4, 5, 12, 0, 0.0),
+        2651,
+        "0x1.51c2000000000p+15",  # 43233.0 s = 12:00:33 TAI (cookbook: TAI 12:00:33.000)
+        "0x1.2b959c0000000p+21",
+        "0x1.0062e2f46e5b0p-1",  # TT 12:01:05.184 (cookbook)
+    ),
+    (
+        "leap_2016_leap_start",
+        (2016, 12, 31, 23, 59, 60.0),  # inside the inserted leap second
+        6210,
+        "0x1.2000000000000p+5",  # 36.0 s: TAI already on the next day
+        "0x1.2c04d40000000p+21",
+        "0x1.9dc02832069bbp-11",
+    ),
+    (
+        "epoch_2030_01_01",
+        (2030, 1, 1, 0, 0, 0.0),  # post-expiry: last tabulated offset applies
+        10958,
+        "0x1.2800000000000p+5",  # 37.0 s
+        "0x1.2c99340000000p+21",
+        "0x1.a3d19a5a3a300p-11",
+    ),
+]
+
+
+def _check_v009(ctx: dict) -> None:
+    core = import_core()
+    for name, utc, tai_day, tai_sec_hex, tt_jd1_hex, tt_jd2_hex in _V009_EPOCHS:
+        day, sec = core.utc_to_tai(*utc)
+        if (day, sec) != (tai_day, float.fromhex(tai_sec_hex)):
+            raise CheckFailure(
+                f"{name}: utc_to_tai gave (day={day}, sec={sec!r}), expected "
+                f"(day={tai_day}, sec={float.fromhex(tai_sec_hex)!r})"
+            )
+        t1, t2 = core.tt_jd(day, sec)
+        if (t1, t2) != (float.fromhex(tt_jd1_hex), float.fromhex(tt_jd2_hex)):
+            raise CheckFailure(
+                f"{name}: tt_jd gave ({t1!r}, {t2!r}), expected "
+                f"({float.fromhex(tt_jd1_hex)!r}, {float.fromhex(tt_jd2_hex)!r})"
+            )
+        # The inverse must restore the exact calendar fields, including the
+        # second-60 rendering inside an inserted leap second.
+        back = core.tai_to_utc(day, sec)
+        if tuple(back) != utc:
+            raise CheckFailure(f"{name}: tai_to_utc round trip gave {back}, expected {utc}")
+
+
+def _quat_angle_rad(core, p: tuple, q: tuple) -> float:
+    """Rotation angle between two unit quaternions.
+
+    Angle of the relative rotation q (x) p^-1 via atan2 of the vector-part
+    norm: 2*acos(|p . q|) cannot resolve angles near 1e-13 rad (the cosine
+    is within one ulp of 1), while the vector norm is ~angle/2 and keeps
+    full relative precision.
+    """
+    dw, dx, dy, dz = core.quat_multiply(*core.quat_conjugate(*p), *q)
+    return 2.0 * math.atan2(math.hypot(dx, dy, dz), abs(dw))
+
+
+def _check_v010(ctx: dict) -> None:
+    core = import_core()
+    # Seeded stdlib Mersenne Twister: bit-identical draws on every platform,
+    # so the attitude set is the same everywhere. 100 attitudes is the quick
+    # tier of the 1,000-attitude Phase 2 exit-criterion-6 sweep in
+    # tests/python/test_frames.py; the 1e-13 rad tolerance is the criterion's.
+    rng = random.Random(20260702)
+    worst = 0.0
+    worst_case = ""
+    for i in range(100):
+        raw = [rng.uniform(-1.0, 1.0) for _ in range(4)]
+        if math.hypot(*raw) < 0.1:
+            continue  # degenerate draw (probability ~1e-5); density is ample
+        q = core.quat_normalize(*raw)
+        dcm = core.quat_to_dcm(*q)
+        q_back = core.dcm_to_quat(dcm)
+        for label, chain in (
+            ("quat->dcm->quat", q_back),
+            (
+                "quat->dcm->euler321->dcm->quat",
+                core.dcm_to_quat(core.dcm_from_euler321(*core.euler321_from_dcm(dcm))),
+            ),
+            (
+                "quat->dcm->euler313->dcm->quat",
+                core.dcm_to_quat(core.dcm_from_euler313(*core.euler313_from_dcm(dcm))),
+            ),
+        ):
+            err = _quat_angle_rad(core, q, chain)
+            if err > worst:
+                worst, worst_case = err, f"attitude {i} {label}"
+    if worst > 1e-13:
+        raise CheckFailure(
+            f"worst rotation round-trip error {worst:.3e} rad at {worst_case} "
+            f"(tolerance 1e-13 rad, Phase 2 exit criterion 6)"
+        )
+
+
+# GCRF -> ITRF matrix at 2020-01-01T00:00:00 UTC (two-part TAI epoch day
+# 7305, sec 37.0; dUT1 = 0), transcribed from the committed golden file
+# tests/golden/frames/earth_chain.toml (case epoch_2020_01_01). The elements
+# were generated with ERFA (pyerfa 2.0.1.5), the reference implementation of
+# the IAU SOFA algorithms, composing exactly the IAU 2006/2000B CIO-based
+# chain the core implements (polar motion neglected; provenance and the
+# 1e-11 tolerance derivation in tests/golden/frames/manifest.toml).
+_V011_TAI = (7305, 37.0)
+_V011_DCM_HEX = [
+    "-0x1.5ee5e02671bfap-3", "0x1.f86dc3de34908p-1", "0x1.644972ba8ccacp-12",
+    "-0x1.f86d87a2491b2p-1", "-0x1.5ee60d4f0364dp-3", "0x1.ed08472a19ae9p-10",
+    "0x1.f500bda826a03p-10", "-0x1.a3d0085360000p-17", "0x1.ffffc2b791d32p-1",
+]
+
+
+def _check_v011(ctx: dict) -> None:
+    core = import_core()
+    got = core.gcrf_to_itrf(*_V011_TAI, 0.0)
+    expected = [float.fromhex(h) for h in _V011_DCM_HEX]
+    # Phase 2 exit criterion 1: rotation-matrix elements to 1e-11 vs ERFA.
+    for k, (g, e) in enumerate(zip(got, expected)):
+        if abs(g - e) > 1e-11:
+            raise CheckFailure(
+                f"gcrf_to_itrf element [{k // 3}][{k % 3}] = {g!r} differs from "
+                f"ERFA {e!r} by {abs(g - e):.3e} (tolerance 1e-11)"
+            )
+    # Orthonormality: C C^T = I and det C = +1. The chain is a product of
+    # exact rotations, so residuals are pure roundoff (~1e-16 observed);
+    # 1e-14 keeps margin while failing on any non-orthonormal construction.
+    c = [got[0:3], got[3:6], got[6:9]]
+    for i in range(3):
+        for j in range(3):
+            dot = sum(c[i][k] * c[j][k] for k in range(3))
+            target = 1.0 if i == j else 0.0
+            if abs(dot - target) > 1e-14:
+                raise CheckFailure(
+                    f"C C^T [{i}][{j}] = {dot!r} deviates from {target} by "
+                    f"{abs(dot - target):.3e} (tolerance 1e-14)"
+                )
+    det = (
+        c[0][0] * (c[1][1] * c[2][2] - c[1][2] * c[2][1])
+        - c[0][1] * (c[1][0] * c[2][2] - c[1][2] * c[2][0])
+        + c[0][2] * (c[1][0] * c[2][1] - c[1][1] * c[2][0])
+    )
+    if abs(det - 1.0) > 1e-14:
+        raise CheckFailure(f"det C = {det!r} deviates from +1 by {abs(det - 1.0):.3e}")
+
+
+# Synthetic SREPH design for V012. All quantities are dyadic (exactly
+# representable in binary64) and the record interval is 2^16 s, so every
+# arithmetic step of the documented evaluation (scaled time x, Chebyshev
+# recurrence, coefficient accumulation, the 2/intlen derivative scale, and
+# the km -> m conversion by 1000) is exact: the check may assert bit
+# equality against an independently computed closed-form polynomial value.
+_V012_INTLEN = 65536.0  # 2^16 s, so 2/intlen = 2^-15 is exact
+_V012_RECORDS = [
+    # record 0: [x, y, z] component coefficient triples (c0, c1, c2) [km]
+    [[3.0, 0.5, 0.25], [-2.0, 1.5, -0.5], [0.125, -0.25, 1.0]],
+    # record 1
+    [[10.0, 1.0, 0.5], [20.0, -1.0, 0.25], [-5.0, 2.0, -0.125]],
+]
+
+
+def _v012_expected(record: int, x: float) -> tuple[list[float], list[float]]:
+    """Closed-form Chebyshev value/rate in m and m/s (T2 = 2x^2 - 1)."""
+    r = []
+    v = []
+    for c0, c1, c2 in _V012_RECORDS[record]:
+        r.append((c0 + c1 * x + c2 * (2.0 * x * x - 1.0)) * 1000.0)
+        v.append((c1 + c2 * (4.0 * x)) * (2.0 / _V012_INTLEN) * 1000.0)
+    return r, v
+
+
+def _check_v012(ctx: dict) -> None:
+    core = import_core()
+    data = _fixtures.build_sreph(
+        [
+            {
+                "name": "testbody",
+                "target": 999,
+                "center": 0,
+                "kind": 0,
+                "init_tdb_s": 0.0,
+                "intlen_s": _V012_INTLEN,
+                "records": _V012_RECORDS,
+            }
+        ]
+    )
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "v012.sreph"
+        path.write_bytes(data)
+        eph = core.Ephemeris.load(str(path))
+
+        if eph.bodies() != ["testbody"]:
+            raise CheckFailure(f"bodies() = {eph.bodies()}, expected ['testbody']")
+        span = (eph.span_start_tdb_s(), eph.span_end_tdb_s())
+        if span != (0.0, 2.0 * _V012_INTLEN):
+            raise CheckFailure(f"span = {span}, expected (0.0, {2.0 * _V012_INTLEN})")
+
+        # (epoch, record, scaled time x). The shared boundary epoch must
+        # evaluate in the record that begins there, and the final epoch of
+        # the segment evaluates in the last record at x = +1 exactly
+        # (docs/formats/sreph_v1.md section 5).
+        cases = [
+            (16384.0, 0, -0.5),
+            (65536.0, 1, -1.0),
+            (114688.0, 1, 0.5),
+            (131072.0, 1, 1.0),
+        ]
+        for tdb_s, record, x in cases:
+            r_got, v_got = eph.state("testbody", tdb_s)
+            r_exp, v_exp = _v012_expected(record, x)
+            if list(r_got) != r_exp or list(v_got) != v_exp:
+                raise CheckFailure(
+                    f"state at t={tdb_s}: got r={list(r_got)}, v={list(v_got)}; "
+                    f"expected r={r_exp}, v={v_exp} (record {record}, x={x})"
+                )
+
+        # Out-of-span epochs are refused, never extrapolated
+        # (std::out_of_range crosses the binding as IndexError).
+        for bad_t in (-2.0, 131073.0):
+            try:
+                eph.state("testbody", bad_t)
+            except IndexError:
+                pass
+            except Exception as exc:  # noqa: BLE001 - evidence gathering
+                raise CheckFailure(
+                    f"out-of-span t={bad_t}: expected IndexError, got "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            else:
+                raise CheckFailure(f"out-of-span t={bad_t} was evaluated without error")
+
+        try:
+            eph.state("nosuchbody", 0.0)
+        except ValueError:
+            pass
+        except Exception as exc:  # noqa: BLE001 - evidence gathering
+            raise CheckFailure(
+                f"unknown body: expected ValueError, got {type(exc).__name__}: {exc}"
+            )
+        else:
+            raise CheckFailure("unknown body was evaluated without error")
+
+        # Loader contract: a truncated file is rejected loudly.
+        truncated = Path(td) / "truncated.sreph"
+        truncated.write_bytes(data[:100])
+        try:
+            core.Ephemeris.load(str(truncated))
+        except RuntimeError:
+            pass
+        except Exception as exc:  # noqa: BLE001 - evidence gathering
+            raise CheckFailure(
+                f"truncated file: expected RuntimeError, got {type(exc).__name__}: {exc}"
+            )
+        else:
+            raise CheckFailure("truncated SREPH file was loaded without error")
+
+
+# Reference eccentric orbit (a = 8000 km, e = 0.15), transcribed from the
+# committed golden tests/golden/integrators/kepler_orbit.toml (case
+# "definition"; provenance in tests/golden/integrators/manifest.toml).
+# mu per IERS Conventions 2010, TN No. 36.
+_V013_MU = float.fromhex("0x1.6a8665bda5400p+48")
+_V013_R0 = [
+    float.fromhex("-0x1.8b4654850dd51p+22"),
+    float.fromhex("-0x1.4bacc4ca4ecb4p+22"),
+    float.fromhex("0x1.8000000000000p-30"),
+]
+_V013_V0 = [
+    float.fromhex("0x1.72b947a180246p+11"),
+    float.fromhex("-0x1.371562d91d310p+12"),
+    float.fromhex("-0x1.9cc00b2dd40c1p+11"),
+]
+_V013_PERIOD_S = float.fromhex("0x1.bd114e244a5b2p+12")  # 7121.081577578023 s
+# First apoapsis passage t = (pi - M0)/n, from the committed analytic golden
+# tests/golden/integrators/apsis_times.toml (case apsis_0).
+_V013_FIRST_APO_S = float.fromhex("0x1.7675ed69bfca6p+10")  # 1497.842615544601 s
+
+
+def _check_v013(ctx: dict) -> None:
+    core = import_core()
+    # Quick variant of Phase 2 exit criterion 4 (which gates < 1e-10 drift
+    # over 10 orbits at rtol 1e-12 in the pytest/doctest suites): 2 orbits
+    # at rtol 1e-11. Invariant drift under adaptive RKF7(8) scales roughly
+    # with the local tolerance, so the one-order-looser rtol carries a
+    # one-order-looser bound; 1e-9 keeps an order of margin over that and
+    # still fails on any conservation-violating integrator defect.
+    drift = core.twobody_drift(
+        _V013_MU, _V013_R0, _V013_V0, 2.0, 1e-11, 1e-6, 1e-9, 10.0, 600.0
+    )
+    if drift["max_energy_rel"] >= 1e-9 or drift["max_hmag_rel"] >= 1e-9:
+        raise CheckFailure(
+            f"two-body invariant drift over 2 orbits at rtol 1e-11: "
+            f"energy {drift['max_energy_rel']:.3e}, |h| {drift['max_hmag_rel']:.3e} "
+            f"(bound 1e-9)"
+        )
+    if drift["steps_accepted"] <= 20:
+        raise CheckFailure(f"implausibly few accepted steps: {drift}")
+
+    # Apsis events over (0, 1.75 T]: analytic passages at t = (k pi - M0)/n,
+    # i.e. 0.2104 T (apo), 0.7104 T (peri), 1.2104 T (apo), 1.7104 T (peri)
+    # for this orbit's M0 - exactly four, alternating, spaced T/2, with the
+    # nearest passage ~280 s clear of the span end so the count is robust.
+    # rtol 1e-11 matches the drift half above: located event times deviate
+    # from analytic in proportion to the trajectory tolerance (1.7e-3 s
+    # measured at rtol 1e-9, so ~2e-5 s expected here), which gives the
+    # 1e-3 s bounds below about two orders of margin while still failing
+    # on a misordered or misconverged event root. The full suites gate
+    # < 1 us at rtol 1e-12 (exit criterion 5).
+    t_end = 1.75 * _V013_PERIOD_S
+    hits = core.apsis_events(
+        _V013_MU, _V013_R0, _V013_V0, t_end, 1e-11, 1e-6, 1e-9, 10.0, 600.0, 1e-6
+    )
+    kinds = [h["kind"] for h in hits]
+    times = [h["t_s"] for h in hits]
+    if kinds != ["apoapsis", "periapsis", "apoapsis", "periapsis"]:
+        raise CheckFailure(f"expected apo/peri/apo/peri, got {kinds} at {times}")
+    if any(t2 <= t1 for t1, t2 in zip(times, times[1:])):
+        raise CheckFailure(f"event times not strictly increasing: {times}")
+    if abs(times[0] - _V013_FIRST_APO_S) > 1e-3:
+        raise CheckFailure(
+            f"first apoapsis at {times[0]!r} s, analytic {_V013_FIRST_APO_S!r} s"
+        )
+    half_t = 0.5 * _V013_PERIOD_S
+    for t1, t2 in zip(times, times[1:]):
+        if abs((t2 - t1) - half_t) > 1e-3:
+            raise CheckFailure(
+                f"apsis spacing {t2 - t1!r} s deviates from T/2 = {half_t!r} s"
+            )
+
+
 _CHECKS = [
     ("V001", "two-body double-run SHA-256 bit-identity", _check_v001),
     ("V002", "minor-version-forward read (v1.999 file with one added channel)", _check_v002),
@@ -332,15 +688,21 @@ _CHECKS = [
     ("V006", "RNG stream reproducibility", _check_v006),
     ("V007", "load() smoke: shapes, dtypes, monotonic t_s, header fields", _check_v007),
     ("V008", "truncated trailing record rejected", _check_v008),
+    ("V009", "UTC->TAI->TT golden epochs bit-exact with round trip", _check_v009),
+    ("V010", "quat<->DCM<->Euler round trips over 100 seeded attitudes", _check_v010),
+    ("V011", "GCRF->ITRF at golden epoch vs ERFA elements + orthonormality", _check_v011),
+    ("V012", "SREPH loader + Chebyshev evaluator on synthesized file", _check_v012),
+    ("V013", "two-body invariant drift and apsis events (quick tier)", _check_v013),
 ]
 
 
 def run_checks(quick: bool = False) -> int:
     """Run every acceptance check, print one line each, return the exit code.
 
-    ``quick`` is accepted for CLI symmetry: in Phase 1 the quick tier and the
-    full tier run the identical check set; the split becomes meaningful when
-    later phases add long-running checks.
+    ``quick`` is accepted for CLI symmetry: through Phase 2 the quick tier
+    and the full tier run the identical check set (every check is budgeted
+    for the < 60 s quick gate); the split becomes meaningful when later
+    phases add long-running checks.
     """
     ctx: dict = {}
     results: list[tuple[str, bool]] = []

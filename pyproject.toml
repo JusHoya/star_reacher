@@ -12,15 +12,17 @@ build-backend = "scikit_build_core.build"
 name = "star-reacher"
 # Version is kept in sync with CMakeLists.txt project(VERSION) manually
 # (Phase 1 contract: both files carry this note).
-version = "0.1.0"
+version = "0.2.0"
 description = "Deterministic six-degree-of-freedom space-mission simulator: C++17/Eigen core, Python analysis frontend"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [{ name = "Melvin Hoyer III" }]
-# Phase 1 runtime is numpy only (D-12 allowed-list discipline): matplotlib
-# and jplephem enter with the phases that need them, never earlier.
-dependencies = ["numpy>=1.26"]
+# D-12 allowed-list discipline: matplotlib enters with the phase that needs
+# it, never earlier. jplephem (on the D-12 allowed-list, data-prep role only)
+# enters in Phase 2 for the `star data fetch de440s` repack pipeline; the
+# deterministic core never imports it.
+dependencies = ["numpy>=1.26", "jplephem>=2.22"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",

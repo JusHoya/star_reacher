@@ -1,0 +1,56 @@
+# Provenance manifest for the time-system golden vectors in this directory
+# (FR-22 layer 1: uncited golden = lint failure; schema documented in
+# tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "time"
+date = "2026-07-02"
+generation = """
+All three value files are written by tests/golden/time/generate.py, which
+implements the FR-2/D-6 conversions independently in pure Python (mirroring
+cpp/src/time.cpp operation for operation where bit-level agreement is
+asserted) and cross-checks every case against ERFA, the reference
+implementation of the IAU SOFA algorithms, via pyerfa 2.0.1.5 (ERFA 2.0.1):
+erfa.dtf2d/utctai/taitt for the UTC->TAI->TT chain, erfa.dat for the
+leap-second history, and erfa.dtdb (full Fairhead-Bretagnon model,
+geocentric arguments) for TDB-TT. The calendar-day algorithms are swept
+against datetime.date over every day 1972-01-01..2068-12-31, and the
+published SOFA cookbook anchor (UTC 2007-04-05 12:00:00.0 -> TAI
+12:00:33.000, TT 12:01:05.184) is asserted at generation time. Epochs past
+ERFA's built-in leap table draw its "dubious year" warning; ERFA then
+assumes TAI-UTC stays 37 s, which is exactly this table's documented
+post-expiry assumption, so those values remain valid cross-checks under the
+shared no-new-leap-second assumption. Observed generation-time maxima:
+|ours - ERFA| = 0.0 s (TAI), 1.92e-11 s (TT, two-part JD fraction
+quantization), 5.53e-6 s (truncated TDB series vs full model). pyerfa is a
+golden-generation dev tool only and is not a runtime dependency.
+Regenerating is `python tests/golden/time/generate.py`; output is
+byte-deterministic.
+"""
+
+[[file]]
+name = "utc_tai_tt.toml"
+source = "generate.py reference implementation; erfa_* fields from ERFA 2.0.1 via pyerfa 2.0.1.5 (dtf2d/utctai/taitt)"
+citation = "Leap-second history per IERS Earth Orientation Centre Bulletin C (verified through Bulletin C 71, January 2026: no leap second at the end of June 2026, TAI-UTC = 37 s); TT = TAI + 32.184 s per IAU 1991 Resolution A4 as stated in Kaplan, USNO Circular 179 (2005); calendar algorithms per Fliegel & Van Flandern, Commun. ACM 11(10), 1968; published anchor from the IAU SOFA cookbook 'SOFA Tools for Earth Attitude' (example date 2007 April 5)"
+citation_anchor = "SOFA cookbook example asserted at generation time: UTC 2007-04-05 12:00:00.0 -> TAI 12:00:33.000, TT 12:01:05.184"
+generation = "tai_epoch_from_utc()/tai_jd()/tt_jd() in generate.py per case; erfa_* from _erfa_chain()"
+date = "2026-07-02"
+tolerance = "tai_day exact (integer equality); tai_sec, tai_jd1/2, tt_jd1/2 exact (binary64 bit equality: the C++ code performs the identical IEEE-754 operation sequence under /fp:strict, so any difference is an algorithmic deviation); vs erfa_* fields abs 1e-9 s computed as ((jd1-erfa_jd1)+(jd2-erfa_jd2))*86400 (two-part difference, never summed first; Phase 2 exit criterion 1). Observed generation-time maxima 0.0 s (TAI) and 1.92e-11 s (TT); 1e-9 s leaves two orders of margin over the two-part JD quantization (~2e-11 s) while enforcing the exit criterion."
+
+[[file]]
+name = "tdb.toml"
+source = "generate.py reference implementation of the truncated series; erfa_dtdb from ERFA 2.0.1 eraDtdb (full model, geocentric: ut = elong = u = v = 0)"
+citation = "Kaplan, G. H., 'The IAU Resolutions on Astronomical Reference Systems, Time Scales, and Earth Rotation Models', USNO Circular 179 (2005), eq. 2.6 - the leading terms of Fairhead & Bretagnon, Astron. Astrophys. 229, 240 (1990)"
+generation = "tdb_minus_tt()/tt_julian_centuries() in generate.py, term order mirroring cpp/src/time.cpp"
+date = "2026-07-02"
+tolerance = "tt_centuries exact (binary64 bit equality, identical operation sequence); tdb_minus_tt abs 1e-13 s (the series arguments are bit-identical by construction, so the only spread is libm sin() ulp differences across C runtimes, bounded well below 1e-15 s after the <= 1.66e-3 coefficients; 1e-13 gives two orders of margin while catching any term or coefficient error); erfa_dtdb abs 30e-6 s (the D-6 truncation budget for the seven-term series vs the full Fairhead-Bretagnon model; Kaplan quotes ~10 us over 1600-2200 and the observed generation-time maximum is 5.54e-6 s)."
+
+[[file]]
+name = "leap_history.toml"
+source = "Published TAI-UTC step history since 1972, tabulated in generate.py and cross-checked against erfa.dat at every boundary and the preceding day"
+citation = "IERS Earth Orientation Centre, Bulletin C series (leap-second announcements); table verified through Bulletin C 71 (issued 2026-01-06): no leap second at the end of June 2026, TAI-UTC remains 37 s. The next instant a change could take effect that Bulletin C 71 does not rule out is 2027-01-01T00:00:00 UTC, which the core reports as the table expiry. Retrieved 2026-07-02 from https://datacenter.iers.org/data/latestVersion/bulletinC.txt and cross-checked against https://hpiers.obspm.fr/iers/bul/bulc/bulletinc.dat."
+generation = "LEAP_TABLE in generate.py; prev_* fields via datetime day arithmetic"
+date = "2026-07-02"
+tolerance = "exact (integer equality of TAI-UTC at each boundary date and on the preceding day)"

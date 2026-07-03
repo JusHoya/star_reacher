@@ -5,7 +5,7 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it using the metadata from this file."
 type: software
 title: star_reacher
-version: 0.1.0
+version: 0.2.0
 date-released: 2026-07-02
 license: Apache-2.0
 repository-code: "https://github.com/JusHoya/star_reacher"

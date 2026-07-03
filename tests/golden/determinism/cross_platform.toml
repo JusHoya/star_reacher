@@ -1,0 +1,48 @@
+# Cross-platform determinism record (PRD Phase 2 exit criterion 8; D-10).
+#
+# The committed home of the measured cross-platform final-state divergence on
+# the reference two-body propagation (missions/twobody_leo.toml) across the
+# four CI legs. The cross-platform-divergence job in .github/workflows/ci.yml
+# recomputes the value on every run (definition and gate rules in
+# scripts/cross_platform_divergence.py) and fails while this record is
+# pending, missing, or above the D-10 bound of 1e-9 relative.
+#
+# Update procedure (bootstrap and every refresh):
+#
+#   1. Let CI run on the phase branch. The cross-platform-divergence job
+#      publishes the measurement as a commit status with context
+#      "determinism/cross-platform" and description "max_rel=<value> ...".
+#      The FIRST run fails this job by design (status below is pending).
+#   2. Read the status without authentication (public repository):
+#        GET https://api.github.com/repos/JusHoya/star_reacher/commits/<sha>/statuses
+#      or the combined view:
+#        GET https://api.github.com/repos/JusHoya/star_reacher/commits/<sha>/status
+#   3. Set measured_max_rel to the published value, set status = "measured",
+#      record the CI run URL in ci_run_url and the date in date, and commit.
+#   4. The next run compares its fresh measurement against this record:
+#      above 1e-9 fails; differing from measured_max_rel by more than a
+#      factor of 10 prints a prominent warning without failing (runner-image
+#      compiler updates legitimately move the last digits) - refresh via
+#      this same procedure.
+#
+# If any measurement exceeds 1e-9, exit criterion 8 requires D-10's bound to
+# be formally revised in the same change that updates this record.
+
+schema_version = 1
+
+[record]
+status = "measured"
+mission = "missions/twobody_leo.toml"
+legs = ["ubuntu-24.04", "ubuntu-24.04-arm", "macos-15", "windows-2022"]
+bound_rel = 1e-9
+# First measurement (commit status "determinism/cross-platform" on
+# 6bde73ca01a16454751be8a25cee6d4c525538a8: "max_rel=0.000e+00 (bound 1e-9,
+# 4 legs)"): the four legs produced bit-identical final truth records. The
+# reference propagation's arithmetic is add/subtract/multiply/divide/sqrt
+# only - all IEEE-754 correctly-rounded operations with FMA contraction
+# disabled (D-10) - so exact cross-platform agreement is the expected
+# outcome for this case, not an anomaly; libm-induced divergence enters
+# only with the transcendental-bearing models of later phases.
+measured_max_rel = 0.0
+ci_run_url = "https://github.com/JusHoya/star_reacher/actions/runs/28632023620"
+date = "2026-07-02"

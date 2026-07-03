@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# SREPH ephemeris containers are binary; never normalize or diff as text
+# (the committed golden excerpts under tests/golden/ephemeris/ depend on it).
+*.sreph binary

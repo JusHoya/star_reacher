@@ -15,7 +15,8 @@ import hashlib
 import json
 import math
 import tomllib
-from datetime import datetime
+import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -499,6 +500,45 @@ def _validate_document(doc: dict, errs: _Errors) -> dict | None:
     }
 
 
+def _warn_if_epoch_past_leap_expiry(epoch_utc: str) -> None:
+    """Warn (never error) when the epoch lies beyond the leap-table expiry.
+
+    The bundled leap-second table can only be verified against IERS
+    Bulletin C up to its release horizon; the core exposes that expiry
+    date programmatically (FR-2, D-6) because it never reads the clock
+    (D-2) - the warning decision belongs here. Beyond the expiry the
+    conversion silently assumes TAI - UTC stays 37 s, which is why this is
+    a warning and not an error: the epoch is still perfectly usable, it is
+    merely no longer guaranteed leap-second-exact.
+    """
+    from star_reacher._corelink import CoreMissingError, import_core
+
+    try:
+        core = import_core()
+    except CoreMissingError:
+        # The table and its expiry live only in the compiled core (one home
+        # per constant), and validation must stay fully usable without it.
+        # Any code path that goes on to propagate raises the actionable
+        # core-missing error itself, so the advisory warning is skipped
+        # rather than duplicated in a degraded form.
+        return
+    info = core.leap_table_info()
+    expiry = tuple(info["expiry_utc"])
+    # The epoch string was already validated: aware ISO-8601. Comparison is
+    # by UTC calendar date, matching how leap-second steps take effect.
+    moment = datetime.fromisoformat(epoch_utc).astimezone(timezone.utc)
+    if (moment.year, moment.month, moment.day) >= expiry:
+        warnings.warn(
+            f"epoch_utc {epoch_utc!r} is on or after "
+            f"{expiry[0]:04d}-{expiry[1]:02d}-{expiry[2]:02d}, the expiry of "
+            f"the bundled leap-second table ({info['version']}); TAI-UTC = "
+            f"37 s is assumed for this epoch. Update star_reacher if a leap "
+            f"second has been announced since.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
 def validate_mission_file(path) -> tuple[dict | None, list[str]]:
     """Validate one mission TOML file.
 
@@ -522,6 +562,7 @@ def validate_mission_file(path) -> tuple[dict | None, list[str]]:
     resolved = _validate_document(doc, errs)
     if errs.items:
         return None, errs.items
+    _warn_if_epoch_past_leap_expiry(resolved["mission"]["epoch_utc"])
     return resolved, []
 
 

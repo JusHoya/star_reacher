@@ -1,4 +1,5 @@
-# Phase 1 CI (PRD section 7 matrix; exit criteria 1, 5, 6, 7).
+# CI (PRD section 7 matrix; Phase 1 exit criteria 1, 5, 6, 7 and Phase 2
+# exit criterion 8).
 # Honesty rule: no continue-on-error anywhere — a red gate is a red build.
 name: ci
 
@@ -64,6 +65,86 @@ jobs:
               sys.exit(f"star verify --quick took {elapsed:.1f} s (gate: < 60 s)")
           if "VERIFY: PASS" not in output:
               sys.exit("output does not contain 'VERIFY: PASS'")
+      # Phase 2 exit criterion 8, per-leg half: propagate the reference
+      # mission and publish this leg's final truth state at full precision
+      # (float.hex()) for the cross-platform-divergence job below.
+      - name: Propagate the reference mission (criterion 8)
+        shell: bash
+        run: star run missions/twobody_leo.toml -o "$RUNNER_TEMP/c8-run"
+      - name: Extract the final truth state
+        shell: bash
+        run: >-
+          python scripts/cross_platform_divergence.py extract
+          --srlog "$RUNNER_TEMP/c8-run/run.srlog"
+          --leg "${{ matrix.os }}"
+          --out finalstate/finalstate.json
+      - name: Upload the final-state artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: finalstate-${{ matrix.os }}
+          path: finalstate/finalstate.json
+          if-no-files-found: error
+
+  # Phase 2 exit criterion 8, aggregation half: the cross-platform
+  # final-state divergence on the two-body reference propagation is
+  # measured across all four legs, published as a commit status readable
+  # without authentication, and gated against the committed record
+  # tests/golden/determinism/cross_platform.toml (divergence definition
+  # and gate rules in scripts/cross_platform_divergence.py). Bootstrap:
+  # the record is committed as pending-first-measurement, so the FIRST run
+  # of this job fails by design; the maintainer transcribes the measured
+  # value from the commit status into the record (procedure in the
+  # record's comments) and the rerun goes green.
+  cross-platform-divergence:
+    needs: build-test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: finalstate-*
+          path: finalstates
+      - name: Measure the max pairwise relative divergence
+        id: measure
+        run: |
+          # pipefail so a measure failure fails this step directly instead of
+          # relying on the downstream grep/gate steps to notice the gap.
+          set -o pipefail
+          python scripts/cross_platform_divergence.py measure \
+            --dir finalstates --expect-legs 4 \
+            --bound 1e-9 --out measurement.json | tee measure.log
+          grep -E '^(max_rel|status_state)=' measure.log >> "$GITHUB_OUTPUT"
+      - name: Publish the measurement as a commit status
+        # A commit status (unlike job logs) is readable without
+        # authentication on a public repository, which is how the measured
+        # value reaches the maintainer machine (no gh CLI there). Skipped
+        # on pull_request events, whose token cannot write statuses from
+        # forks; the gate step below still enforces the bound there.
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ steps.measure.outputs.status_state }}
+          MAX_REL: ${{ steps.measure.outputs.max_rel }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sS --fail-with-body -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"determinism/cross-platform\",\"description\":\"max_rel=$MAX_REL (bound 1e-9, 4 legs)\",\"target_url\":\"$RUN_URL\"}"
+      - name: Gate against the committed record
+        run: >-
+          python scripts/cross_platform_divergence.py gate
+          --measurement measurement.json
+          --record tests/golden/determinism/cross_platform.toml
+          --bound 1e-9
 
   # C++ unit tests (doctest via CTest) with warnings-as-errors. A plain
   # configure is used rather than a preset so this job has no coupling to

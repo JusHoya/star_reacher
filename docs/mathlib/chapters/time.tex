@@ -1,0 +1,369 @@
+% Chapter — Time systems (FR-2, D-6). Follows the mandatory FR-29
+% six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. The equation labels eq:time:j2000, eq:time:fvf,
+% eq:time:utc2tai, eq:time:tai2utc, eq:time:tt, eq:time:ttcent, and
+% eq:time:tdb are echoed verbatim in comments in cpp/src/time.cpp and
+% cpp/include/star/time.hpp (FR-29 equation-label-to-code traceability);
+% renaming them breaks that trace.
+\chapter{Time Systems}
+\label{ch:time}
+
+\section{Purpose}
+\label{sec:time:purpose}
+
+This chapter documents the time-system module (FR-2, decision D-6): the
+internal two-part TAI epoch representation, the conversion between UTC
+calendar fields and TAI through a bundled, versioned leap-second table, the
+exact offset to Terrestrial Time (TT), and the truncated periodic series for
+Barycentric Dynamical Time (TDB). Every downstream Phase~2 model consumes
+these scales: the Earth-orientation frame chain is a function of UT1 and TT,
+and the ephemeris evaluator is a function of TDB. The module is implemented
+in \texttt{cpp/src/time.cpp} with its interface in
+\texttt{cpp/include/star/time.hpp}; per decision D-2 the core accepts only
+numeric calendar fields --- ISO-8601 text parsing lives in the Python
+frontend.
+
+\section{Assumptions and domain of validity}
+\label{sec:time:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Constant-offset UTC era only.} UTC is related to TAI by an
+    integer number of seconds, which holds from 1972-01-01 onward. The
+    pre-1972 ``rubber second'' era (frequency offsets and fractional jumps)
+    is out of domain.
+  \item \textbf{Leap-second knowledge horizon.} The bundled table encodes
+    the published TAI$-$UTC step history through the step effective
+    2017-01-01 ($\Delta AT = \qty{37}{\second}$) and is verified against
+    IERS Bulletin~C~71 (January 2026), which announced that no leap second
+    is introduced at the end of June 2026~\cite{iersbc71}. The first UTC
+    date at which a leap second \emph{not} present in the table could take
+    effect is therefore 2027-01-01 (the end-of-December-2026 insertion
+    opportunity, which Bulletin~C~71 does not rule out).
+  \item \textbf{Positive leap seconds only.} Every leap second since 1972
+    has been an insertion; the table holds only $+1$ steps and the
+    conversion logic renders only inserted seconds (second $60$). A
+    negative leap second would require a table and code revision.
+  \item \textbf{Proleptic Gregorian calendar.} Calendar dates map to day
+    numbers by the integer Julian Day Number algorithm of Fliegel and Van
+    Flandern~\cite{fliegel1968}, exact over the module domain (verified
+    exhaustively over 1972--2068 at golden generation).
+  \item \textbf{Geocentric TDB.} The TDB$-$TT series carries only the
+    time-dependent terms; topocentric terms (observer longitude and
+    geocentric distance, $<\qty{2.1}{\micro\second}$ at the geoid) are
+    omitted, consistent with the D-6 accuracy budget.
+\end{enumerate}
+
+Domain of validity: UTC epochs from 1972-01-01 onward; full leap-second
+accuracy through 2026-12-31; TDB$-$TT within the D-6 budget of
+$\qty{30}{\micro\second}$ over 1600--2200 (section~\ref{sec:time:derivation}).
+
+Out-of-domain behavior, matching the code exactly:
+\begin{itemize}
+  \item Calendar input before 1972-01-01, an invalid field (month, day,
+    hour, minute out of range; non-finite seconds), or second
+    ${}\geq 60$ outside an inserted leap second throws
+    \texttt{std::domain\_error} (surfaced in Python as
+    \texttt{ValueError}). An invalid instant is never silently normalized,
+    because normalizing would shift the epoch by up to one second.
+  \item Calendar input on or after the table expiry (2027-01-01) is
+    \emph{accepted} with the last tabulated offset
+    ($\Delta AT = \qty{37}{\second}$). The core exposes the table version
+    and expiry programmatically and the Python frontend emits a warning for
+    such epochs; the decision is placed in Python because the core never
+    reads the clock (D-2) and cannot know whether its table is stale.
+\end{itemize}
+
+\section{Derivation}
+\label{sec:time:derivation}
+
+\subsection{Time scales}
+
+International Atomic Time (TAI) is the continuous atomic scale, one SI
+second per second on the rotating geoid; it has no leap seconds, so every
+TAI day spans exactly \qty{86400}{\second}. Coordinated Universal Time
+(UTC) differs from TAI by an integer step count,
+\begin{equation}
+  \mathrm{TAI} = \mathrm{UTC} + \Delta AT(t),
+  \label{eq:time:utc2tai}
+\end{equation}
+where $\Delta AT$ is the tabulated leap-second offset, constant between
+steps that take effect at UTC midnights announced by IERS
+Bulletin~C~\cite{iersbc71}. Terrestrial Time is defined with a constant
+offset from TAI (IAU 1991 Resolution A4, as stated by
+Kaplan~\cite{kaplan2005}):
+\begin{equation}
+  \mathrm{TT} = \mathrm{TAI} + \qty{32.184}{\second}
+  \quad\text{exactly.}
+  \label{eq:time:tt}
+\end{equation}
+The J2000 reference epoch is the instant
+\begin{equation}
+  \text{J2000}
+  = \text{2000-01-01T12:00:00.0 TT}
+  = \mathrm{JD}\,2451545.0\ \mathrm{TT}
+  = \text{2000-01-01T11:59:27.816 TAI},
+  \label{eq:time:j2000}
+\end{equation}
+the TAI clock face following from equation~\eqref{eq:time:tt}.
+
+\subsection{Two-part TAI epoch}
+
+An epoch is stored as the pair $(d, s)$ --- whole TAI days $d$ and TAI
+seconds of day $s \in [0, 86400)$ --- counted from 2000-01-01T00:00:00.0
+TAI, so J2000 is the pair $(0,\, 43167.816)$ by
+equation~\eqref{eq:time:j2000}. Because TT and TAI differ by a constant,
+elapsed TT equals elapsed TAI, and the TT Julian-century argument used by
+the TDB series and the frame models is
+\begin{equation}
+  T \;=\; \frac{86400\,d + \bigl(s - 43167.816\bigr)}{86400 \cdot 36525}
+  \qquad \text{[Julian centuries since J2000 TT]}.
+  \label{eq:time:ttcent}
+\end{equation}
+
+The two-part split is the load-bearing design decision of D-6. A single
+binary64 count of seconds since J2000 reaches $\sim\!1.9\times10^{9}$ by
+2060, where its quantum (one unit in the last place) is
+$2^{-52}\times 2^{31} \approx \qty{2.4e-7}{\second}$ --- incompatible with
+the $\sim\!\qty{1e-8}{\second}$ of UT1 precision the Earth-rotation-angle
+computation requires ($\qty{1e-8}{\second}$ of UT1 is
+$\sim\!\qty{7e-12}{\radian}$ of rotation). In the two-part form the day
+count is exact and the sub-day part never exceeds \qty{86400}{\second},
+whose quantum is $2^{-52} \times 2^{17} = \qty{1.455e-11}{\second}$,
+uniform over the whole 2020--2060 span --- three orders of magnitude below
+the requirement. Downstream consumers preserve this by differencing or
+reducing the parts separately (never summing them first), exactly as the
+validation tests compare two-part Julian Dates.
+
+\subsection{Calendar mapping}
+
+Gregorian calendar dates map to integer day numbers by the machine
+algorithm of Fliegel and Van Flandern~\cite{fliegel1968}, which computes
+the Julian Day Number with truncating integer division,
+\begin{equation}
+  \begin{aligned}
+    a &= \left(m - 14\right)/12,\\
+    \mathrm{JDN}(y, m, d) &= d - 32075
+      + 1461\,(y + 4800 + a)/4
+      + 367\,(m - 2 - 12a)/12\\
+      &\quad - 3\,\bigl((y + 4900 + a)/100\bigr)/4,
+  \end{aligned}
+  \label{eq:time:fvf}
+\end{equation}
+with every division truncated toward zero; the epoch day count is
+$N = \mathrm{JDN} - 2451545$ since $\mathrm{JDN}(\text{2000-01-01}) =
+2451545$. The companion inverse algorithm from the same reference recovers
+$(y, m, d)$ from $N$. Both directions were verified exhaustively against an
+independent implementation for every day from 1972-01-01 through 2068-12-31
+at golden generation.
+
+\subsection{UTC to TAI and back, including leap seconds}
+
+For UTC calendar fields $(y, m, d, h, \mathit{min}, s_{\mathrm{utc}})$ the
+UTC seconds of day are $\sigma = 3600h + 60\,\mathit{min} +
+s_{\mathrm{utc}}$, and by equation~\eqref{eq:time:utc2tai} the epoch is
+\begin{equation}
+  A = 86400\,N(y,m,d) + \sigma + \Delta AT(y,m,d),
+  \qquad
+  d_{\mathrm{TAI}} = \lfloor A / 86400 \rfloor,\quad
+  s_{\mathrm{TAI}} = A - 86400\,d_{\mathrm{TAI}},
+  \label{eq:time:tai2utc}
+\end{equation}
+where $A$ is TAI seconds since 2000-01-01T00:00:00 TAI. During an inserted
+leap second the seconds field satisfies $s_{\mathrm{utc}} \in [60, 61)$, so
+$\sigma \in [86400, 86401)$ and the mapping continues smoothly across the
+insertion --- no special case is needed in the forward direction beyond
+admitting the extended seconds range on exactly the final minute of a day
+the table steps after.
+
+For the inverse, observe that the UTC civil day with epoch day number $D$
+begins at $A = 86400\,D + \Delta AT(D)$ and ends where the next day begins,
+so its TAI duration is $86400 + [\Delta AT(D{+}1) - \Delta AT(D)]$ seconds:
+\qty{86401}{\second} for a day ending in an inserted leap second. Given
+$(d_{\mathrm{TAI}}, s_{\mathrm{TAI}})$, the containing UTC day is
+$d_{\mathrm{TAI}}$ itself when $s_{\mathrm{TAI}} \geq
+\Delta AT(d_{\mathrm{TAI}})$ and the preceding day otherwise, and the UTC
+seconds of day are $\sigma = A - 86400\,D - \Delta AT(D)$. The value
+$\sigma \in [86400, 86401)$ arises exactly when the preceding day ends in
+an inserted second and the instant lies inside it; it is rendered as
+23:59:60$+$fraction. The round trip is therefore the identity for every
+valid UTC instant, including instants inside a leap second --- the property
+gated by \testid{time_leap_second_roundtrip}.
+
+\subsection{TDB}
+
+Barycentric Dynamical Time differs from TT by periodic relativistic terms.
+The module implements the seven-term truncation of the Fairhead and
+Bretagnon series~\cite{fairhead1990} as given by Kaplan~\cite[eq.~2.6]
+{kaplan2005}:
+\begin{equation}
+  \begin{aligned}
+    \mathrm{TDB} - \mathrm{TT} \;[\unit{\second}] \;=\;
+      &\phantom{+}\,0.001657 \sin(628.3076\,T + 6.2401)\\
+      &+ 0.000022 \sin(575.3385\,T + 4.2970)
+       + 0.000014 \sin(1256.6152\,T + 6.1969)\\
+      &+ 0.000005 \sin(606.9777\,T + 4.0212)
+       + 0.000005 \sin(52.9691\,T + 0.4444)\\
+      &+ 0.000002 \sin(21.3299\,T + 5.5431)
+       + 0.000010\,T \sin(628.3076\,T + 4.2490),
+  \end{aligned}
+  \label{eq:time:tdb}
+\end{equation}
+with $T$ from equation~\eqref{eq:time:ttcent} (using TT rather than TDB in
+the argument perturbs the result below $\qty{1e-12}{\second}$ and is the
+form Kaplan gives). Kaplan quotes $\sim\!\qty{10}{\micro\second}$ accuracy
+against the full model over 1600--2200~\cite{kaplan2005}, inside the D-6
+budget of \qty{30}{\micro\second}; the observed maximum against the full
+Fairhead--Bretagnon model (ERFA \texttt{eraDtdb}) over the golden epochs
+spanning 2007--2060 is \qty{5.54e-6}{\second}
+(\texttt{tests/golden/time/manifest.toml}). The dominant term is the annual
+aberration of the terrestrial clock ($k \sin g$ with $g$ the Earth's mean
+anomaly); truncation is acceptable because the ephemeris consumer tolerates
+tens of microseconds of argument error (interplanetary velocities of
+$\sim\!\qty{40}{\kilo\metre\per\second}$ make \qty{30}{\micro\second}
+about \qty{1.2}{\milli\metre} of position).
+
+\section{Discretization and implementation}
+\label{sec:time:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The conversions live in
+    \texttt{cpp/src/time.cpp}; the source comments echo the labels
+    \texttt{eq:time:j2000}, \texttt{eq:time:fvf}, \texttt{eq:time:utc2tai},
+    \texttt{eq:time:tai2utc}, \texttt{eq:time:tt}, \texttt{eq:time:ttcent},
+    and \texttt{eq:time:tdb} verbatim.
+  \item \textbf{Exact integer bookkeeping.} Equations~\eqref{eq:time:fvf}
+    and~\eqref{eq:time:tai2utc} are evaluated in 64-bit integer arithmetic
+    for every whole-second quantity; the fractional second is split off
+    exactly (the fractional part of a binary64 is itself representable) and
+    rides through unchanged. The single rounding step in a UTC-to-TAI
+    conversion is the final addition
+    $s_{\mathrm{TAI}} = \mathrm{fl}(\mathrm{isod} + \mathrm{frac})$, whose
+    error is at most $2^{-37} \approx \qty{7.3e-12}{\second}$ (one half ulp
+    at \qty{86400}{\second}). Consequently the UTC
+    $\rightarrow$ TAI $\rightarrow$ UTC round trip is bit-exact whenever
+    the fractional second is representable at that quantum (all golden
+    inputs use dyadic fractions), and within
+    $\qty{1.5e-11}{\second}$ otherwise.
+  \item \textbf{Leap-second table.} The 28-entry TAI$-$UTC step history is
+    a \texttt{constexpr} array cited at its definition (IERS Bulletin~C
+    series, verified through Bulletin~C~71~\cite{iersbc71}), scanned with a
+    fixed-order loop (branch-stable, D-10). The table version string and
+    expiry date (2027-01-01) are exposed programmatically
+    (\texttt{leap\_table\_info}) so the Python frontend can warn on
+    post-expiry epochs; the warning lives in Python because the core never
+    reads the clock (D-2).
+  \item \textbf{Epoch arithmetic.} \texttt{tai\_add\_seconds} restores the
+    $0 \leq s < 86400$ invariant by whole-day reduction plus at most one
+    fix-up per side (the floating floor at the boundary can be off by one
+    ulp). Precision is $\mathrm{ulp}(\max(|\Delta t|, 86400))$: exact
+    nanosecond resolution for within-mission offsets, degrading gracefully
+    for offsets of years.
+  \item \textbf{Determinism.} All paths are straight-line integer and
+    IEEE-754 double arithmetic with fixed evaluation order, compiled with
+    fast-math disabled and contraction off (D-10). The golden tests
+    exploit this: the committed reference values were generated by a
+    Python implementation performing the identical operation sequence,
+    and the C++ results are required to match them \emph{bit for bit}
+    (libm-dependent quantities --- the TDB sines --- carry a documented
+    $\qty{1e-13}{\second}$ tolerance instead).
+  \item \textbf{Binding surface.} Epochs cross the pybind11 boundary as
+    plain \texttt{(day, sec)} tuples; \texttt{std::domain\_error} maps to
+    Python \texttt{ValueError}. The Python mission validator warns (never
+    errors) on epochs past the table expiry, so a stale table can never
+    block a run, only annotate it.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:time:validation}
+
+Tables~\ref{tab:time:validation-core} and~\ref{tab:time:validation-py}
+list the tests that constitute this chapter's validation evidence. Each
+test identifier is machine-checked to exist in the test tree by
+\texttt{scripts/lint\_chapters.py}; golden provenance and tolerances are
+recorded in \texttt{tests/golden/time/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the time-system module: core (doctest,
+    \texttt{cpp/tests/}).}
+  \label{tab:time:validation-core}
+  \begin{tabular}{lp{8.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{time_utc_tai_tt_golden} &
+      UTC$\to$TAI$\to$TT at 18 epochs (2007--2060): bit equality with the
+      golden reference; two-part agreement with ERFA
+      (\texttt{dtf2d}/\texttt{utctai}/\texttt{taitt}) to
+      $\leq \qty{1e-9}{\second}$ (Phase~2 exit criterion 1); published SOFA
+      cookbook anchor~\cite{sofacookbook}; bit-exact calendar round
+      trip. \\
+    \testid{time_tdb_series_golden} &
+      Equation~\eqref{eq:time:tdb} vs.\ the bit-comparable reference to
+      $\leq \qty{1e-13}{\second}$ and vs.\ the full Fairhead--Bretagnon
+      model (ERFA \texttt{eraDtdb}) to $\leq \qty{30}{\micro\second}$
+      (D-6 budget). \\
+    \testid{time_leap_table_golden} &
+      All 28 table steps and the day before each vs.\ the published
+      history; expiry metadata (2027-01-01); post-expiry lookups return
+      \qty{37}{\second}. \\
+    \testid{time_leap_second_roundtrip} &
+      Bit-exact UTC round trip before, inside, and after the inserted
+      second at every boundary since 1972; exactly \qty{2}{\second} of TAI
+      elapse from 23:59:59 to 00:00:00 across a leap. \\
+    \testid{time_two_part_precision} &
+      A \qty{1}{\nano\second} step at epoch 2060 survives the two-part
+      representation (and demonstrably vanishes in a single double);
+      normalization invariant $0 \leq s < 86400$ under epoch
+      arithmetic. \\
+    \testid{time_domain_errors} &
+      Pre-1972 dates, invalid calendar fields, non-finite seconds, and
+      second~60 outside an inserted leap second all throw
+      \texttt{std::domain\_error}; Gregorian century rule honored. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the time-system module: binding and
+    frontend surface (pytest, \texttt{tests/python/}).}
+  \label{tab:time:validation-py}
+  \begin{tabular}{lp{6.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{test_time_bindings_match_goldens} &
+      The pybind11 surface reproduces the same goldens (bit equality;
+      $\leq \qty{1e-9}{\second}$ vs.\ ERFA). \\
+    \testid{test_time_tdb_bindings_golden} &
+      TDB series and two-part TDB Julian Date through the bindings. \\
+    \testid{test_time_leap_roundtrip_bindings} &
+      Leap-second round trips and \texttt{ValueError} domain mapping
+      through the bindings; table metadata exposure. \\
+    \testid{test_time_two_part_arithmetic_precision} &
+      Two-part arithmetic resolves \qty{1}{\nano\second} at 2060 through
+      the bindings. \\
+    \testid{test_time_epoch_expiry_warning} &
+      Mission epochs on or after 2027-01-01 (by UTC calendar date,
+      including offset time zones) warn and still validate; earlier epochs
+      do not warn. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:time:references}
+
+This chapter relies on Kaplan, USNO Circular No.~179~\cite{kaplan2005} for
+the time-scale relationships, the J2000 definition, and the truncated TDB
+series; on Fairhead and Bretagnon~\cite{fairhead1990} for the underlying
+analytical TDB$-$TT model; on the IERS Bulletin~C series~\cite{iersbc71}
+for the leap-second history and its verification horizon; on Fliegel and
+Van Flandern~\cite{fliegel1968} for the calendar algorithms; and on the IAU
+SOFA cookbook~\cite{sofacookbook} for the published worked example anchoring
+the golden vectors. Vallado~\cite{vallado2013} gives the survey treatment
+of the same material. Full bibliographic details appear in the
+bibliography.

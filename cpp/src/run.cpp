@@ -9,6 +9,7 @@
 #include <Eigen/Dense>
 
 #include "star/constants.hpp"
+#include "star/integrate.hpp"
 #include "star/models/twobody.hpp"
 #include "star/srlog_writer.hpp"
 #include "star/version.hpp"
@@ -87,9 +88,19 @@ RunSummary run_twobody(const RunConfig& cfg, const std::string& out_path) {
   const double q_identity[4] = {1.0, 0.0, 0.0, 0.0};
   const Eigen::Vector3d w_zero = Eigen::Vector3d::Zero();
 
-  models::TwoBodyState state;
-  state.r_m = Eigen::Vector3d(cfg.r0_m[0], cfg.r0_m[1], cfg.r0_m[2]);
-  state.v_mps = Eigen::Vector3d(cfg.v0_mps[0], cfg.v0_mps[1], cfg.v0_mps[2]);
+  // Shared fixed-step RK4 from the integrator library (FR-11); the model
+  // contributes only its right-hand side. The rhs lambda outlives the loop,
+  // satisfying integrate::RhsRef's non-owning lifetime contract.
+  auto rhs = [mu](double t, const double* y, double* ydot) {
+    models::twobody_rhs(mu, t, y, ydot);
+  };
+  const integrate::RhsRef f(rhs);
+  integrate::Rk4 rk4(6);
+
+  double y[6] = {cfg.r0_m[0],   cfg.r0_m[1],   cfg.r0_m[2],
+                 cfg.v0_mps[0], cfg.v0_mps[1], cfg.v0_mps[2]};
+  const Eigen::Map<const Eigen::Vector3d> r_m(y);
+  const Eigen::Map<const Eigen::Vector3d> v_mps(y + 3);
 
   RunSummary summary;
   summary.steps = steps;
@@ -97,17 +108,20 @@ RunSummary run_twobody(const RunConfig& cfg, const std::string& out_path) {
   writer.write_event(0.0, 1, "run_start");
   summary.event_records += 1;
 
-  writer.write_truth(0.0, state.r_m, state.v_mps, q_identity, w_zero,
-                     cfg.mass_kg);
+  writer.write_truth(0.0, r_m, v_mps, q_identity, w_zero, cfg.mass_kg);
   summary.truth_records += 1;
 
   for (std::int64_t i = 1; i <= steps; ++i) {
-    state = models::rk4_step(mu, state, cfg.dt_s);
+    // Step time t = (i-1)*dt as a single multiply (not accumulated
+    // addition): one rounding per timestamp keeps step times and logged
+    // times well-conditioned and reproducible. The dynamics are autonomous,
+    // so t only labels the step here.
+    rk4.step(f, static_cast<double>(i - 1) * cfg.dt_s, y, cfg.dt_s, y);
     if (i % decim == 0) {
-      // t = i*dt as a single multiply (not accumulated addition): one rounding
-      // per timestamp keeps logged times well-conditioned and reproducible.
-      writer.write_truth(static_cast<double>(i) * cfg.dt_s, state.r_m,
-                         state.v_mps, q_identity, w_zero, cfg.mass_kg);
+      // Record decimation semantics are unchanged from Phase 1: log at
+      // t = 0 and every decim-th step, never interpolated (FR-16).
+      writer.write_truth(static_cast<double>(i) * cfg.dt_s, r_m, v_mps,
+                         q_identity, w_zero, cfg.mass_kg);
       summary.truth_records += 1;
     }
   }
@@ -119,8 +133,8 @@ RunSummary run_twobody(const RunConfig& cfg, const std::string& out_path) {
   writer.close();
 
   for (int i = 0; i < 3; ++i) {
-    summary.final_r_m[static_cast<std::size_t>(i)] = state.r_m[i];
-    summary.final_v_mps[static_cast<std::size_t>(i)] = state.v_mps[i];
+    summary.final_r_m[static_cast<std::size_t>(i)] = r_m[i];
+    summary.final_v_mps[static_cast<std::size_t>(i)] = v_mps[i];
   }
   return summary;
 }

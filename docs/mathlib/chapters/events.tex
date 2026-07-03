@@ -1,0 +1,279 @@
+% Chapter — Event detection. Follows the mandatory FR-29 six-section
+% template: purpose; assumptions and domain of validity; derivation;
+% discretization and implementation; validation evidence; references. The
+% equation labels eq:events:screen, eq:events:ghat, eq:events:timer, and
+% eq:events:apsis are echoed verbatim in comments in cpp/src/events.cpp and
+% cpp/include/star/events.hpp (FR-29 equation-label-to-code traceability);
+% renaming them breaks that trace.
+\chapter{Event Detection}
+\label{ch:events}
+
+\section{Purpose}
+\label{sec:events:purpose}
+
+This chapter documents the event-detection framework (requirement FR-12):
+scalar event functions $g(t, \vv{y})$ screened for sign changes on every
+accepted integrator step, root location by Brent's method on the step's
+dense output to a configurable time tolerance ($\qty{1e-9}{s}$ by default),
+direction filters, and integrator restart at the located root with an
+optional discrete state update. This is the mechanism by which the mission
+sequence acts on the trajectory: the Phase~2 event set is timers and apsis
+crossings, and later phases add staging, ignition/cutoff, sphere-of-influence
+transitions, node crossings, and ground impact as additional event functions
+--- the framework itself does not change. The implementation lives in
+\texttt{cpp/src/events.cpp}, on top of the integrators and dense output of
+Chapter~\ref{ch:integrators}.
+
+\section{Assumptions and domain of validity}
+\label{sec:events:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item Each event function $g(t, \vv{y})$ is continuous in $t$ along the
+    trajectory within a step, and differentiable at its roots with
+    $\dot{g}(t^{*}) \neq 0$ (simple crossings). Brent's method still
+    converges on roots of odd multiplicity (bisection fallback), but the
+    timing-error analysis below assumes simple roots.
+  \item Event functions are computable from $(t, \vv{y})$ alone --- no
+    history, no side effects. Discrete behavior belongs in the update hook,
+    which runs only at located roots.
+  \item At most one sign change of each event function occurs per accepted
+    step. Sign screening is blind to an even number of crossings inside one
+    step (the endpoint signs match); the mitigation is capping the step
+    length $h_{\max}$ below half the shortest oscillation period of any
+    registered event function.
+\end{enumerate}
+
+Domain of validity and out-of-domain behavior, matching the code:
+\begin{itemize}
+  \item Located event times inherit the dense-output interpolation error
+    (equation~\eqref{eq:events:timing}); the framework honors its
+    $\qty{1e-9}{s}$ root tolerance with respect to the \emph{interpolated}
+    event function. Consumers needing a specific accuracy against the true
+    trajectory must budget the $h^{4}$ term via $h_{\max}$, as the apsis
+    validation case does.
+  \item The apsis event function (equation~\eqref{eq:events:apsis})
+    degenerates as $e \to 0$: on a circular orbit $g = \vv{r}\cdot\vv{v}$
+    is identically zero and apsides are undefined. The framework itself is
+    unaffected (a $g$ that stays at zero never screens as a crossing, by
+    the strict-sign rule of equation~\eqref{eq:events:screen}); the event
+    simply reports nothing, which is the correct degenerate answer.
+  \item An event whose $g$ is exactly zero at the propagation start (or at
+    a restart) is not fired until $g$ leaves zero: screening requires a
+    strictly signed starting value.
+  \item Roots of the same event closer together than the time tolerance are
+    indistinguishable by construction and fire once.
+\end{itemize}
+
+\section{Derivation}
+\label{sec:events:derivation}
+
+\subsection{Sign screening with direction filters}
+
+Let $g_0 = g(t_0, \vv{y}_0)$ and $g_1 = g(t_1, \vv{y}_1)$ be the event
+function at the endpoints of an accepted step. A crossing is flagged in
+$(t_0, t_1]$ when
+\begin{equation}
+  \underbrace{g_0 < 0 \;\wedge\; g_1 \ge 0}_{\text{increasing}}
+  \qquad\text{or}\qquad
+  \underbrace{g_0 > 0 \;\wedge\; g_1 \le 0}_{\text{decreasing}},
+  \label{eq:events:screen}
+\end{equation}
+filtered by the event's direction setting (increasing only, decreasing
+only, or either). By the intermediate value theorem the continuous
+interpolated event function of
+equation~\eqref{eq:events:ghat} then has at least one root in the step.
+
+\subsection{Root location on the dense output}
+
+Evaluating $g$ on the true solution inside a step is not possible without
+further integration; the framework instead locates roots of the
+\emph{interpolated} event function
+\begin{equation}
+  \hat{g}(\tau) = g\bigl(\tau,\, \vv{u}(\tau)\bigr),
+  \qquad \tau \in [t_0, t_1],
+  \label{eq:events:ghat}
+\end{equation}
+where $\vv{u}$ is the cubic Hermite dense output of
+equation~\eqref{eq:integrators:hermite}. Because $\vv{u}$ reproduces the
+step endpoints exactly, $\hat{g}$ carries the already-computed endpoint
+values $g_0$, $g_1$, and the screened bracket transfers verbatim.
+
+The root is located with Brent's method~\cite{brent1973}: the
+guaranteed-convergent combination of bisection, the secant rule, and
+inverse quadratic interpolation, taking the interpolation step only when it
+falls safely inside the current bracket and shrinks faster than the
+previous-but-one step, and bisecting otherwise. Brent proves (i)
+convergence is never worse than a bounded multiple of bisection ---
+at most $\mathcal{O}\bigl(\log_2^2((b-a)/\delta)\bigr)$ function evaluations
+for bracket $[a,b]$ and tolerance $\delta$ --- and (ii) on simple roots of
+smooth functions convergence is superlinear~\cite{brent1973}. The
+implementation iterates until the bracket width is within
+$\delta = \delta_{t} + 4\,\varepsilon\,|t|$, honoring the configured
+tolerance $\delta_t$ down to the resolution of double precision at the
+root's magnitude.
+
+\subsection{Event-timing error law}
+\label{sec:events:timing}
+
+The located time $\hat{t}$ is a root of $\hat{g}$, not of the true
+$g^{*}(\tau) = g(\tau, \vv{y}(\tau))$. For a simple root at $t^{*}$,
+expanding $g^{*}$ about $t^{*}$ and bounding
+$|\hat{g} - g^{*}| \le L_g\,\norm{\vv{u} - \vv{y}}_{\infty}$ with the
+Hermite bound of equation~\eqref{eq:integrators:hermite:err} gives
+\begin{equation}
+  \bigl|\hat{t} - t^{*}\bigr|
+    \;\lesssim\;
+    \frac{L_g}{|\dot{g}(t^{*})|}\,
+    \frac{h^{4}}{384}\, \max \bigl|\vv{y}^{(4)}\bigr|
+    \;+\; \delta_t,
+  \label{eq:events:timing}
+\end{equation}
+where $L_g$ is the Lipschitz constant of $g$ in $\vv{y}$ on the step and
+$\delta_t$ the root tolerance. Event timing therefore improves as $h^{4}$
+and is controlled by $h_{\max}$, exactly as anticipated in
+Chapter~\ref{ch:integrators}. For the apsis validation case below
+($h_{\max} = \qty{5}{s}$ on the reference orbit), the $h^4$ term evaluates
+to $\sim\qty{5e-11}{s}$, so the located times are dominated by the
+$\qty{1e-9}{s}$ root tolerance --- three orders inside the
+$\qty{1}{\micro s}$ acceptance gate, and consistent with the measured
+$3.4\times10^{-4}\,\unit{\micro s}$ worst case.
+
+\subsection{Restart with discrete update}
+
+Reading the event-time state off the dense output would inject the full
+$\mathcal{O}(h^4)$ interpolation error into the trajectory. Instead, after
+locating $\hat{t}$ the driver \emph{re-integrates} the step from $t_0$ with
+step length $\hat{t} - t_0$, so the state delivered at the event carries
+integrator accuracy; the shortened step needs no error re-test because it
+is interior to a step that already passed. The event's discrete update hook
+may then modify the state in place (mass drop, impulsive maneuver, origin
+re-centering in later phases), propagation restarts from
+$(\hat{t}, \vv{y}(\hat{t}))$, and all event functions are re-evaluated
+there. Terminal events stop propagation at $\hat{t}$ instead.
+
+Two safeguards make restart robust at the root. First, the driver fires at
+the bracket endpoint on the \emph{post-crossing} side of the root (both
+endpoints are within the tolerance), so integration resumes with the sign
+change already behind it. Second, for events without a discrete update the
+stored screening sign is forced to the crossed side, so interpolant-level
+noise around zero cannot re-fire the event; when an update ran, the
+re-evaluated value stands, because the hook may legitimately move $g$
+(re-arming a timer, changing regime).
+
+\subsection{Phase 2 event functions}
+
+\emph{Timer.} An event at fixed time $t_{\mathrm{e}}$ uses
+\begin{equation}
+  g(t, \vv{y}) = t - t_{\mathrm{e}},
+  \label{eq:events:timer}
+\end{equation}
+linear in $t$ and independent of the state, so
+equation~\eqref{eq:events:timing} reduces to the root tolerance alone
+($L_g = 0$): timers isolate the root-finding and restart machinery in
+validation.
+
+\emph{Apsis crossing.} For a translational state $[\vv{r}, \vv{v}]$ about a
+central body, apsides are the extrema of $r = \norm{\vv{r}}$, i.e. the
+zeros of $\dot{r}\,r = \vv{r}\cdot\vv{v}$:
+\begin{equation}
+  g(t, \vv{y}) = \vv{r} \cdot \vv{v}.
+  \label{eq:events:apsis}
+\end{equation}
+Under two-body dynamics (equation~\eqref{eq:twobody:accel}),
+$\dot{g} = \vv{v}\cdot\vv{v} + \vv{r}\cdot\dot{\vv{v}} = v^2 - \mu/r$.
+Evaluating on the ellipse with semi-latus rectum $p = a(1 - e^2)$
+(Vallado~\cite{vallado2013}): at periapsis $v_p^2 = (\mu/p)(1+e)^2$ and
+$\mu/r_p = (\mu/p)(1+e)$, so $\dot{g}_p = \mu e (1 + e)/p > 0$; at apoapsis
+$\dot{g}_a = -\mu e (1 - e)/p < 0$. Periapsis is therefore an increasing
+crossing of $g$ and apoapsis a decreasing one, which is how the two
+direction-filtered event registrations in the validation suite distinguish
+them, and $|\dot g|$ at the roots --- $\sim\qty{8.8e6}{m^2/s^3}$ for the
+reference orbit --- is the denominator in
+equation~\eqref{eq:events:timing}.
+
+\section{Discretization and implementation}
+\label{sec:events:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The framework lives in
+    \texttt{cpp/src/events.cpp} with the public interface in
+    \texttt{cpp/include/star/events.hpp}. Source comments echo the labels
+    \texttt{eq:events:screen} and \texttt{eq:events:ghat} at the screening
+    and root-location code, and \texttt{eq:events:timer} and
+    \texttt{eq:events:apsis} at the two event functions.
+  \item \textbf{Extension contract.} An event type is a callable
+    $g(t, \vv{y})$ plus a direction, an optional update hook, and a
+    terminal flag (\texttt{EventSpec}); Phase 3+ event types plug in
+    without framework changes. All framework references to user code are
+    non-owning function references, matching the integrator's hot-loop
+    interface.
+  \item \textbf{Determinism (D-10).} Events are screened in registration
+    order every step; when several events root within the same step the
+    earliest located time fires, with exact ties resolved to the lowest
+    index. Brent's iteration is pure double arithmetic on the bracket; all
+    workspace is pre-allocated. The only allocation after setup is the
+    growth of the caller-supplied event log when an event actually fires
+    (callers may reserve).
+  \item \textbf{Bracket endpoints for free.} Because the dense output
+    reproduces step endpoints bitwise, the screening values $g_0$, $g_1$
+    seed Brent's bracket without re-evaluation, and $g_1$ of an accepted
+    step is reused as $g_0$ of the next.
+  \item \textbf{Tolerance floor.} The root tolerance degrades gracefully to
+    $4\varepsilon|t|$ when the configured $\delta_t$ is below the
+    resolution of double at the root's magnitude.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:events:validation}
+
+Table~\ref{tab:events:validation} lists the tests that constitute this
+chapter's validation evidence. Each identifier is machine-checked to exist
+in the test tree by \texttt{scripts/lint\_chapters.py}; the analytic apsis
+times are committed goldens with provenance
+(\texttt{tests/golden/integrators/manifest.toml}), and the apsis
+measurement is reproduced from Python by
+\texttt{tests/python/test\_integrators.py}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the event-detection framework. Measured
+    values are from the acceptance run recorded in the test sources
+    (MSVC x64, \texttt{/fp:strict}).}
+  \label{tab:events:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{brent_root_known_functions} &
+      Brent's method against known roots (quadratic, transcendental,
+      triple root, exact-zero endpoint, non-bracketing rejection): located
+      within $\delta_t + 4\varepsilon|t|$, iteration counts consistent with
+      superlinear convergence~\cite{brent1973}. \\
+    \testid{timer_event_location} &
+      Timer events (equation~\eqref{eq:events:timer}) located within the
+      $\qty{1e-9}{s}$ root tolerance exactly; terminal event stops
+      propagation at the located root. \\
+    \testid{event_restart_discrete_update} &
+      An impulsive along-track $\Delta v$ applied by an update hook at a
+      timer event: final state matches the two-segment analytic Kepler
+      composition to $\qty{2e-3}{m}$ / $\qty{2e-6}{m/s}$; the event fires
+      exactly once (no duplicate re-fire at the root). \\
+    \testid{apsis_event_times_analytic} &
+      Periapsis and apoapsis times (equation~\eqref{eq:events:apsis},
+      direction-filtered) over 3.2 orbits of the eccentric reference orbit
+      vs the committed analytic times: worst error
+      $3.4\times10^{-4}\,\unit{\micro s}$, gate $< \qty{1}{\micro s}$
+      (Phase 2 exit criterion 5). \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:events:references}
+
+This chapter relies on Brent~\cite{brent1973} for the root-finding
+algorithm and its convergence guarantees, on Hairer, N{\o}rsett, and
+Wanner~\cite{hairer1993} for the dense output the roots are located on, and
+on Vallado~\cite{vallado2013} for the apsis geometry of the ellipse. Full
+bibliographic details appear in the bibliography.
