@@ -12,7 +12,7 @@ build-backend = "scikit_build_core.build"
 name = "star-reacher"
 # Version is kept in sync with CMakeLists.txt project(VERSION) manually
 # (Phase 1 contract: both files carry this note).
-version = "0.3.0"
+version = "0.4.0"
 description = "Deterministic six-degree-of-freedom space-mission simulator: C++17/Eigen core, Python analysis frontend"
 readme = "README.md"
 requires-python = ">=3.11"
