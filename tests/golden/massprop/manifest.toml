@@ -1,0 +1,44 @@
+# Provenance manifest for the vehicle mass-properties golden vectors in this
+# directory (FR-22 layer 1: uncited golden = lint failure; schema documented
+# in tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "massprop"
+date = "2026-07-03"
+generation = """
+Both value files are written by tests/golden/massprop/generate.py (mpmath
+1.3.0, CPython 3.14.0, 60 significant decimal digits). References are
+evaluated in extended precision from the exact binary64 inputs and rounded
+once to binary64. The mpmath evaluation mirrors the closed-form model of
+math-library chapter ch:massprops term for term but shares no binary64
+rounding with the C++ path, so the committed values check the
+double-precision implementation to its own rounding floor. Every quantity
+is an elementary closed form derived in full in ch:massprops: settled-slug
+fill height, CG, and solid-cylinder inertia with their exact time
+derivatives through the fill height (assumption A-2: settled propellant,
+no slosh or ullage), mass-weighted CG and parallel-axis inertia
+composition about the composite CG, the exact composite rates, and the
+closed-form single-body removal that models a jettison event. Slug masses
+are the committed propellant-mass inputs verbatim and all inputs are round
+decimals, so composite masses are exact binary64 sums by construction
+(the exit-criterion-2 wet-mass identity). Regenerating is
+`python tests/golden/massprop/generate.py`; output is byte-deterministic.
+"""
+
+[[file]]
+name = "slug.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the draining-cylinder settled-slug closed forms from the exact binary64 inputs, rounded once to binary64"
+citation = "Closed forms derived from first principles in math-library chapter ch:massprops (eq:massprops:slug, eq:massprops:slugrates): definite mass integrals over a homogeneous solid cylinder for the CG and inertia tensor, and their exact time derivatives by the chain rule through the fill height h = m / (rho pi R^2); the standard cylinder inertia results the derivation reproduces appear in any rigid-body mechanics text"
+generation = "slug_cases table in generate.py: half-full, near-empty, near-full, exactly-empty, and off-axis tank geometries; round-decimal representative dimensions and hydrazine/RP-1/LOX-class densities"
+date = "2026-07-03"
+tolerance = "consuming doctest (MASSPROP-SLUG-GOLDEN) compares fill height, CG, inertia, CG rate, and inertia rate: nonzero scalars and vectors/matrices at 1e-12 relative (vector/matrix comparisons are norm-relative), matching the Phase 4 exit-criterion-2 gate; the C++ path accumulates fewer than ten IEEE roundings per quantity (worst chain: the inertia-rate product terms), a rounding floor near 1e-15, so 1e-12 carries about three orders of margin while any formula error fails at O(1) scale. Exactly-zero references (empty tank: mass, inertia, all rates) require exact equality - the model passes the propellant mass through and multiplies it into every inertia term, so zero cannot leave residue"
+
+[[file]]
+name = "composite.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the parallel-axis composition, composite rates, and closed-form body removal from the exact binary64 inputs, rounded once to binary64"
+citation = "Closed forms derived from first principles in math-library chapter ch:massprops (eq:massprops:compose, eq:massprops:composerates, eq:massprops:remove): mass-weighted CG, the parallel-axis theorem applied about the composite CG (derived in the chapter from the inertia-tensor definition), the exact product-rule time derivative of the composition, and the algebraic inversion of the two-body composition for single-body removal"
+generation = "composite_cases table in generate.py: two fixed rigid bodies (symmetric positive-definite inertias) plus two tank slugs per case, one axisymmetric stack and one asymmetric off-axis stack; body 1 is the removed (jettisoned) item of the post-jettison outputs"
+date = "2026-07-03"
+tolerance = "consuming doctest (MASSPROP-COMPOSITE-GOLDEN) requires composite and post-jettison mass bit-exact (inputs are round decimals whose sums are exact in binary64 and the model sums masses in the documented fixed order, so the mpmath sum rounds to the same binary64 value); CG, inertia, CG rate, inertia rate, post-jettison CG, and post-jettison inertia at norm-relative 1e-12, the Phase 4 exit-criterion-2 gate. Derivation of the floor: composition accumulates one division and O(10) fused sum/product roundings per entry (~1e-15 norm-relative); the removal path subtracts parallel-axis terms an order below the retained inertia in these geometries, so cancellation inflates the floor to at most ~1e-14, leaving two orders of margin at the gate"

@@ -1,0 +1,44 @@
+# Provenance manifest for the RCS and reaction-wheel golden vectors in this
+# directory (FR-22 layer 1: uncited golden = lint failure; schema documented
+# in tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "actuators"
+date = "2026-07-03"
+generation = """
+Both value files are written by tests/golden/actuators/generate.py (mpmath
+1.3.0, CPython 3.14.0, 60 significant decimal digits). References are
+evaluated in extended precision from the exact binary64 inputs and rounded
+once to binary64. The mpmath evaluation mirrors the model formulation of
+math-library chapter ch:actuators branch for branch but shares no binary64
+rounding with the C++ path, so the committed values check the
+double-precision implementation to its own rounding floor. Clamp-branch
+cases sit far from branch boundaries so extended-precision and binary64
+branch selection cannot disagree; the exact-rail and exact-zero semantics
+are exercised with exactly-representable inputs. Thruster directions are
+exactly unit-norm in binary64 (axis vectors and the 3-4-5 direction
+(0.6, 0, 0.8)). The reaction-wheel momentum-exchange sign conventions
+(reaction torque on the body equal to the negative of the motor torque on
+the wheel) follow the reaction-wheel formulation of Markley and Crassidis
+(2014); the clamp and rail semantics themselves are configuration limits
+defined in ch:actuators, not physical constants. Regenerating is
+`python tests/golden/actuators/generate.py`; output is byte-deterministic.
+"""
+
+[[file]]
+name = "rcs.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the MIB-enforced pulse impulse and its force/torque coupling from the exact binary64 inputs, rounded once to binary64"
+citation = "Minimum-impulse-bit pulse semantics and rigid-body impulse coupling defined and derived in math-library chapter ch:actuators (eq:actuators:mib, eq:actuators:rcscoupling): delivered impulse thrust * duration when at or above the configured MIB and exactly zero below it, linear impulse along the unit thruster direction, angular impulse (position - cg) x impulse about the composite CG"
+generation = "rcs_cases table in generate.py: below-MIB (exact zero), the 2x-MIB pulse of Phase 4 exit criterion 7 (duration = binary64 2*mib/thrust so the spec impulse 2*mib is recoverable at 1e-12 relative), a generic off-axis pulse on the 3-4-5 direction, and a retro pulse with negative direction components"
+date = "2026-07-03"
+tolerance = "consuming doctest (ACT-RCS-MIB, ACT-RCS-COUPLING-GOLDEN) requires the below-MIB case exactly zero in every component (the model returns literal zero below the MIB; determinism demands bit-exact refusal); delivered pulses compare delivered_Ns at 1e-12 relative (single multiply, correctly rounded, so the observed error is 0 or 1 ulp) and impulse_Ns/angular_impulse_Nms at norm-relative 1e-12 (at most ~5 roundings through the cross product, floor ~1e-16), the exit-criterion-7 gate with about four orders of margin"
+
+[[file]]
+name = "wheels.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the clamped wheel step from the exact binary64 inputs, rounded once to binary64"
+citation = "Reaction-wheel torque/momentum saturation semantics defined in math-library chapter ch:actuators (eq:actuators:wheelclamp, eq:actuators:wheelreaction), with the body-reaction sign convention (torque on the body = -tau_wheel * axis) per the reaction-wheel formulation of Markley and Crassidis, Fundamentals of Spacecraft Attitude Determination and Control, Springer (2014)"
+generation = "wheel_cases table in generate.py: unclamped delivery, torque clamp at both signs, rail-landing partial step, exact-rail zero delivery, desaturation from the rail, and negative-rail landing; the exact-rail cases start at exactly the configured momentum limit (round-decimal binary64)"
+date = "2026-07-03"
+tolerance = "consuming doctest (ACT-WHEEL-SATURATION) requires the clamp semantics exact where the model assigns literals: delivered torque exactly torque_max_Nm when the command exceeds the clamp, exactly zero at the rail with a same-sign command, and h1_Nms exactly the rail value in every rail-landing case (the model assigns the configured limit, not an accumulated sum). The rail-landing delivered torque (h_max - h0)/dt and all remaining nonzero outputs compare at 1e-12 relative (at most 2 roundings, floor 1 ulp); body_torque_Nm at norm-relative 1e-12. These are the exit-criterion-7 exactness gates"

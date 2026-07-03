@@ -95,3 +95,18 @@ label = "ch:rigidbody"
 module = "cpp/src/models/gravgrad.cpp"
 chapter = "docs/mathlib/chapters/gravgrad.tex"
 label = "ch:gravgrad"
+
+[[chapter]]
+module = "cpp/src/models/massprops.cpp"
+chapter = "docs/mathlib/chapters/massprops.tex"
+label = "ch:massprops"
+
+[[chapter]]
+module = "cpp/src/models/propulsion.cpp"
+chapter = "docs/mathlib/chapters/propulsion.tex"
+label = "ch:propulsion"
+
+[[chapter]]
+module = "cpp/src/models/actuators.cpp"
+chapter = "docs/mathlib/chapters/actuators.tex"
+label = "ch:actuators"

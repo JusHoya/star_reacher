@@ -104,6 +104,7 @@ add_library(star_core STATIC
   cpp/src/events.cpp
   cpp/src/frames.cpp
   cpp/src/integrate.cpp
+  cpp/src/models/actuators.cpp
   cpp/src/models/atmosphere_hp.cpp
   cpp/src/models/atmosphere_mars.cpp
   cpp/src/models/atmosphere_ussa76.cpp
@@ -111,6 +112,8 @@ add_library(star_core STATIC
   cpp/src/models/environment.cpp
   cpp/src/models/gravgrad.cpp
   cpp/src/models/gravity.cpp
+  cpp/src/models/massprops.cpp
+  cpp/src/models/propulsion.cpp
   cpp/src/models/rigidbody.cpp
   cpp/src/models/srp.cpp
   cpp/src/models/thirdbody.cpp
@@ -149,6 +152,7 @@ endif()
 if(STAR_BUILD_TESTING)
   enable_testing()
   add_executable(star_tests
+    cpp/tests/test_actuators.cpp
     cpp/tests/test_atmosphere.cpp
     cpp/tests/test_drag.cpp
     cpp/tests/test_environment.cpp
@@ -159,6 +163,8 @@ if(STAR_BUILD_TESTING)
     cpp/tests/test_frames.cpp
     cpp/tests/test_gravgrad.cpp
     cpp/tests/test_gravity.cpp
+    cpp/tests/test_massprops.cpp
+    cpp/tests/test_propulsion.cpp
     cpp/tests/test_rigidbody.cpp
     cpp/tests/test_rng.cpp
     cpp/tests/test_rotation.cpp

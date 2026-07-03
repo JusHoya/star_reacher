@@ -1,0 +1,247 @@
+% Chapter — RCS thrusters and reaction wheels (FR-1). Follows the
+% mandatory FR-29 six-section template: purpose; assumptions and domain of
+% validity; derivation; discretization and implementation; validation
+% evidence; references. The equation labels eq:actuators:mib,
+% eq:actuators:rcscoupling, eq:actuators:wheelclamp,
+% eq:actuators:wheelreaction, and eq:actuators:totalmomentum are echoed
+% verbatim in comments in cpp/src/models/actuators.cpp (FR-29
+% equation-label-to-code traceability); renaming them breaks that trace.
+\chapter{RCS Thrusters and Reaction Wheels}
+\label{ch:actuators}
+
+\section{Purpose}
+\label{sec:actuators:purpose}
+
+This chapter documents the FR-1 attitude actuators: on/off reaction
+control thrusters grouped in clusters, with minimum-impulse-bit (MIB)
+enforcement and full force-and-torque coupling about the current
+composite CG, and reaction wheels with per-wheel momentum states and
+exact torque and momentum saturation, including the total-system
+angular-momentum bookkeeping that makes conservation testable. Both
+actuators are implemented in \texttt{cpp/src/models/actuators.cpp} with
+the interface in \texttt{cpp/include/star/models/actuators.hpp}.
+
+\section{Assumptions and domain of validity}
+\label{sec:actuators:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Ideal rectangular RCS pulses.} A firing thruster
+    delivers its rated constant thrust along a fixed unit direction at
+    a fixed position in the vehicle frame (FR-13, $+X$ forward); valve
+    opening and closing transients are collapsed into the MIB rule.
+    Thruster propellant consumption is not modeled in v1 (RCS
+    propellant budgets are orders below main-engine flow for the FR-13
+    vehicle class); the delivered momentum is nevertheless exact, so
+    conservation checks remain meaningful.
+  \item \textbf{Minimum impulse bit as a hard floor.} A commanded pulse
+    whose ideal impulse (thrust times duration) falls below the
+    configured MIB delivers \emph{exactly zero} impulse --- the valve
+    never effectively opens --- and a pulse at or above the MIB
+    delivers exactly thrust times duration. Real thrusters deliver a
+    degraded, poorly repeatable impulse near the MIB; the model
+    replaces that gray zone with a deterministic threshold, documented
+    so control designers treat the MIB as unusable resolution.
+  \item \textbf{Rigid momentum-exchange wheels.} Each wheel spins about
+    a fixed unit axis in the vehicle frame and stores the relative
+    angular momentum $h_w$ along that axis; the wheel's contribution to
+    the composite inertia is part of the configured dry-body inertia.
+    Motor torque is internal to the vehicle: the reaction on the body
+    is exactly the negative of the torque on the wheel, following the
+    standard momentum-exchange formulation of Markley and
+    Crassidis~\cite{markley2014}. Wheel friction and drag torques are
+    not modeled.
+  \item \textbf{Saturation semantics (documented choice).} Delivered
+    wheel torque is clamped at the configured torque limit, and the
+    stored momentum is limited at the configured momentum rail: a step
+    that would cross the rail delivers only the torque that lands the
+    momentum exactly on the rail, and a wheel starting on the rail
+    delivers exactly zero torque for a same-sign command (it cannot
+    accept further momentum of that sign) while opposite-sign
+    (desaturating) commands act normally.
+\end{enumerate}
+
+Domain of validity: unit-norm thruster directions and wheel axes;
+non-negative thrust, MIB, pulse duration, torque limit, and momentum
+limit; strictly positive step size for the wheel update; initial wheel
+momentum within $[-h_{\max}, +h_{\max}]$. Out-of-domain behavior,
+matching the code exactly: non-finite inputs, malformed unit vectors,
+negative ratings or durations, non-positive step sizes, and an initial
+momentum outside the rails throw \texttt{std::domain\_error}.
+
+\section{Derivation}
+\label{sec:actuators:derivation}
+
+\subsection{RCS pulse impulse and coupling}
+
+A thruster with rated thrust $F$ and unit direction $\hat{\vv{d}}$
+fired for a duration $T$ ideally delivers the impulse magnitude $F T$.
+With the configured minimum impulse bit $J_{\min}$:
+\begin{equation}
+  J \;=\;
+  \begin{cases}
+    0, & F T < J_{\min}, \\
+    F T, & F T \ge J_{\min}.
+  \end{cases}
+  \label{eq:actuators:mib}
+\end{equation}
+Integrating the constant force and its moment about the composite CG
+$\bar{\vv{c}}$ over the pulse (the geometry is constant during the
+pulse at the FR-1 modeling level) gives the linear and angular impulse
+delivered to the body,
+\begin{equation}
+  \boxed{\; \Delta\vv{p} \;=\; J\, \hat{\vv{d}}, \qquad
+  \Delta\vv{L} \;=\; (\vv{r}_t - \bar{\vv{c}}) \times \Delta\vv{p}, \;}
+  \label{eq:actuators:rcscoupling}
+\end{equation}
+where $\vv{r}_t$ is the thruster position. Because thrusters are
+generally not mounted through the CG, every pulse couples force and
+torque; a cluster sums \eqref{eq:actuators:rcscoupling} over its
+active thrusters in configuration order. While a thruster is held on
+continuously the body sees the constant force $F \hat{\vv{d}}$ and
+torque $(\vv{r}_t - \bar{\vv{c}}) \times F \hat{\vv{d}}$, the
+integrands of \eqref{eq:actuators:rcscoupling}.
+
+\subsection{Reaction-wheel torque delivery and saturation}
+
+A wheel with unit spin axis $\hat{\vv{a}}$ stores the relative angular
+momentum $h_w$ along $\hat{\vv{a}}$ and obeys $\dot{h}_w = \tau$, where
+$\tau$ is the motor torque on the wheel. Over one step $\Delta t$ with
+commanded torque $\tau_{\mathrm{cmd}}$, the delivered torque and new
+momentum are, per the saturation semantics of
+Section~\ref{sec:actuators:domain}:
+\begin{equation}
+  \begin{aligned}
+    \tau_c &\;=\; \operatorname{clamp}(\tau_{\mathrm{cmd}},\,
+      -\tau_{\max},\, +\tau_{\max}), \\
+    (\tau, h_w') &\;=\;
+    \begin{cases}
+      \bigl( (\,+h_{\max} - h_w)/\Delta t,\; +h_{\max} \bigr),
+        & h_w + \tau_c \Delta t > +h_{\max}, \\
+      \bigl( (\,-h_{\max} - h_w)/\Delta t,\; -h_{\max} \bigr),
+        & h_w + \tau_c \Delta t < -h_{\max}, \\
+      \bigl( \tau_c,\; h_w + \tau_c \Delta t \bigr),
+        & \text{otherwise}.
+    \end{cases}
+  \end{aligned}
+  \label{eq:actuators:wheelclamp}
+\end{equation}
+On the rail with a same-sign command the first branch yields
+$\tau = 0 / \Delta t = 0$ exactly. The motor torque is internal, so
+Newton's third law gives the reaction torque on the body
+\begin{equation}
+  \boxed{\; \vv{\tau}_{\mathrm{body}} \;=\; -\tau\, \hat{\vv{a}}. \;}
+  \label{eq:actuators:wheelreaction}
+\end{equation}
+
+\subsection{Total angular momentum bookkeeping}
+
+With body inertia $\mat{I}$ (about the composite CG), body angular
+velocity $\vv{\omega}$, and $n$ wheels, the total angular momentum of
+the vehicle-plus-wheels system, resolved in the body frame, is
+\begin{equation}
+  \vv{H} \;=\; \mat{I}\, \vv{\omega}
+    + \sum_{i=1}^{n} h_{w,i}\, \hat{\vv{a}}_i,
+  \label{eq:actuators:totalmomentum}
+\end{equation}
+the standard momentum-exchange decomposition~\cite{markley2014} (the
+wheels' transverse and structural inertia are inside $\mat{I}$; the
+$h_{w,i}$ are the wheels' spin momenta relative to the body). Under
+zero external torque the inertially resolved
+$\mat{R}(\quat{q})\,\vv{H}$ is exactly conserved for any internal wheel
+torque profile, because
+$\dot{\vv{H}} + \vv{\omega} \times \vv{H} = \vv{0}$: the wheel terms
+$\pm\tau \hat{\vv{a}}$ cancel between $\mat{I}\dot{\vv{\omega}}$ and
+$\dot{h}_w \hat{\vv{a}}$. This identity is the Phase 4
+exit-criterion-7 conservation gate and the reason the bookkeeping
+function ships with the model rather than with the tests.
+
+\section{Discretization and implementation}
+\label{sec:actuators:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} Both actuators live in
+    \texttt{cpp/src/models/actuators.cpp}; the source comments echo the
+    labels \texttt{eq:actuators:mib} through
+    \texttt{eq:actuators:totalmomentum} verbatim.
+  \item \textbf{Exact thresholds and rails.} The MIB branch
+    \eqref{eq:actuators:mib} returns literal zeros below the threshold,
+    and the rail branches of \eqref{eq:actuators:wheelclamp} assign the
+    configured limit itself (not an accumulated sum), so refusal,
+    saturation, and rail states are bit-exact and reproducible (D-10).
+  \item \textbf{Pure functions over plain structs.} Thruster and wheel
+    parameters are trivially constructible structs mirroring the FR-13
+    vocabulary; the wheel update is
+    $(\text{params}, \text{command}, \text{state}, \Delta t) \mapsto
+    (\text{delivered}, \text{state}')$ with no globals or I/O (D-2).
+    Cluster sums iterate thrusters in configuration order.
+  \item \textbf{Determinism.} No libm calls anywhere in the module;
+    every operation is an IEEE-754 basic operation in fixed order, so
+    the module is bit-portable across platforms under the D-10 flags.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:actuators:validation}
+
+Table~\ref{tab:actuators:validation} lists the tests that constitute
+this chapter's validation evidence. Each test identifier is
+machine-checked to exist in the test tree by
+\texttt{scripts/lint\_chapters.py}; golden provenance and tolerances
+are recorded in \texttt{tests/golden/actuators/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the actuator models (doctest,
+    \texttt{cpp/tests/test\_actuators.cpp}).}
+  \label{tab:actuators:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{ACT-RCS-MIB} &
+      A pulse below the configured MIB delivers exactly zero impulse in
+      every component, and the committed $2\times$-MIB pulse matches
+      the spec impulse $2 J_{\min}$ to $10^{-12}$ relative (Phase 4
+      exit criterion 7); the exact-boundary pulse ($F T = J_{\min}$
+      with exactly representable inputs) delivers in full. \\
+    \testid{ACT-RCS-COUPLING-GOLDEN} &
+      Committed pulse geometries match the independent 60-digit mpmath
+      evaluation of \eqref{eq:actuators:mib} and
+      \eqref{eq:actuators:rcscoupling} to $10^{-12}$ norm-relative on
+      linear and angular impulse, including off-CG and retrograde
+      directions and a cluster sum. \\
+    \testid{ACT-WHEEL-SATURATION} &
+      Torque and momentum clamp exactly at the configured saturations
+      per \eqref{eq:actuators:wheelclamp}: over-limit commands deliver
+      exactly $\pm\tau_{\max}$, rail landings set the momentum exactly
+      to $\pm h_{\max}$, a same-sign command on the rail delivers
+      exactly zero, and desaturating commands act normally (Phase 4
+      exit criterion 7), all against committed golden vectors. \\
+    \testid{ACT-WHEEL-MOMENTUM-CONSERVATION} &
+      A three-axis rigid-body slew driven through the wheel model
+      (RK4, quaternion attitude, gyroscopic coupling active) conserves
+      the inertially resolved total momentum
+      \eqref{eq:actuators:totalmomentum} to $10^{-12}$ relative over
+      the full maneuver, and the reaction sign
+      \eqref{eq:actuators:wheelreaction} moves body and wheel momentum
+      in opposite directions (Phase 4 exit criterion 7). \\
+    \testid{ACT-DOMAIN} &
+      Out-of-domain inputs per Section~\ref{sec:actuators:domain}
+      throw \texttt{std::domain\_error}. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:actuators:references}
+
+The momentum-exchange formulation --- wheel momentum states, the
+body-reaction sign convention, and the total-momentum decomposition
+\eqref{eq:actuators:totalmomentum} --- follows Markley and
+Crassidis~\cite{markley2014}. The MIB threshold and the
+saturation-rail semantics are configuration-defined device limits
+specified in Section~\ref{sec:actuators:domain} of this chapter rather
+than external physical results; the impulse-coupling algebra is derived
+in Section~\ref{sec:actuators:derivation} from the definition of
+force and moment impulses. Full bibliographic details appear in the
+bibliography.

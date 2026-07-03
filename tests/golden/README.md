@@ -185,3 +185,26 @@ this policy.
   `rigidbody_quaternion_norm_drift`, `gravgrad_torque_golden`,
   `gravgrad_exact_zero_geometries`, and `gravgrad_libration_frequency`.
   See `attitude/manifest.toml` for provenance and tolerances.
+- `massprop/` — vehicle mass-properties golden vectors (FR-10, exit
+  criterion 2): draining-cylinder settled-slug fill height, CG, inertia,
+  and their exact depletion rates, plus composite (two bodies + two tanks)
+  mass/CG/inertia, composite rates, and the closed-form single-body
+  removal that models a jettison event, all mpmath-generated (60 digits)
+  from the ch:massprops closed forms; consumed by the doctest cases
+  `MASSPROP-SLUG-GOLDEN` and `MASSPROP-COMPOSITE-GOLDEN`. See
+  `massprop/manifest.toml` for provenance and tolerances.
+- `propulsion/` — engine golden vectors (FR-10, exit criterion 3):
+  back-pressure thrust F = λF_vac − p_amb·Ae, vacuum-Isp mass flow,
+  gimbal-deflected force/torque coupling with the exactly-zero
+  zero-throttle case, and analytic Tsiolkovsky vacuum-burn scenarios, all
+  mpmath-generated (60 digits); consumed by the doctest cases
+  `PROP-ENGINE-GOLDEN` and `PROP-TSIOLKOVSKY-BURN`. See
+  `propulsion/manifest.toml` for provenance and tolerances.
+- `actuators/` — RCS and reaction-wheel golden vectors (FR-1, exit
+  criterion 7): minimum-impulse-bit pulse enforcement (below-MIB exactly
+  zero, 2×-MIB spec impulse) with force/torque coupling, and wheel-step
+  torque/momentum saturation with exact rail landing and exact-zero
+  saturated delivery, all mpmath-generated (60 digits); consumed by the
+  doctest cases `ACT-RCS-MIB`, `ACT-RCS-COUPLING-GOLDEN`, and
+  `ACT-WHEEL-SATURATION`. See `actuators/manifest.toml` for provenance
+  and tolerances.
