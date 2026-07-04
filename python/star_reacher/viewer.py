@@ -440,6 +440,11 @@ def generate_view(srlog_path, out_path=None) -> ViewResult:
     data = build_view_data(run)
     html = _assemble_html(data)
     out = Path(out_path) if out_path is not None else srlog_path.with_suffix(".html")
+    # Create missing parent directories like the exporters do (export_csv et
+    # al. mkdir their outdir), so `-o new_dir/view.html` works and a missing
+    # directory cannot surface as a FileNotFoundError that the CLI would
+    # misattribute to the input log.
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(html)
     dec = data["decimation"]
     return ViewResult(

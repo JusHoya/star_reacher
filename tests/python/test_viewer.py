@@ -328,6 +328,19 @@ def test_view_cli_missing_file_exits_1(tmp_path):
     assert "no such file" in proc.stderr
 
 
+def test_view_cli_creates_missing_output_directory(coast_view, tmp_path):
+    # Regression (Phase 5 red team): a missing OUTPUT directory used to
+    # surface as "<input>: no such file." — the input-file handler caught
+    # the writer's FileNotFoundError. The exporters mkdir their outdir, so
+    # view does too; the input existence check now precedes generation.
+    srlog_path, view = coast_view
+    out = tmp_path / "not_yet" / "nested" / "view.html"
+    proc = _run_cli("view", str(srlog_path), "-o", str(out))
+    assert proc.returncode == 0, proc.stderr
+    assert out.exists()
+    assert out.read_bytes() == view.out_path.read_bytes()
+
+
 # ---------------------------------------------------------------------------
 # vendored/committed third-party content stays pinned to its provenance
 # ---------------------------------------------------------------------------

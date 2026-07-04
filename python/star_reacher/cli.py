@@ -301,11 +301,15 @@ def _cmd_export(args: argparse.Namespace) -> int:
 def _cmd_view(args: argparse.Namespace) -> int:
     from star_reacher.viewer import ViewerError, generate_view
 
-    try:
-        result = generate_view(Path(args.srlog), args.out)
-    except FileNotFoundError:
+    # The input check happens before generate_view so a FileNotFoundError
+    # raised while writing the output cannot be misattributed to the input
+    # log (the generic OSError handler below reports the real path).
+    srlog_path = Path(args.srlog)
+    if not srlog_path.is_file():
         print(f"star view: {args.srlog}: no such file.", file=sys.stderr)
         return _EXIT_RUNTIME
+    try:
+        result = generate_view(srlog_path, args.out)
     except (SrlogError, ViewerError, OSError) as exc:
         print(f"star view: {exc}", file=sys.stderr)
         return _EXIT_RUNTIME
