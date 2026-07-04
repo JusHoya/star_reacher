@@ -81,17 +81,32 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_export = sub.add_parser(
         "export",
-        help="export an SRLOG file to CSV, one file per channel group",
+        help="export an SRLOG file to CSV, NPZ, and/or Parquet",
         description=(
-            "Write one CSV per channel group (truth.csv, events.csv) with a header "
-            "row of channel names; vector channels expand to indexed columns and "
-            "floats are written via repr, so every value round-trips bit-exactly."
+            "Export a log for external tooling (FR-17, D-13). --csv writes one "
+            "CSV per channel group with repr-formatted floats (bit-exact round "
+            "trip); --npz writes one pickle-free NPZ archive holding every "
+            "group, the events, and the header JSON (bit-exact round trip); "
+            "--parquet writes one Parquet file per group (requires the pyarrow "
+            "optional extra). Vector channels expand to indexed columns "
+            "(r_m_0, r_m_1, r_m_2) in every tabular format. Format flags "
+            "combine freely; at least one is required."
         ),
     )
     p_export.add_argument(
         "--csv",
         action="store_true",
-        help="select CSV output (required; the only Phase 1 export format)",
+        help="write one CSV file per channel group",
+    )
+    p_export.add_argument(
+        "--npz",
+        action="store_true",
+        help="write one NPZ archive containing every group, events, and header",
+    )
+    p_export.add_argument(
+        "--parquet",
+        action="store_true",
+        help="write one Parquet file per channel group (needs the pyarrow extra)",
     )
     p_export.add_argument("srlog", help="path to the run.srlog file")
     p_export.add_argument(
@@ -198,19 +213,30 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
-    if not args.csv:
+    if not (args.csv or args.npz or args.parquet):
         print(
-            "star export: --csv is required; CSV is the only export format in "
-            "Phase 1 (NPZ and Parquet land in Phase 5).",
+            "star export: select at least one output format: --csv, --npz, "
+            "--parquet (flags can be combined in one invocation).",
             file=sys.stderr,
         )
         return _EXIT_VALIDATION
-    from star_reacher.export import export_csv
+    from star_reacher.export import export_csv, export_npz, export_parquet
 
+    written: list[Path] = []
     try:
-        written = export_csv(Path(args.srlog), args.outdir)
+        if args.csv:
+            written.extend(export_csv(Path(args.srlog), args.outdir))
+        if args.npz:
+            written.append(export_npz(Path(args.srlog), args.outdir))
+        if args.parquet:
+            written.extend(export_parquet(Path(args.srlog), args.outdir))
     except FileNotFoundError:
         print(f"star export: {args.srlog}: no such file.", file=sys.stderr)
+        return _EXIT_RUNTIME
+    except ImportError as exc:
+        # A missing optional extra is an environment problem, not a usage
+        # error: the exporter's message already names the extra to install.
+        print(f"star export: {exc}", file=sys.stderr)
         return _EXIT_RUNTIME
     except SrlogError as exc:
         print(f"star export: {exc}", file=sys.stderr)

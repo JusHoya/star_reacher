@@ -39,6 +39,13 @@ star = "star_reacher.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# D-12/D-13 documented extras: pandas backs Run.to_pandas(), pyarrow backs
+# star export --parquet; neither ever enters [project].dependencies. Floors
+# are the first releases built for the NumPy 2 ABI (pandas 2.2.2 and
+# pyarrow 16.1 per their release notes), keeping each extra co-installable
+# with the unbounded numpy>=1.26 requirement above.
+pandas = ["pandas>=2.2.2"]
+parquet = ["pyarrow>=16.1"]
 
 [tool.scikit-build]
 # Pin settings semantics to the declared build requirement so a newer
