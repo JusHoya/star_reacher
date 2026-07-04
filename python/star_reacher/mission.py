@@ -84,6 +84,25 @@ Actions:
 
 Every action except ``terminate`` requires a vehicle reference. The resolved
 config carries the sequence entries in file order.
+
+Phase 5 additions (FR-32 example missions): the heliocentric regime
+===================================================================
+
+``central_body = "sun"`` selects the heliocentric point-mass regime for
+cruise missions (e.g. ``missions/mars_cruise.toml``). Its cross-field rules
+mirror the earth/moon regime rules:
+
+- gravity is point-mass only (FR-5 defines no Sun harmonic field);
+- no atmosphere model exists, so ``[environment.drag]`` is rejected;
+- SRP runs with an empty occulter set (the Sun cannot occult its own light
+  and deep-cruise planetary transits are negligible, FR-7); the
+  ``occulters`` key is rejected;
+- an explicit non-empty ``third_bodies`` list is required: which planets
+  perturb a heliocentric cruise (at least the departure and arrival
+  planets) is a deliberate modeling choice, never a silent default;
+- the vehicle, ``[[sequence]]``, and geodetic launch surfaces stay with the
+  planetary regimes (the run terminates on ``duration_s``); the
+  ``soi_transition`` body vocabulary is unchanged (earth, moon, mars).
 """
 
 from __future__ import annotations
@@ -124,7 +143,10 @@ _DEFAULT_HP_EXPONENT_N = 4.0  # Orekit-compatible bulge exponent (ch:harrispries
 
 _U64_MAX = 2**64 - 1
 
-_CENTRAL_BODIES = ("earth", "moon", "mars")
+_CENTRAL_BODIES = ("earth", "moon", "mars", "sun")
+# The FR-12 SOI-transition event vocabulary stays planetary: entering "the
+# Sun's SOI" has no patched-conic meaning inside the solar system.
+_SOI_BODIES = ("earth", "moon", "mars")
 
 # FR-14 v1 sequence vocabulary. Deliberately small: exactly enough for a
 # scripted pad-to-LEO ascent and a TLI burn with no GNC in the loop; every
@@ -602,7 +624,7 @@ def _validate_sequence_entry(
             resolved["perigee_alt_m"] = perigee_alt_m
         elif condition == "soi_transition":
             body = _req_str(entry, path, "body", errs, hint='"earth", "moon", or "mars"')
-            if body is not None and body not in _CENTRAL_BODIES:
+            if body is not None and body not in _SOI_BODIES:
                 errs.add(
                     path,
                     "body",
@@ -867,13 +889,13 @@ def _validate_environment(
     _reject_unknown(
         env, path, {"central_body", "ephemeris", "third_bodies", "gravity", "srp", "drag"}, errs
     )
-    central = _req_str(env, path, "central_body", errs, hint='"earth", "moon", or "mars"')
+    central = _req_str(env, path, "central_body", errs, hint='"earth", "moon", "mars", or "sun"')
     if central is not None and central not in _CENTRAL_BODIES:
         errs.add(
             path,
             "central_body",
-            f'must be one of "earth", "moon", "mars", got {central!r}',
-            hint="FR-3/FR-5 central bodies",
+            f'must be one of "earth", "moon", "mars", "sun", got {central!r}',
+            hint="FR-3/FR-5 central bodies plus the Phase 5 heliocentric regime",
         )
         central = None
 
@@ -896,6 +918,17 @@ def _validate_environment(
                     "model",
                     f'must be "pointmass", "j2", or "harmonic", got {model!r}',
                     hint="the FR-5 fidelity tiers",
+                )
+                model = None
+            if model in ("j2", "harmonic") and central == "sun":
+                # FR-5 defines harmonic tiers for Earth, Moon, and Mars only;
+                # the Sun is point-mass by specification.
+                errs.add(
+                    gpath,
+                    "model",
+                    f'the Sun central body is point-mass only, got {model!r}',
+                    hint='FR-5 defines no Sun harmonic field; use model = '
+                    '"pointmass" or remove the [environment.gravity] table',
                 )
                 model = None
             field_header = None
@@ -1042,6 +1075,20 @@ def _validate_environment(
                 f"got {sorted(enabled)!r}",
                 hint='FR-15 regime consistency; set third_bodies = ["sun", "earth"] at minimum',
             )
+    # Heliocentric regime (Phase 5): which planets perturb a cruise (at least
+    # the departure and arrival planets) is a deliberate modeling choice the
+    # mission file must state; heliocentric two-body motion is never a silent
+    # default, so an absent or empty list is an error, not "perturbations off".
+    if central == "sun" and (
+        "third_bodies" not in env or (third_bodies is not None and not third_bodies)
+    ):
+        errs.add(
+            path,
+            "third_bodies",
+            "the heliocentric regime requires an explicit non-empty third-body list",
+            hint='FR-15 regime consistency; name at least the departure and '
+            'arrival planets, e.g. third_bodies = ["earth", "mars"]',
+        )
     if third_bodies:
         resolved["third_bodies"] = [b for b in _THIRD_BODY_ORDER if b in third_bodies]
 
@@ -1056,7 +1103,22 @@ def _validate_environment(
             srp_enabled = True
             _reject_unknown(stable, spath, {"occulters"}, errs)
             occulters = [central] if central is not None else None
-            if "occulters" in stable:
+            if central == "sun":
+                # The Sun cannot occult its own light and deep-cruise
+                # planetary transits are negligible, so the heliocentric
+                # regime runs SRP with an empty occulter set (nu = 1, FR-7);
+                # the key is rejected rather than reinterpreted.
+                occulters = []
+                if "occulters" in stable:
+                    errs.add(
+                        spath,
+                        "occulters",
+                        'not accepted for central_body = "sun"',
+                        hint="no occulting body is configured in the "
+                        "heliocentric regime (FR-7); remove the key",
+                    )
+                    occulters = None
+            elif "occulters" in stable:
                 occulters = _validate_str_list(
                     stable,
                     spath,
@@ -1123,6 +1185,15 @@ def _validate_environment(
                         dpath,
                         "atmosphere",
                         "the Moon has no atmosphere model; drag cannot be enabled in the lunar regime",
+                        hint="remove the [environment.drag] table",
+                    )
+                    atmo = None
+                elif central == "sun":
+                    errs.add(
+                        dpath,
+                        "atmosphere",
+                        "no atmosphere model exists for the Sun; drag cannot be "
+                        "enabled in the heliocentric regime",
                         hint="remove the [environment.drag] table",
                     )
                     atmo = None
@@ -1543,6 +1614,30 @@ def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dic
             vehicle_stages=vehicle_stages,
             initial_form=initial_form,
         )
+
+    # Heliocentric cross rules (Phase 5): the sun-central regime is served by
+    # the point-mass composed-environment path only. The 6DOF vehicle path's
+    # altitude events, pad geometry, and aerodynamics all assume a planetary
+    # central body, and the event sequence runs on that path, so both
+    # surfaces are rejected here (exit 2) instead of failing in the core.
+    if central_body == "sun":
+        if vehicle_present:
+            errs.add(
+                "root",
+                "vehicle",
+                'a vehicle reference is not accepted with central_body = "sun"',
+                hint="the heliocentric regime is point-mass only; vehicle "
+                "missions require a planetary central body",
+            )
+        if "sequence" in doc:
+            errs.add(
+                "root",
+                "sequence",
+                'an event sequence is not accepted with central_body = "sun"',
+                hint="sequences run on the vehicle path, which requires a "
+                "planetary central body; heliocentric missions terminate on "
+                "[mission] duration_s",
+            )
 
     # Geodetic cross rules (FR-14): the launch-site form starts on a rotating
     # Earth pad with pad-fixed attitude, so it is meaningless without a

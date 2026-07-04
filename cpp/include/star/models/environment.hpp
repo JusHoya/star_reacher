@@ -1,7 +1,7 @@
 // Composed environment force model (Phase 3 integration layer): the point-
 // mass translational equations of motion about one central body (Earth, Moon,
-// or Mars) under the FR-5..FR-9 perturbations, summed in a FIXED, documented
-// order per D-10:
+// Mars, or - since Phase 5 - the Sun) under the FR-5..FR-9 perturbations,
+// summed in a FIXED, documented order per D-10:
 //
 //   (a) central-body gravity (point-mass, J2-only, or full harmonic tier,
 //       evaluated in the body-fixed frame through the Phase 2 frame chains),
@@ -37,14 +37,14 @@
 namespace star {
 namespace models {
 
-enum class CentralBody { kEarth, kMoon, kMars };
+enum class CentralBody { kEarth, kMoon, kMars, kSun };
 
 enum class AtmosphereModel { kNone, kUssa76, kHarrisPriester, kMarsExponential };
 
 // Central-body gravitational parameter [m^3/s^2] for the point-mass tier and
 // for Keplerian element conversions: Earth keeps the Phase 1 IERS TN36 value
-// (GM_EARTH_M3_PER_S2); Moon and Mars use the DE440 header values, matching
-// the third-body constants (single home: star/constants.hpp).
+// (GM_EARTH_M3_PER_S2); Moon, Mars, and the Sun use the DE440 header values,
+// matching the third-body constants (single home: star/constants.hpp).
 double central_body_gm(CentralBody body);
 
 // Validated environment configuration, mirroring the [environment] and
@@ -70,7 +70,11 @@ struct EnvironmentSpec {
 
   bool srp_enabled = false;
   double cr_a_over_m_m2pkg = 0.0;
-  std::vector<std::string> srp_occulters;  // names among earth, moon, mars
+  // Occulter names among earth, moon, mars. Non-empty whenever SRP is on,
+  // except about the Sun central body: the Sun cannot occult its own light
+  // and deep-cruise planetary transits are negligible, so the heliocentric
+  // regime runs SRP with an empty occulter set (nu = 1 everywhere, FR-7).
+  std::vector<std::string> srp_occulters;
 
   AtmosphereModel atmosphere = AtmosphereModel::kNone;  // kNone: drag off
   double cd_a_over_m_m2pkg = 0.0;
