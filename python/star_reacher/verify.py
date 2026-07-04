@@ -14,7 +14,9 @@ V009-V013 cover the Phase 2 math kernel (time, rotations, frames,
 ephemeris evaluator, integrators/events); V014-V018 cover the Phase 3
 environment models (gravity tiers, third body, shadow/SRP, atmospheres)
 and the composed perturbed-run path, as quick variants of the full golden
-suites in ``tests/``.
+suites in ``tests/``; V019 covers the Phase 5 exporters (NPZ bit-exact
+round trip always, Parquet read-back when the optional pyarrow extra is
+installed).
 """
 
 from __future__ import annotations
@@ -1023,6 +1025,99 @@ def _check_v018(ctx: dict) -> None:
                 )
 
 
+# --------------------------------------------------------------------------
+# Phase 5 check (V019): exporter fidelity. Pure Python on a synthesized log,
+# so it passes on a core-less install like the other format checks; the
+# Parquet half runs only when the optional pyarrow extra is importable,
+# because verify must hold on a bare wheel where extras are absent.
+# --------------------------------------------------------------------------
+
+
+def _check_v019(ctx: dict) -> None:
+    from star_reacher.export import export_npz, export_parquet, load_npz
+
+    header = _fixtures.contract_header()
+    f = _TRICKY_FLOATS
+    m = len(f)
+    records = []
+    # The same tricky-float rotation as V005: the NPZ round trip must
+    # preserve subnormals, negative zero, and full-precision reprs.
+    for i in range(m):
+        records.append(
+            (
+                0,
+                (
+                    float(i),
+                    (f[(i + 1) % m], f[(i + 2) % m], f[(i + 3) % m]),
+                    (f[(i + 4) % m], f[(i + 5) % m], f[(i + 6) % m]),
+                    (1.0, -0.0, 0.0, 0.0),
+                    (f[(i + 7) % m], f[(i + 8) % m], f[i]),
+                    f[(i + 4) % m],
+                ),
+            )
+        )
+    records.append(_fixtures.event_record(0.0, 1, "run_start"))
+    records.append(_fixtures.event_record(1.0, 7, 'comma, "quote", newline\n'))
+    records.append(_fixtures.event_record(600.0, 2, "run_end"))
+    data = _fixtures.build_srlog(header, records)
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        path = _write_temp_srlog(tdp, "v019.srlog", data)
+        run = load(path)
+
+        npz_path = export_npz(path, tdp)
+        back = load_npz(npz_path)
+        if back.header != run.header:
+            raise CheckFailure("NPZ round trip changed the header dict")
+        if set(back.groups) != set(run.groups):
+            raise CheckFailure(
+                f"NPZ round trip changed the group set: {sorted(back.groups)} "
+                f"!= {sorted(run.groups)}"
+            )
+        for gname, arr in run.groups.items():
+            got = back.groups[gname]
+            if got.dtype != arr.dtype or len(got) != len(arr):
+                raise CheckFailure(f"NPZ group '{gname}': dtype or length changed")
+            for fname in arr.dtype.names:
+                if arr.dtype[fname].base.kind == "O":
+                    if list(got[fname]) != list(arr[fname]):
+                        raise CheckFailure(
+                            f"NPZ group '{gname}' channel '{fname}': string "
+                            f"values changed"
+                        )
+                elif got[fname].tobytes() != arr[fname].tobytes():
+                    # Bit-exactness, not closeness (Phase 5 exit criterion 3).
+                    raise CheckFailure(
+                        f"NPZ group '{gname}' channel '{fname}': bytes changed"
+                    )
+
+        try:
+            import pyarrow.parquet as pq  # noqa: F401 - availability probe
+        except ImportError:
+            return  # bare-wheel path: the pyarrow extra is not installed
+        written = export_parquet(path, tdp)
+        for parquet_path in written:
+            gname = parquet_path.stem
+            arr = run.groups[gname]
+            table = pq.read_table(parquet_path)
+            expected_columns = []
+            for fname in arr.dtype.names:
+                shape = arr.dtype[fname].shape
+                if shape:
+                    expected_columns.extend(f"{fname}_{i}" for i in range(shape[0]))
+                else:
+                    expected_columns.append(fname)
+            if table.num_rows != len(arr):
+                raise CheckFailure(
+                    f"{gname}.parquet: {table.num_rows} rows != {len(arr)}"
+                )
+            if table.column_names != expected_columns:
+                raise CheckFailure(
+                    f"{gname}.parquet: columns {table.column_names} != "
+                    f"{expected_columns}"
+                )
+
+
 _CHECKS = [
     ("V001", "two-body double-run SHA-256 bit-identity", _check_v001),
     ("V002", "minor-version-forward read (v1.999 file with one added channel)", _check_v002),
@@ -1042,6 +1137,7 @@ _CHECKS = [
     ("V016", "conical shadow exact 0/1, penumbra value, umbra SRP zero", _check_v016),
     ("V017", "USSA76/Harris-Priester/Mars density spot values", _check_v017),
     ("V018", "perturbed-run double-run SHA-256 bit-identity (rkf78 + rk4)", _check_v018),
+    ("V019", "NPZ export round-trips bit-exactly (+ Parquet when available)", _check_v019),
 ]
 
 
