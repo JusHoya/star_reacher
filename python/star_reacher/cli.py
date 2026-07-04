@@ -1,10 +1,10 @@
 """The ``star`` command-line interface (D-4, FR-20, DX-1).
 
-Six subcommands (run, verify, export, docs from Phase 1; data from Phase 2;
-view from Phase 5) and no stubs: every command documented here works. Exit
-codes: 0 success, 2 validation errors (accumulated per DX-2), 1 runtime
-errors. ``python -m star_reacher`` and the installed ``star`` console script
-both dispatch through ``main``.
+Seven subcommands (run, verify, export, docs from Phase 1; data from Phase 2;
+view and plot from Phase 5) and no stubs: every command documented here
+works. Exit codes: 0 success, 2 validation errors (accumulated per DX-2), 1
+runtime errors. ``python -m star_reacher`` and the installed ``star`` console
+script both dispatch through ``main``.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     sub = parser.add_subparsers(
-        dest="command", required=True, metavar="{run,verify,export,view,docs,data}"
+        dest="command", required=True, metavar="{run,verify,export,view,plot,docs,data}"
     )
 
     p_run = sub.add_parser(
@@ -65,7 +65,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_verify = sub.add_parser(
         "verify",
-        help="run the acceptance check suite (V001-V020)",
+        help="run the acceptance check suite (V001-V021)",
         description=(
             "Self-contained acceptance runner: one line per check, ending in "
             "'VERIFY: PASS (N/N)' or 'VERIFY: FAIL (k/N)' plus the failing check "
@@ -134,6 +134,35 @@ def _build_parser() -> argparse.ArgumentParser:
         "--out",
         default=None,
         help="output HTML path (default: the input path with an .html suffix)",
+    )
+
+    p_plot = sub.add_parser(
+        "plot",
+        help="render the FR-18 quicklook PNG plot set from SRLOG files",
+        description=(
+            "Render matplotlib quicklook PNGs (headless-safe: the Agg backend "
+            "is forced) from one or more SRLOG files: groundtrack with the "
+            "embedded coastline, altitude/speed, osculating elements, attitude "
+            "and body rates, mass/thrust/throttle, dynamic pressure and Mach, "
+            "and per-source force/torque magnitudes, with event markers on "
+            "every time axis. With several logs, shared channels overlay on "
+            "one axes set per plot, labeled with each log's short resolved-"
+            "config hash. Plots a log cannot feed (e.g. no env group) are "
+            "skipped with a note. Names, feeding arrays, and conventions are "
+            "documented in docs/formats/plots.md."
+        ),
+    )
+    p_plot.add_argument("srlog", nargs="+", help="path(s) to run.srlog file(s)")
+    p_plot.add_argument(
+        "-o",
+        "--outdir",
+        default=None,
+        help="output directory (default: <first input's directory>/plots)",
+    )
+    p_plot.add_argument(
+        "--plots",
+        default=None,
+        help="comma-separated subset of plot names (default: all)",
     )
 
     p_docs = sub.add_parser(
@@ -296,6 +325,53 @@ def _cmd_view(args: argparse.Namespace) -> int:
     return _EXIT_OK
 
 
+def _cmd_plot(args: argparse.Namespace) -> int:
+    from star_reacher.plotting import PLOT_NAMES, render_plots
+    from star_reacher.srlog import load
+
+    plots = None
+    if args.plots is not None:
+        plots = [name.strip() for name in args.plots.split(",") if name.strip()]
+        unknown = [name for name in plots if name not in PLOT_NAMES]
+        if unknown:
+            print(
+                f"star plot: unknown plot name(s): {', '.join(unknown)}; "
+                f"valid names: {', '.join(PLOT_NAMES)}",
+                file=sys.stderr,
+            )
+            return _EXIT_VALIDATION
+    runs = []
+    for path in args.srlog:
+        try:
+            runs.append(load(path))
+        except FileNotFoundError:
+            print(f"star plot: {path}: no such file.", file=sys.stderr)
+            return _EXIT_RUNTIME
+        except SrlogError as exc:
+            print(f"star plot: {exc}", file=sys.stderr)
+            return _EXIT_RUNTIME
+    outdir = (
+        Path(args.outdir)
+        if args.outdir is not None
+        else Path(args.srlog[0]).parent / "plots"
+    )
+    try:
+        report = render_plots(runs, outdir, plots=plots)
+    except CoreMissingError as exc:
+        # The groundtrack/altitude derivations use the core's exact frame
+        # chain; a core-less environment is an install problem, not usage.
+        print(f"star plot: {exc}", file=sys.stderr)
+        return _EXIT_RUNTIME
+    except OSError as exc:
+        print(f"star plot: {exc}", file=sys.stderr)
+        return _EXIT_RUNTIME
+    for note in report.notes:
+        print(f"note: {note}")
+    for path in report.written:
+        print(f"wrote {path}")
+    return _EXIT_OK
+
+
 def _cmd_docs(args: argparse.Namespace) -> int:
     from star_reacher.docsbuild import build_docs
 
@@ -322,6 +398,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_export(args)
     if args.command == "view":
         return _cmd_view(args)
+    if args.command == "plot":
+        return _cmd_plot(args)
     if args.command == "docs":
         return _cmd_docs(args)
     if args.command == "data":

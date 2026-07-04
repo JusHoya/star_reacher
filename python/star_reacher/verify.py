@@ -16,9 +16,12 @@ environment models (gravity tiers, third body, shadow/SRP, atmospheres)
 and the composed perturbed-run path, as quick variants of the full golden
 suites in ``tests/``; V019 covers the Phase 5 exporters (NPZ bit-exact
 round trip always, Parquet read-back when the optional pyarrow extra is
-installed) and V020 the Phase 5 viewer generator (self-containment, exact
+installed), V020 the Phase 5 viewer generator (self-containment, exact
 scrub-extreme epochs, the decimation bound, and byte-identical
-regeneration).
+regeneration), and V021 the Phase 5 plot pipeline (element array
+preparation against a closed-form circular orbit, a headless Agg PNG
+render, and byte-identical re-rendering), as a quick variant of the full
+golden suite in ``tests/python/test_plot_golden.py``.
 """
 
 from __future__ import annotations
@@ -1186,6 +1189,100 @@ def _check_v020(ctx: dict) -> None:
             raise CheckFailure("regenerating the viewer produced different bytes")
 
 
+# --------------------------------------------------------------------------
+# Phase 5 check (V021): the FR-18 plot pipeline, as a quick variant of the
+# golden suite in tests/python/test_plot_golden.py. Pure Python on a
+# synthesized log (no compiled core, no source tree): the element
+# preparation is checked against the closed-form elements of a circular
+# orbit, then one PNG is rendered headless through the forced Agg backend.
+# --------------------------------------------------------------------------
+
+# Circular-orbit design for V021: r0 = 7,000 km on +X, v = sqrt(mu/r0) on
+# +Y, mu per IERS Conventions (2010), TN No. 36, Table 1.1 (the loader GM,
+# star_reacher.derived.GM_M3_PER_S2["earth"]). For this geometry the
+# osculating elements are closed-form: a = r0 (to the rounding of v0^2),
+# e ~ 0, i = 0 exactly (h along +Z), and with the derived-elements
+# circular-equatorial convention RAAN = argp = 0 exactly and the true-
+# longitude slot advances from 0.
+_V021_MU = 3.986004418e14
+_V021_R0_M = 7.0e6
+
+
+def _check_v021(ctx: dict) -> None:
+    from star_reacher.plotting import PLOT_NAMES, prep_elements, render_plots
+
+    header = _fixtures.contract_header()
+    v0 = math.sqrt(_V021_MU / _V021_R0_M)
+    n_samples = 32
+    records = []
+    for k in range(n_samples):
+        # Uniform sweep of true longitude; sin/cos parameterization keeps
+        # every sample exactly on the circular orbit.
+        ang = 2.0 * math.pi * k / n_samples * 0.9
+        records.append(
+            _fixtures.truth_record(
+                60.0 * k,
+                r_m=(_V021_R0_M * math.cos(ang), _V021_R0_M * math.sin(ang), 0.0),
+                v_mps=(-v0 * math.sin(ang), v0 * math.cos(ang), 0.0),
+                mass_kg=150.0,
+            )
+        )
+    records.append(_fixtures.event_record(0.0, 1, "run_start"))
+    records.append(_fixtures.event_record(60.0 * (n_samples - 1), 2, "run_end"))
+    data = _fixtures.build_srlog(header, records)
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        run = load(_write_temp_srlog(tdp, "v021.srlog", data))
+
+        prep = prep_elements(run)
+        if prep.arrays is None:
+            raise CheckFailure(f"element preparation produced no arrays: {prep.note}")
+        a_km = prep.arrays["a_km"]
+        e = prep.arrays["e"]
+        i_deg = prep.arrays["i_deg"]
+        raan_deg = prep.arrays["raan_deg"]
+        if len(a_km) != n_samples:
+            raise CheckFailure(f"expected {n_samples} element samples, got {len(a_km)}")
+        # v0 = sqrt(mu/r0) rounds once in binary64, so a and e sit within a
+        # few ulp of the closed form; 1e-6 relative (a) and 1e-9 absolute
+        # (e) give ~9 orders of margin while failing on any element-chain
+        # defect (wrong GM, wrong units, wrong convention).
+        worst_a = float(np.max(np.abs(a_km * 1000.0 - _V021_R0_M)))
+        if worst_a > 1e-6 * _V021_R0_M:
+            raise CheckFailure(
+                f"circular-orbit semi-major axis off by {worst_a:.3e} m "
+                f"(gate {1e-6 * _V021_R0_M:.1e} m)"
+            )
+        if float(np.max(e)) > 1e-9:
+            raise CheckFailure(f"circular-orbit eccentricity {float(np.max(e)):.3e} > 1e-9")
+        # Equatorial geometry: i and the RAAN convention value are EXACT
+        # zeros per docs/formats/derived_elements.md section 4.
+        if float(np.max(np.abs(i_deg))) != 0.0 or float(np.max(np.abs(raan_deg))) != 0.0:
+            raise CheckFailure(
+                f"equatorial convention violated: max|i| = "
+                f"{float(np.max(np.abs(i_deg)))!r} deg, max|RAAN| = "
+                f"{float(np.max(np.abs(raan_deg)))!r} deg (both must be exactly 0)"
+            )
+
+        if "elements" not in PLOT_NAMES:
+            raise CheckFailure(f"'elements' missing from PLOT_NAMES: {PLOT_NAMES}")
+        report = render_plots([run], tdp / "plots", plots=["elements"])
+        png = tdp / "plots" / "elements.png"
+        if [Path(p) for p in report.written] != [png]:
+            raise CheckFailure(f"expected [{png}], wrote {report.written}")
+        head = png.read_bytes()
+        if head[:8] != b"\x89PNG\r\n\x1a\n":
+            raise CheckFailure(f"{png.name} does not start with the PNG signature")
+        if len(head) < 1024:
+            raise CheckFailure(f"{png.name} is implausibly small ({len(head)} bytes)")
+        # Deterministic rendering: a second render of the same log must be
+        # byte-identical (fixed figure geometry, fixed metadata, no
+        # timestamps) - the FR-21 discipline applied to a derived artifact.
+        render_plots([run], tdp / "plots2", plots=["elements"])
+        if (tdp / "plots2" / "elements.png").read_bytes() != head:
+            raise CheckFailure("re-rendering the same log produced different PNG bytes")
+
+
 _CHECKS = [
     ("V001", "two-body double-run SHA-256 bit-identity", _check_v001),
     ("V002", "minor-version-forward read (v1.999 file with one added channel)", _check_v002),
@@ -1207,6 +1304,7 @@ _CHECKS = [
     ("V018", "perturbed-run double-run SHA-256 bit-identity (rkf78 + rk4)", _check_v018),
     ("V019", "NPZ export round-trips bit-exactly (+ Parquet when available)", _check_v019),
     ("V020", "viewer HTML self-contained, epochs exact, decimation bound held", _check_v020),
+    ("V021", "plot arrays match closed-form elements; headless PNG render", _check_v021),
 ]
 
 
