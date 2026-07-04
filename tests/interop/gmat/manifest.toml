@@ -1,0 +1,159 @@
+# Provenance manifest for the scripted GMAT ephemeris-import interop item
+# (Phase 5 exit criterion 3, D-15; schema documented in tests/golden/README.md).
+# Everything here is maintainer-run evidence: CI never installs GMAT and
+# consumes nothing from this directory. The committed transcript is the
+# as-run console record; this manifest pins every input, output, tool, and
+# binary the run depended on.
+
+schema_version = 1
+
+[golden]
+directory = "interop/gmat"
+date = "2026-07-04"
+generation = """
+Method. One end-to-end driver (run_gmat_oem_import.py, command line below)
+performs the whole item: (1) missions/twobody_leo.toml is propagated with
+the installed package (star run; byte-deterministic run.srlog, SHA-256
+a0fd13a2ef08448329cce76dd61aa841c8c21c761fc57ed274fc45ca2611b452, canonical
+config SHA-256
+64c57d92780ce5a7f88fd64b96526a8d78fa4ed500dfa64d92c89aee846151f7); (2) the
+10 Hz truth group is decimated to the 60 s grid (91 records including t = 0;
+decimation only, never interpolation; the 60 s stamps are asserted to be
+exact integer doubles -- the logger writes t = i*dt in one rounding and at
+dt = 0.1 the fl(0.1) relative error of 2^-54 is at most half an ULP of the
+integer 60k) and written as the CCSDS-OEM file twobody_leo.oem (km / km/s,
+%.16e, UTC epochs, Lagrange degree 7); (3) GmatConsole.exe imports the OEM
+through GMAT's CCSDS-OEM ephemeris propagator (StepSize 60) and reports
+ElapsedSecs, UTCModJulian, and the Cartesian state on the same grid; (4) the
+report is compared per epoch against the OEM records GMAT was fed, both
+sides parsed from the same committed text, so the residual isolates GMAT's
+import/interpolation round trip.
+
+Frame labeling. The mission truth frame is GCRF. GMAT's CCSDS-OEM reader
+rejects REF_FRAME = ICRF for Earth ("not supported for the central body",
+first-iteration transcript below), so the OEM carries the EME2000 label its
+own shipped sample uses, and the report reads back in EarthMJ2000Eq -- the
+axes GMAT assigns that label -- so no frame conversion enters the round
+trip anywhere. The GCRF-to-EME2000 frame bias (~23 mas, sub-meter at LEO
+radius) is a labeling convention of this artifact, not an error term in the
+check. GMAT ran with its stock startup file (SHA-256
+12481417fc0b6513fefa4e959d1a19422107bbeecdc46b24219074162c6cdd6a): no force
+model is evaluated and no EOP enters an inertial-frame ephemeris playback.
+
+Results (2026-07-04, committed transcript.txt). Import succeeded (exit 0,
+console success banner). First report row UTCModJulian = 31041.5 exactly
+(2026-01-01T00:00:00 UTC, GMAT ModJulian offset JD 2430000.0, the same
+first-row value the crosstool baseline proved for this console build); max
+|elapsed - 60k| = 2.384e-7 s over 91 rows (same ~1e-7 s epoch quantization
+the crosstool run measured); round trip max |dr| = 3.638e-9 m, RMS |dr| =
+9.322e-10 m, max |dv| = 4.446e-12 m/s. Gates max |dr| < 5e-3 m and max
+|dv| < 1e-4 m/s: MET with ~1.4e6x and ~2.2e7x margin. The gate bound is
+sized to GMAT's measured ~1e-7 s epoch quantization times LEO speed (~1e-3
+m along-track); a wrong frame, unit, or epoch mapping shows up at meter to
+kilometer scale.
+
+Method controls and iteration history (all runs 2026-07-04, maintainer
+machine):
+1. REF_FRAME iteration: the first run used REF_FRAME = ICRF and GMAT
+   refused the file (Utility Exception, "The coordinate system 'ICRF' ...
+   is not supported for the central body 'Earth'"); switched to EME2000
+   per GMAT's shipped SampleOEMEphem.oem. No committed artifact predates
+   the fix.
+2. ElapsedSecs convention: for an ephemeris-propagated spacecraft GMAT
+   reports ElapsedSecs from the Spacecraft object's default year-2000
+   epoch, not from the OEM start (first-row value ~8.20498e8 s). The grid
+   check therefore uses elapsed time relative to the first row and pins
+   the absolute epoch through UTCModJulian = 31041.5 instead.
+3. Mutation control (gate is not vacuous): one OEM record (index 45,
+   t = 2700 s) perturbed by +1 m in X and replayed through GMAT; the
+   comparison detected max |dr| = 1.000000 m at exactly that record, far
+   above the 5e-3 m gate. Control outputs were not frozen.
+4. Determinism of the playback: the GMAT report was byte-identical
+   (SHA-256 ca0f2fca...) across three separate console executions.
+
+Simulator build provenance (disclosure). The maintainer host suffered eight
+consecutive build failures from MSVC 14.44.35207 C1001 internal compiler
+errors and CL.exe crashes (roaming Eigen headers, clean rebuilds, parallel
+levels 3 and 1, cool-down retries, idle machine, same day as a host crash),
+so the package could not be rebuilt from this checkout. The run used an assembled install: the pure-Python
+layer from this commit's python/ tree plus the compiled core
+_core.cp314-win_amd64.pyd (SHA-256
+64a8f5353374520b67d8ff5a277a6f82b2915cde0ffd00df370a0b59510a09f3) reused
+from the sibling ws-p5-missions build, whose baked core_git_hash is
+dd86cad4a19eafbb8f79c0ec1741a586858b1921 (the phase-4 6DOF merge, an
+ancestor of this commit; the value is printed in the committed transcript).
+The native-source delta between that commit and this one is exactly the
+Sun central-body addition (bindings/module.cpp,
+cpp/include/star/models/environment.hpp, cpp/include/star/run.hpp,
+cpp/src/models/environment.cpp, cpp/src/run.cpp, cpp/tests/
+test_environment.cpp; 228 insertions, 19 deletions), none of which is
+reachable by this Earth-central-body two-body mission. Health of the
+assembled install: star verify --quick = VERIFY: PASS (20/20), including
+V013 two-body invariants, V018 double-run SHA-256 bit-identity, and V019
+export round-trips. D-10 byte-determinism is a same-binary contract, so a
+core rebuilt at the merged tip is expected, but not contractually bound,
+to reproduce the recorded srlog hash; the committed OEM data lines and
+report are the review reference either way.
+
+Command lines (repo root, project venv):
+  python tests/interop/gmat/run_gmat_oem_import.py
+    (which invokes: python -m star_reacher run missions/twobody_leo.toml
+       --outdir <tools>/interop-runs/twobody-leo --force
+     then, with CWD = tools/gmat/bin: GmatConsole.exe
+       --run <repo>/tests/interop/gmat/twobody_leo_oem_import.script
+       --logfile <tools>/interop-runs/twobody_leo_oem_import_log.txt;
+     GMAT log SHA-256
+     380674d414bf4ddcfdef2314101a374851a119144ce2338e38c41c5d3957fc88)
+Regeneration note: rerunning the driver rewrites twobody_leo.oem and
+twobody_leo_oem_import.script in place; the only line expected to change on
+a faithful rerun is the OEM CREATION_DATE (wall clock of the export, kept
+honest rather than pinned), plus the script/report paths if run from a
+different checkout location. GMAT R2026a portable install pin (archive
+SHA-256 F7B00BDE...): tests/golden/crosstool/manifest.toml.
+
+Byte integrity of the evidence files: the .gitattributes in this directory
+exempts the four evidence records from the repository-wide line-ending
+normalization (`* text=auto`), because normalization would silently rewrite
+the hashed bytes on commit or checkout and break every SHA-256 recorded
+here and inside transcript.txt.
+"""
+
+[[file]]
+name = "run_gmat_oem_import.py"
+source = "hand-written for this item; OEM downsampling reads run.srlog via star_reacher.srlog.load, GMAT drive and report parsing modeled on scripts/crosstool/run_gmat_case1.py"
+citation = "CCSDS 502.0-B, Orbit Data Messages (CCSDS ODM Blue Book), for the OEM header/metadata/data-line structure; file-level conventions mirrored from GMAT R2026a's shipped data/vehicle/ephem/ccsds/SampleOEMEphem.oem and samples/Ex_OEMPropagation.script; GMAT R2026a (NASA GSFC; Hughes, Qureshi, Cooley, and Parker, 'Verification and Validation of the General Mission Analysis Tool (GMAT)', AIAA/AAS Astrodynamics Specialist Conference, AIAA 2014-4151, 2014)"
+generation = "committed as written; the driver regenerates twobody_leo.oem and twobody_leo_oem_import.script on every run and asserts the gates in [golden].generation"
+date = "2026-07-04"
+tolerance = "not applicable (procedure); its embedded gates are max |dr| < 5e-3 m and max |dv| < 1e-4 m/s at the 91 shared epochs, derivation in [golden].generation"
+
+[[file]]
+name = "twobody_leo.oem"
+source = "truth group of the missions/twobody_leo.toml run (run.srlog SHA-256 a0fd13a2ef08448329cce76dd61aa841c8c21c761fc57ed274fc45ca2611b452), decimated to the exact 60 s grid, km / km/s, GCRF state under the EME2000 label GMAT's reader requires (labeling rationale in [golden].generation)"
+citation = "CCSDS 502.0-B, Orbit Data Messages; layout mirrored from GMAT R2026a's shipped SampleOEMEphem.oem"
+generation = "run_gmat_oem_import.py write_oem(), 2026-07-04, committed as-run. SHA-256 d6572c5923a2f4513162710d7fc8c11f3276a6f89467f7d5aa41ded1df330a62 (16277 bytes, 91 records; CREATION_DATE is the one line that changes on regeneration)"
+date = "2026-07-04"
+tolerance = "not applicable (external-tool input fixture; %.16e data lines carry every stored double to text round-trip precision)"
+
+[[file]]
+name = "twobody_leo_oem_import.script"
+source = "generated as-run by run_gmat_oem_import.py write_gmat_script(); contains maintainer-machine absolute paths by design (D-15)"
+citation = "GMAT R2026a CCSDS-OEM ephemeris propagator, per the shipped samples/Ex_OEMPropagation.script; report conventions per tests/golden/crosstool/gmat_leo_gravity_8x8.script"
+generation = "committed as-run, 2026-07-04. SHA-256 0804997dbc16ff772a2409ca9f86be92aa4a29211288bd46e9ab2b38f8616e4f"
+date = "2026-07-04"
+tolerance = "not applicable (configuration evidence)"
+
+[[file]]
+name = "gmat_import_report.txt"
+source = "verbatim copy of the GMAT ReportFile output <tools>/interop-runs/twobody_leo_oem_import_report.txt from the as-run execution (16 significant digits, EarthMJ2000Eq, km / km/s)"
+citation = "GMAT R2026a (pinned above); produced by twobody_leo_oem_import.script"
+generation = "run_gmat_oem_import.py, 2026-07-04 (command line in [golden].generation). SHA-256 ca0f2fcacebb4063a3abfe1dfa1b6772ebf0379b4accbdbc26c0a6807b412c70; byte-identical across three console executions"
+date = "2026-07-04"
+tolerance = "compared against twobody_leo.oem at all 91 shared epochs: measured max |dr| = 3.638e-9 m, max |dv| = 4.446e-12 m/s against gates 5e-3 m / 1e-4 m/s (derivation and mutation check in [golden].generation)"
+
+[[file]]
+name = "transcript.txt"
+source = "stdout of the as-run driver execution, captured verbatim (star run summary, srlog/config SHA-256s, simulator version block including core_git_hash, OEM/script generation hashes, GMAT console output with success banner, comparison results, and the closing hash table)"
+citation = "not applicable (this run's own console record)"
+generation = "python tests/interop/gmat/run_gmat_oem_import.py | Out-File transcript.txt -Encoding ascii, 2026-07-04. SHA-256 909feb1792fb82d72be1a8b257879909fb1cfa18915ee185db4948fea949aa73"
+date = "2026-07-04"
+tolerance = "not applicable (evidence record)"

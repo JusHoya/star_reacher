@@ -1,0 +1,10 @@
+# Evidence records are committed byte-for-byte as run: their SHA-256 values
+# are recorded in manifest.toml and inside transcript.txt, so line-ending
+# normalization (the repository-wide `* text=auto` with core.autocrlf) would
+# silently rewrite the hashed bytes on commit or checkout and break the
+# recorded chain. transcript/report are CRLF as captured on the maintainer
+# machine; the OEM and GMAT script are LF as the driver writes them.
+transcript.txt -text
+gmat_import_report.txt -text
+twobody_leo.oem -text
+twobody_leo_oem_import.script -text
