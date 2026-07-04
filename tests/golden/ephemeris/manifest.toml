@@ -83,4 +83,12 @@ source = "de440s.bsp (SHA-256 c1c7feeab882263fc493a9d5a5b2ddd71b54826cdf65d8d17a
 citation = "Park, Folkner, Williams, and Boggs, 'The JPL Planetary and Lunar Ephemerides DE440 and DE441', The Astronomical Journal 161:105, 2021"
 generation = "generate_crosstool.py: the verbatim (never refit) DE440 Chebyshev records of the sun, emb, earth, and moon segments covering [2026-01-01 TDB - 2 d, 2026-01-01 TDB + 9 d], one contiguous SREPH v1 mini-segment per body; the mission window of missions/leo_drag_hp.toml plus margin. Bit-identity of excerpt evaluation against the full repack is asserted at generation time"
 date = "2026-07-02"
-tolerance = "not applicable (input fixture; committed binary excerpt per the Phase 2 exception recorded in tests/golden/README.md). Consumers: missions/leo_drag_hp.toml (its [environment] ephemeris path), tests/python/test_crosstool_missions.py, and the doctest cases env_composition_matches_sum_of_terms and env_error_paths"
+tolerance = "not applicable (input fixture; committed binary excerpt per the Phase 2 exception recorded in tests/golden/README.md). Consumers: missions/leo_drag_hp.toml, missions/tli.toml, and missions/mission_a_cislunar.toml (their [environment] ephemeris paths), tests/python/test_crosstool_missions.py, tests/python/test_vehicle_missions.py, tests/python/test_phase5_missions.py, and the doctest cases env_composition_matches_sum_of_terms and env_error_paths"
+
+[[file]]
+name = "excerpt_de440s_mars_cruise.sreph"
+source = "de440s.bsp (SHA-256 c1c7feeab882263fc493a9d5a5b2ddd71b54826cdf65d8d17a76126b260a49f2) and moon_pa_de440_200625.bpc (SHA-256 60cd55aa401ea2ea97360636f567554bfe4e37bb829f901b4460a455dfaf783f), JPL SSD / NAIF distribution"
+citation = "Park, Folkner, Williams, and Boggs, 'The JPL Planetary and Lunar Ephemerides DE440 and DE441', The Astronomical Journal 161:105, 2021"
+generation = "generate_mars_cruise.py: the verbatim (never refit) DE440 Chebyshev records of the sun, emb, earth, moon, venus_bary, mars_bary, and jupiter_bary segments covering [2026-12-05 TDB - 2 d, 2026-12-05 TDB + 9 d], one contiguous SREPH v1 mini-segment per body; the mission window of missions/mars_cruise.toml plus margin. Bit-identity of excerpt evaluation against the full repack is asserted at generation time"
+date = "2026-07-04"
+tolerance = "not applicable (input fixture; committed binary excerpt per the Phase 2 exception recorded in tests/golden/README.md). Consumers: missions/mars_cruise.toml (its [environment] ephemeris path), tests/python/test_phase5_missions.py, and the doctest cases env_sun_central_composition_matches_terms and env_sun_central_error_paths_and_gm"
