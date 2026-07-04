@@ -14,3 +14,10 @@
 # tests/golden/crosstool/manifest.toml stay verifiable against working-tree
 # bytes (the external tools consumed exactly these LF bytes).
 tests/golden/crosstool/* text eol=lf
+
+# Viewer-embedded sources and assets check out byte-identical on every
+# platform: the generated single-file HTML embeds these bytes verbatim, and
+# the vendored three.js SHA-256 is pinned in _viewer/vendor/PROVENANCE.md.
+python/star_reacher/_viewer/** text eol=lf
+python/star_reacher/_viewer/vendor/three.module.min.js -text
+python/star_reacher/_assets/*.json text eol=lf

@@ -1,10 +1,10 @@
 """The ``star`` command-line interface (D-4, FR-20, DX-1).
 
-Five subcommands (run, verify, export, docs from Phase 1; data from Phase 2)
-and no stubs: every command documented here works. Exit codes: 0 success, 2
-validation errors (accumulated per DX-2), 1 runtime errors. ``python -m
-star_reacher`` and the installed ``star`` console script both dispatch
-through ``main``.
+Six subcommands (run, verify, export, docs from Phase 1; data from Phase 2;
+view from Phase 5) and no stubs: every command documented here works. Exit
+codes: 0 success, 2 validation errors (accumulated per DX-2), 1 runtime
+errors. ``python -m star_reacher`` and the installed ``star`` console script
+both dispatch through ``main``.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     sub = parser.add_subparsers(
-        dest="command", required=True, metavar="{run,verify,export,docs,data}"
+        dest="command", required=True, metavar="{run,verify,export,view,docs,data}"
     )
 
     p_run = sub.add_parser(
@@ -65,7 +65,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_verify = sub.add_parser(
         "verify",
-        help="run the acceptance check suite (V001-V018)",
+        help="run the acceptance check suite (V001-V020)",
         description=(
             "Self-contained acceptance runner: one line per check, ending in "
             "'VERIFY: PASS (N/N)' or 'VERIFY: FAIL (k/N)' plus the failing check "
@@ -114,6 +114,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "--outdir",
         default=None,
         help="output directory (default: alongside the input file)",
+    )
+
+    p_view = sub.add_parser(
+        "view",
+        help="write a self-contained single-file HTML playback viewer (FR-19)",
+        description=(
+            "Generate the D-16 WebGL playback viewer for an SRLOG file: one "
+            "self-contained HTML file embedding the vendored three.js runtime, "
+            "a decimated view stream with a measured position-error bound, and "
+            "the coastline overlay; the file makes zero network requests. "
+            "Playback consumes only the log (no re-simulation); interpolation "
+            "between keyframes is display-only and non-physical."
+        ),
+    )
+    p_view.add_argument("srlog", help="path to the run.srlog file")
+    p_view.add_argument(
+        "-o",
+        "--out",
+        default=None,
+        help="output HTML path (default: the input path with an .html suffix)",
     )
 
     p_docs = sub.add_parser(
@@ -249,6 +269,33 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return _EXIT_OK
 
 
+def _cmd_view(args: argparse.Namespace) -> int:
+    from star_reacher.viewer import ViewerError, generate_view
+
+    try:
+        result = generate_view(Path(args.srlog), args.out)
+    except FileNotFoundError:
+        print(f"star view: {args.srlog}: no such file.", file=sys.stderr)
+        return _EXIT_RUNTIME
+    except (SrlogError, ViewerError, OSError) as exc:
+        print(f"star view: {exc}", file=sys.stderr)
+        return _EXIT_RUNTIME
+
+    # Both the bound and the measured value are printed (and embedded in the
+    # HTML) so the decimation claim is checkable without opening the file.
+    print(
+        f"view stream: kept {result.keyframes_kept} of {result.truth_records} "
+        f"truth samples"
+    )
+    print(
+        f"decimation bound: {result.bound_m:.6g} m "
+        f"(= max(100 m, 0.01 % of the {result.position_span_m:.6g} m position span))"
+    )
+    print(f"decimation measured max error: {result.measured_max_error_m:.6g} m")
+    print(f"wrote {result.out_path} ({result.html_bytes} bytes)")
+    return _EXIT_OK
+
+
 def _cmd_docs(args: argparse.Namespace) -> int:
     from star_reacher.docsbuild import build_docs
 
@@ -273,6 +320,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_verify(args)
     if args.command == "export":
         return _cmd_export(args)
+    if args.command == "view":
+        return _cmd_view(args)
     if args.command == "docs":
         return _cmd_docs(args)
     if args.command == "data":

@@ -16,7 +16,9 @@ environment models (gravity tiers, third body, shadow/SRP, atmospheres)
 and the composed perturbed-run path, as quick variants of the full golden
 suites in ``tests/``; V019 covers the Phase 5 exporters (NPZ bit-exact
 round trip always, Parquet read-back when the optional pyarrow extra is
-installed).
+installed) and V020 the Phase 5 viewer generator (self-containment, exact
+scrub-extreme epochs, the decimation bound, and byte-identical
+regeneration).
 """
 
 from __future__ import annotations
@@ -1118,6 +1120,72 @@ def _check_v019(ctx: dict) -> None:
                 )
 
 
+# --------------------------------------------------------------------------
+# Phase 5 check (V020): the FR-19 viewer generator, as a quick variant of
+# the full suite in tests/python/test_viewer.py.
+# --------------------------------------------------------------------------
+
+
+def _check_v020(ctx: dict) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from star_reacher.viewer import (
+        extract_view_data,
+        generate_view,
+        scan_external_references,
+    )
+
+    if "v001_srlog_bytes" not in ctx:
+        raise CheckFailure(
+            "requires the run.srlog produced by V001, which did not complete (see the V001 result)"
+        )
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        srlog = _write_temp_srlog(tdp, "v019.srlog", ctx["v001_srlog_bytes"])
+        result = generate_view(srlog, tdp / "view.html")
+        html = (tdp / "view.html").read_text(encoding="utf-8")
+
+        findings = scan_external_references(html)
+        if findings:
+            raise CheckFailure(f"external references in the emitted HTML: {findings}")
+
+        # The decimation claim: the measured error is a direct measurement
+        # over every dropped truth sample, and must sit within the bound.
+        if result.measured_max_error_m > result.bound_m:
+            raise CheckFailure(
+                f"measured decimation error {result.measured_max_error_m!r} m "
+                f"exceeds the bound {result.bound_m!r} m"
+            )
+
+        run = load(srlog)
+        data = extract_view_data(html)
+        if data["epoch"]["utc_first"] != run.header["epoch_utc"]:
+            raise CheckFailure(
+                f"embedded first epoch {data['epoch']['utc_first']!r} != header "
+                f"epoch_utc {run.header['epoch_utc']!r}"
+            )
+        epoch = datetime.fromisoformat(
+            run.header["epoch_utc"].replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
+        t_last = float(run.groups["truth"]["t_s"][-1])
+        last = epoch + timedelta(seconds=t_last)
+        expected_last = last.strftime("%Y-%m-%dT%H:%M:%S")
+        if last.microsecond:
+            expected_last += ("." + f"{last.microsecond:06d}").rstrip("0")
+        expected_last += "Z"
+        if data["epoch"]["utc_last"] != expected_last:
+            raise CheckFailure(
+                f"embedded last epoch {data['epoch']['utc_last']!r} != header-"
+                f"derived {expected_last!r} (epoch_utc + final truth t_s)"
+            )
+
+        # Byte-identical regeneration: the viewer is a derived artifact and
+        # must be a pure function of the log bytes (FR-21 discipline).
+        generate_view(srlog, tdp / "view2.html")
+        if (tdp / "view.html").read_bytes() != (tdp / "view2.html").read_bytes():
+            raise CheckFailure("regenerating the viewer produced different bytes")
+
+
 _CHECKS = [
     ("V001", "two-body double-run SHA-256 bit-identity", _check_v001),
     ("V002", "minor-version-forward read (v1.999 file with one added channel)", _check_v002),
@@ -1138,6 +1206,7 @@ _CHECKS = [
     ("V017", "USSA76/Harris-Priester/Mars density spot values", _check_v017),
     ("V018", "perturbed-run double-run SHA-256 bit-identity (rkf78 + rk4)", _check_v018),
     ("V019", "NPZ export round-trips bit-exactly (+ Parquet when available)", _check_v019),
+    ("V020", "viewer HTML self-contained, epochs exact, decimation bound held", _check_v020),
 ]
 
 
