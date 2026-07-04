@@ -1,0 +1,98 @@
+# Mars-cruise example mission (Phase 5 deliverable): a point-mass probe on a
+# Hohmann-class Earth->Mars heliocentric transfer, propagated about the Sun
+# (central_body = "sun", point-mass gravity - FR-5 defines no Sun field)
+# under the Earth, Moon, Venus, Mars, and Jupiter third bodies plus SRP,
+# integrated with the adaptive RKF7(8) and logged at 1 Hz. The state is
+# Sun-centered with the GCRF (ICRF) axis orientation.
+#
+# Duration - why 7 days and not the full ~259-day cruise: SRLOG v1 truth
+# logging is a normative integer rate >= 1 Hz and every other group rate must
+# divide it (docs/formats/srlog_v1.md sections 3 and 3.1), so sub-hertz
+# logging would be a format change; at the 1 Hz minimum a 259-day cruise
+# writes ~22 million truth records (~2.7 GB). The committed mission therefore
+# propagates the first 7 days of the transfer after the escape handoff
+# (604,801 records, ~74 MB), and the acceptance gate checks the osculating
+# transfer ellipse against Mars' orbital radii instead of arrival geometry
+# (tests/python/test_phase5_missions.py).
+#
+# Initial state - patched-conic departure handoff, derived from the DE440
+# repack (the same kernel family the propagation reads):
+#   - epoch 2026-12-05T00:00:00Z, inside the 2026 Earth->Mars departure
+#     window (DE440 Earth-Mars heliocentric phase angle ~44 deg with Mars
+#     leading - the Hohmann lead angle for a ~259-day transfer);
+#   - Earth heliocentric state r_E, v_E at the epoch (|r_E| = 0.98559 au,
+#     |v_E| = 30225.795 m/s), composed as emb+earth-sun;
+#   - transfer ellipse r1 = |r_E|, r2 = |Mars heliocentric at epoch + 259 d|
+#     = 1.54046 au, a_t = (r1+r2)/2 = 1.26302 au, departure speed
+#     v_dep = sqrt(GM_sun (2/r1 - 1/a_t)) = 33133.203 m/s, so
+#     v_inf = v_dep - |v_E| = 2907.408 m/s;
+#   - handoff at d = 1e9 m from Earth (just outside the ~0.92e9 m Earth SOI),
+#     offset and hyperbolic-excess speed both along the Earth velocity unit
+#     vector u (tangential prograde departure):
+#     w = sqrt(v_inf^2 + 2 GM_earth/d) = 3041.418 m/s,
+#     r0 = r_E + d u,  v0 = v_E + w u.
+#   The osculating heliocentric ellipse at t0 has a = 1.2791 au, e = 0.2295,
+#   aphelion 1.5727 au; Earth's pull drains the remaining escape excess
+#   toward the r2 = 1.5405 au Hohmann aphelion as the spacecraft recedes.
+#
+# Third bodies - measured differential accelerations at t0 (m/s^2):
+# earth 4.0e-4 and moon 8.3e-6 (the departure system, dominant near the
+# handoff), venus 8.7e-8 (above Jupiter and SRP at this epoch, so its
+# omission is not defensible), jupiter 4.9e-8, mars 1.0e-9 (the arrival
+# planet; a cruise that ignores it is mis-modeled by construction). SRP at
+# Cr*A/m = 0.013 (Cr = 1.3, A = 5 m^2, m = 500 kg - the probe.toml class)
+# is 5.9e-8 at 1 au. The heliocentric regime requires this list explicitly
+# (FR-15 sun-regime rule); SRP runs with no occulter (the Sun cannot occult
+# its own light and deep-cruise planetary transits are negligible, FR-7).
+#
+# The run terminates on duration_s (the heliocentric regime has no event
+# sequence). The ephemeris is the committed continuous DE440 excerpt cut for
+# this window (tests/golden/ephemeris/excerpt_de440s_mars_cruise.sreph,
+# provenance in tests/golden/ephemeris/manifest.toml), so the mission runs
+# in CI and on a clean clone with no fetched data.
+#
+# provenance "representative": the epoch and state are a documented
+# patched-conic construction over DE440, not a real mission plan.
+
+schema_version = 1
+
+[mission]
+name = "mars-cruise"
+epoch_utc = "2026-12-05T00:00:00Z"
+duration_s = 604800.0
+
+[run]
+seed = 20261205
+
+[integrator]
+type = "rkf78"
+rtol = 1e-11
+atol_pos_m = 1e-6
+atol_vel_mps = 1e-9
+h_init_s = 30.0
+# 900 s cap: bounds the dense-output interpolation error the 1 Hz truth log
+# samples (ch:integrators); the tolerance, not the cap, controls the brief
+# Earth-proximity transient after the handoff.
+h_max_s = 900.0
+
+[spacecraft]
+mass_kg = 500.0
+cr_a_over_m_m2pkg = 0.013
+
+# Patched-conic departure handoff state; derivation in the header.
+[initial_state.cartesian]
+r_m = [43441832987.803406, 129269774754.99365, 56035879787.16031]
+v_mps = [-31803.342998123906, 8954.45332331797, 3882.3468132070666]
+frame = "GCRF"
+
+[environment]
+central_body = "sun"
+third_bodies = ["earth", "moon", "venus", "mars", "jupiter"]
+ephemeris = "tests/golden/ephemeris/excerpt_de440s_mars_cruise.sreph"
+
+# SRP with an empty occulter set: the sun regime rejects the occulters key
+# (no occulting body exists in deep cruise, FR-7).
+[environment.srp]
+
+[logging]
+truth_rate_hz = 1
