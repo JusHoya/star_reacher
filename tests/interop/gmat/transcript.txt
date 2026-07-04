@@ -1,0 +1,66 @@
+command: C:\Users\hoyer\WorkSpace\Projects\star_reacher\.claude\worktrees\agent-a2dfbab1a63b3379f\.venv\Scripts\python.exe -m star_reacher run C:\Users\hoyer\WorkSpace\Projects\star_reacher\.claude\worktrees\agent-a2dfbab1a63b3379f\missions\twobody_leo.toml --outdir C:\Users\hoyer\WorkSpace\tools\interop-runs\twobody-leo --force
+mission: twobody-leo
+resolved config sha256: 64c57d92780ce5a7f88fd64b96526a8d78fa4ed500dfa64d92c89aee846151f7
+final-state summary:
+  event_records: 2
+  final_r_m: [6675895.89982091, -1172847.0677129452, 0.0]
+  final_v_mps: [1326.9126068390356, 7552.927216781448, 0.0]
+  records_written: 54003
+  steps: 54000
+  truth_records: 54001
+run.srlog sha256: a0fd13a2ef08448329cce76dd61aa841c8c21c761fc57ed274fc45ca2611b452
+outputs: C:\Users\hoyer\WorkSpace\tools\interop-runs\twobody-leo (run.srlog, resolved_config.json, meta.json)
+srlog sha256  a0fd13a2ef08448329cce76dd61aa841c8c21c761fc57ed274fc45ca2611b452
+config sha256 64c57d92780ce5a7f88fd64b96526a8d78fa4ed500dfa64d92c89aee846151f7
+versions: {"core": "0.4.0", "core_git_hash": "dd86cad4a19eafbb8f79c0ec1741a586858b1921", "numpy": "2.5.0", "python": "3.14.0", "star_reacher": "0.4.0"}
+twobody_leo.oem: 91 records, 16277 bytes
+  sha256 d6572c5923a2f4513162710d7fc8c11f3276a6f89467f7d5aa41ded1df330a62
+twobody_leo_oem_import.script: generated as-run
+  sha256 0804997dbc16ff772a2409ca9f86be92aa4a29211288bd46e9ab2b38f8616e4f
+command: C:\Users\hoyer\WorkSpace\tools\gmat\bin\GmatConsole.exe --run C:\Users\hoyer\WorkSpace\Projects\star_reacher\.claude\worktrees\agent-a2dfbab1a63b3379f\tests\interop\gmat\twobody_leo_oem_import.script --logfile C:\Users\hoyer\WorkSpace\tools\interop-runs\twobody_leo_oem_import_log.txt
+.\data\planetary_coeff\NUTATION.DAT
+Setting leap seconds file to C:\Users\hoyer\WorkSpace\tools\gmat\bin\..\data\time\tai-utc.dat
+2026-07-04 10:35:57 GMAT Moderator successfully created core engine
+
+Interpreting scripts from the file.
+***** file: C:\Users\hoyer\WorkSpace\Projects\star_reacher\.claude\worktrees\agent-a2dfbab1a63b3379f\tests\interop\gmat\twobody_leo_oem_import.script
+Successfully set Planetary Source to use: DE405
+Successfully set Planetary Source to use: DE405
+Successfully interpreted the script
+.................... Print out the whole sequence ........................................
+   Command::NoOp
+   Command::BeginMissionSequence
+   Command::Propagate
+.................... End sequence ........................................................
+Running mission...
+Successfully set Planetary Source to use: DE405
+Successfully set Planetary Source to use: DE405
+Kernel C:/Users/hoyer/WorkSpace/tools/gmat/bin/../data/planetary_ephem/spk/DE405AllPlanets.bsp has been loaded.
+Kernel C:\Users\hoyer\WorkSpace\tools\gmat\bin\..\data\planetary_coeff\SPICEPlanetaryConstantsKernel.tpc has been loaded.
+Kernel C:\Users\hoyer\WorkSpace\tools\gmat\bin\..\data\time\SPICELeapSecondKernel.tls has been loaded.
+Kernel C:\Users\hoyer\WorkSpace\tools\gmat\bin\..\data\planetary_coeff\SPICEEarthPredictedKernel.bpc has been loaded.
+Kernel C:\Users\hoyer\WorkSpace\tools\gmat\bin\..\data\planetary_coeff\SPICEEarthCurrentKernel.bpc has been loaded.
+Kernel C:\Users\hoyer\WorkSpace\tools\gmat\bin\..\data\planetary_coeff\earth_latest_high_prec.bpc has been loaded.
+Kernel C:\Users\hoyer\WorkSpace\tools\gmat\bin\..\data\planetary_coeff\SPICELunaCurrentKernel.bpc has been loaded.
+Kernel C:\Users\hoyer\WorkSpace\tools\gmat\bin\..\data\planetary_coeff\SPICELunaFrameKernel.tf has been loaded.
+
+Mission run completed.
+===> Total Run Time: 0.034 seconds
+
+========================================
+
+
+*** GMAT Integration test (Console version) successful! ***
+
+Moderator is deleting core engine...
+
+stock startup sha256 12481417fc0b6513fefa4e959d1a19422107bbeecdc46b24219074162c6cdd6a
+first row UTCModJulian = 31041.5 (expect 31041.5 = 2026-01-01T00:00:00 UTC)
+grid check: max |elapsed - 60k| = 2.384e-07 s over 91 rows
+round trip: max |dr| = 3.638e-09 m, rms |dr| = 9.322e-10 m, max |dv| = 4.446e-12 m/s
+GMAT-OEM-IMPORT: PASS (gates |dr| < 0.005 m, |dv| < 0.0001 m/s)
+sha256 d6572c5923a2f4513162710d7fc8c11f3276a6f89467f7d5aa41ded1df330a62  C:\Users\hoyer\WorkSpace\Projects\star_reacher\.claude\worktrees\agent-a2dfbab1a63b3379f\tests\interop\gmat\twobody_leo.oem
+sha256 0804997dbc16ff772a2409ca9f86be92aa4a29211288bd46e9ab2b38f8616e4f  C:\Users\hoyer\WorkSpace\Projects\star_reacher\.claude\worktrees\agent-a2dfbab1a63b3379f\tests\interop\gmat\twobody_leo_oem_import.script
+sha256 ca0f2fcacebb4063a3abfe1dfa1b6772ebf0379b4accbdbc26c0a6807b412c70  C:\Users\hoyer\WorkSpace\tools\interop-runs\twobody_leo_oem_import_report.txt
+sha256 380674d414bf4ddcfdef2314101a374851a119144ce2338e38c41c5d3957fc88  C:\Users\hoyer\WorkSpace\tools\interop-runs\twobody_leo_oem_import_log.txt
+sha256 a0fd13a2ef08448329cce76dd61aa841c8c21c761fc57ed274fc45ca2611b452  C:\Users\hoyer\WorkSpace\tools\interop-runs\twobody-leo\run.srlog

@@ -1,0 +1,75 @@
+# Provenance manifest for the MATLAB parquetread interop item (Phase 5 exit
+# criterion 3, D-15; schema documented in tests/golden/README.md). MATLAB is
+# not installed on the maintainer machine (tools/bootstrap-notes/README.md
+# records GMAT's libMatlabInterface failing to load for that reason), so this
+# item is committed fully prepared: the validation script, its bit-exact
+# expected constants, and the pinned hashes of the exact inputs it validates.
+# The as-run MATLAB transcript is committed here (with a [[file]] entry) when
+# the maintainer executes the procedure in README.md on a MATLAB machine.
+
+schema_version = 1
+
+[golden]
+directory = "interop/matlab"
+date = "2026-07-04"
+generation = """
+Inputs. The same missions/twobody_leo.toml run the GMAT interop item pinned
+(run.srlog SHA-256
+a0fd13a2ef08448329cce76dd61aa841c8c21c761fc57ed274fc45ca2611b452, canonical
+config SHA-256
+64c57d92780ce5a7f88fd64b96526a8d78fa4ed500dfa64d92c89aee846151f7; simulator
+build provenance and its disclosure: tests/interop/gmat/manifest.toml),
+exported with:
+
+  python -m star_reacher export <tools>/interop-runs/twobody-leo/run.srlog --parquet
+
+producing truth.parquet (2478583 bytes, SHA-256
+b5aa70a4e5e2f010119abead26c27af89419667dfd671fd0e1e1f9a2abaa60af; 54001
+rows, 15 double columns per the flattened channel convention of
+docs/formats/parquet_v1.md) and events.parquet (999 bytes, SHA-256
+d73fc9bc48c97d721ffb0d7f2df6b5d7d369d24b533e566d4a93a2a36b986a53; 2 rows:
+t_s double, code uint32, detail string -- deliberately included so the
+MATLAB check also exercises the unsigned-integer and string type mappings,
+not only doubles). Exporter: pyarrow 24.0.0 on Python 3.14.0. Parquet
+container bytes are outside the D-10 byte-determinism contract
+(docs/formats/parquet_v1.md section 5): with the pinned pyarrow the hashes
+are expected to reproduce; with another pyarrow a container-hash difference
+alone is acceptable, and the .m script gates content instead.
+
+Expected constants. Every expected value in read_truth_parquet.m was
+captured from these exact files by reading them back with pyarrow and
+formatting each double as its big-endian IEEE-754 binary64 hex (the same
+convention as MATLAB num2hex). The first truth row equals the mission
+initial state exactly as written in missions/twobody_leo.toml (r_m =
+[6778137.0, 0, 0] m, v_mps = [0, 7668.6, 0], identity q_i2b, zero rates,
+150 kg), so those constants are independently checkable against the
+committed mission file; the last row (t = 5400.0 s) and the two event rows
+(code 1 'run_start' at 0 s, code 2 'run_end' at 5400 s) come from the
+pinned run. num2hex string comparison makes every check bit-exact: the
+Parquet contract is that stored doubles survive unreformatted, so no
+tolerance is legitimate.
+
+Status. Prepared 2026-07-04; the MATLAB execution is pending a machine with
+MATLAB R2019a or newer (parquetread availability per the MathWorks
+parquetread documentation). The runbook, including transcript capture via
+diary and the manifest entry to add afterward, is README.md in this
+directory. The .gitattributes here already exempts the future
+transcript.txt from line-ending normalization so its committed bytes will
+match the hash recorded for it.
+"""
+
+[[file]]
+name = "read_truth_parquet.m"
+source = "hand-written for this item; expected hex constants captured from the pinned truth.parquet/events.parquet as described in [golden].generation"
+citation = "MathWorks MATLAB documentation for parquetread (introduced R2019a), num2hex, and table; Parquet layout under test: docs/formats/parquet_v1.md (star export --parquet, PRD FR-17/D-13)"
+generation = "committed as written; validates row counts, column names/order, column classes, and bit-exact spot values, printing one ok/FAIL line per check and a final MATLAB-PARQUET: PASS/FAIL verdict"
+date = "2026-07-04"
+tolerance = "bit-exact by design (num2hex string equality); any mismatch is a FAIL"
+
+[[file]]
+name = "README.md"
+source = "hand-written maintainer runbook for this item"
+citation = "PRD Phase 5 exit criterion 3 and D-15 (maintainer-run checklist items recorded under tests/interop/); docs/formats/parquet_v1.md section 4"
+generation = "committed as written"
+date = "2026-07-04"
+tolerance = "not applicable (procedure)"
