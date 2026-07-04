@@ -1,0 +1,109 @@
+# Nightly performance gates (FR-32, FR-22 layer 7; Phase 5 exit criteria 4
+# and 5).
+# Honesty rule: no continue-on-error anywhere — a red gate is a red build.
+#
+# Runner honesty (PRD section 9): EC-4's absolute thresholds are written for
+# a Raspberry Pi 5 single core, and no self-hosted Pi runner is attached to
+# this repository. Section 9's sanctioned fallback applies: the absolute
+# gates run here on pinned GitHub-hosted runner classes — ubuntu-24.04-arm as
+# the documented Pi 5 PROXY leg (aarch64 like the Pi 5, but a Neoverse-class
+# server core, so its numbers are proxy numbers and are never claimed as
+# Pi 5 measurements) — and the literal Pi 5 hardware measurement is the
+# manual pre-release checklist docs/perf/pi5_checklist.md.
+name: nightly
+
+on:
+  schedule:
+    # 06:47 UTC, off the top of the hour: GitHub sheds or delays cron jobs
+    # scheduled at high-load instants, and a dropped nightly leaves a hole in
+    # the rolling-median history.
+    - cron: '47 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # The rolling-median gate reads prior runs' measurement artifacts through
+  # the Actions API, which needs actions: read on GITHUB_TOKEN.
+  actions: read
+
+jobs:
+  # Exit criterion 4 (absolute gates) and exit criterion 5 (rolling-median
+  # regression gate). The ARM leg is the Pi 5 proxy; the x86-64 leg is kept
+  # because a regression that only reproduces on one architecture is
+  # information, not noise.
+  perf:
+    strategy:
+      # Both legs report even when one fails, so an architecture-specific
+      # regression is visible in a single nightly round-trip.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install package (builds the native core)
+        run: pip install .
+      - name: Measure and gate the EC-4 absolutes
+        # perf_gate.py measures sequentially in a single process (D-10
+        # discipline) and exits nonzero if any absolute gate fails
+        # (Mission A < 60 s wall, ascent >= 100x real time, SRLOG sustained
+        # write >= 50 MB/s), so the absolute thresholds are live on every
+        # run — including the first, when the median gate below still has no
+        # history to compare against.
+        run: python scripts/perf_gate.py measure --json perf/current.json
+      - name: Fetch the rolling-median history
+        # Collect this leg's measurement JSON from up to the 10 most recent
+        # successful prior runs of this workflow. The current run is still
+        # in_progress, so status=success can never match it; expired
+        # artifacts are filtered because their download endpoint 404s.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p history
+          run_ids=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?status=success&per_page=10" \
+            --jq '.workflow_runs[].id')
+          for rid in $run_ids; do
+            aid=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${rid}/artifacts" \
+              --jq ".artifacts[] | select(.name == \"perf-${{ matrix.os }}\") | select(.expired == false) | .id" \
+              | head -n 1)
+            if [ -n "$aid" ]; then
+              gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${aid}/zip" \
+                > "history/run-${rid}.zip"
+              mkdir -p "history/run-${rid}"
+              unzip -q "history/run-${rid}.zip" -d "history/run-${rid}"
+            fi
+          done
+          ls -l history
+      - name: Rolling-median regression gate (EC-5)
+        # >10 % regression versus the rolling median of up to the last 10
+        # successful runs fails, direction-aware (wall time regresses up,
+        # real-time factor and MB/s regress down); perf_gate.py owns the
+        # math. Bootstrap is honest by construction: with no prior history
+        # (first run, or all prior artifacts expired) there is no median to
+        # gate against, so the step reports that and passes — the absolute
+        # gates above already gated this run, and the rolling gate becomes
+        # live from run 2 onward, which is what "live" means for a rolling
+        # statistic. This is a documented empty-history branch, not a
+        # continue-on-error.
+        run: |
+          prior=$(find history -name 'current.json' | sort)
+          if [ -z "$prior" ]; then
+            echo "no history, skipped (rolling-median gate is live from run 2 onward)"
+            exit 0
+          fi
+          echo "$prior" | wc -l | xargs echo "history runs:"
+          python scripts/perf_gate.py median $prior --json median.json
+          python scripts/perf_gate.py compare \
+            --current perf/current.json --median median.json --tolerance 0.10
+      - name: Upload the measurement artifact
+        # Stable per-leg name: future runs of this workflow locate history by
+        # exactly this name, so renaming it silently resets the rolling gate.
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ matrix.os }}
+          path: perf/current.json
+          if-no-files-found: error
