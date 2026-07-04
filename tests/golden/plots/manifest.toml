@@ -1,0 +1,54 @@
+# Provenance manifest for the FR-18 plot-feeding-array golden vectors in
+# this directory (FR-22 layer 1: uncited golden = lint failure; schema
+# documented in tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "plots"
+date = "2026-07-04"
+generation = """
+Both value files are written by tests/golden/plots/generate.py against the
+repository state at commit 7aaa2e48a72eef49e118adcd449e12bfb3f72c7d (branch
+ws-p5-plots base: phase-5-data-out). The script runs the two committed
+reference missions through the project runner (star_reacher.runner
+.run_mission, i.e. exactly what `star run` executes), loads each run.srlog
+with the pure-NumPy loader, reduces it with star_reacher.plotting
+.prepare_all (the array-preparation layer behind `star plot`), and freezes
+every named plot-feeding array at fixed probe indices as binary64 hex
+values, together with the run's resolved-config SHA-256 and the full event
+stream. These are REGRESSION goldens for the Phase 5 exit-criterion-1
+data-level gate: they pin the log -> plot-array pipeline against silent
+change. They are deliberately NOT an independent rederivation of the
+physics - the physical correctness of the underlying states is anchored
+separately by the Phase 1-4 golden suites, the analytic benchmarks, and the
+frozen cross-tool truth in tests/golden/crosstool/ (GMAT R2026a, Orekit
+13.1.5). Regeneration: `.venv/Scripts/python tests/golden/plots/generate.py`
+from the repository root with the compiled core installed; commit the diff
+together with a manifest date update per the tests/golden/README.md update
+policy.
+"""
+
+[[file]]
+name = "twobody_leo.toml"
+source = "tests/golden/plots/generate.py: star run of missions/twobody_leo.toml + star_reacher.plotting.prepare_all on this machine (Windows 11 x64, MSVC-built core 0.4.0, commit 7aaa2e48a72eef49e118adcd449e12bfb3f72c7d)"
+citation = "Feeding-array definitions per docs/formats/plots.md; osculating-element conventions per docs/formats/derived_elements.md (Vallado, Fundamentals of Astrodynamics and Applications, 4th ed., Alg. 9); geodetic latitude/altitude per Bowring, Survey Review 23(181), 1976 (two fixed passes, mirroring cpp/src/models/atmosphere_hp.cpp eq:hp:geodetic); GCRF->ITRF chain per the Phase 2 frames golden set (IAU 2006/2000B, tests/golden/frames/manifest.toml); reference propagation defined by missions/twobody_leo.toml"
+generation = "python tests/golden/plots/generate.py (writes both value files; byte-deterministic per platform)"
+date = "2026-07-04"
+tolerance = "reltol arrays: |got - ref| <= 1e-9 * scale (scale = max |probe| committed per array; an all-zero array must stay exactly zero). Angle arrays: 1e-6 deg, absolute for the bounded i/lat, circular (mod 360) for the wrapping raan/argp/nu/lon. Derivation: the two-body reference propagation uses IEEE basic operations only and its measured cross-platform final-state divergence is 0.0 (tests/golden/determinism/cross_platform.toml, D-10 bound 1e-9), so the only cross-platform spread the arrays can carry is the array-preparation layer's own libm calls (atan2/sin/cos in elements, Bowring, and the frames chain), which is ulp-scale (~1e-16 relative, ~1e-13 deg); 1e-9 relative / 1e-6 deg keeps >= 6 orders of margin over that spread and still fails on any pipeline change at the ppb level. Events: bit-exact (times are fixed-step grid arithmetic in basic ops); config_sha256 and every n: exact."
+
+[[file]]
+name = "ascent_leo.toml"
+source = "tests/golden/plots/generate.py: star run of missions/ascent_leo.toml + star_reacher.plotting.prepare_all on this machine (Windows 11 x64, MSVC-built core 0.4.0, commit 7aaa2e48a72eef49e118adcd449e12bfb3f72c7d)"
+citation = "Feeding-array definitions per docs/formats/plots.md; per-source force/torque channels per docs/formats/srlog_v1.md section 3.1; osculating-element conventions per docs/formats/derived_elements.md (Vallado, 4th ed., Alg. 9); geodetic latitude/altitude per Bowring, Survey Review 23(181), 1976; ascent physics anchored by the Phase 4 golden suites and the EC-11 independent 3DOF cross-check (tests/crosscheck/manifest.toml); reference mission defined by missions/ascent_leo.toml and vehicles/electron_class.toml"
+generation = "python tests/golden/plots/generate.py (writes both value files; byte-deterministic per platform)"
+date = "2026-07-04"
+tolerance = "reltol arrays: |got - ref| <= 1e-6 * scale (scale = max |probe| committed per array). Angle arrays: 1e-3 deg (absolute for i/lat, circular for raan/argp/nu/lon). Derivation: the ascent run bears libm-carrying models (USSA76 exp/pow, the IAU frames series, Bowring), so unlike the two-body case no cross-platform bit-identity claim exists; per-evaluation libm spread is O(1e-16) relative and accumulates over the <= 7,600 RK4 steps of the 760 s ascent with modest (non-chaotic) dynamic amplification, bounding the platform-to-platform state divergence at roughly 1e-8 relative - 1e-6 relative / 1e-3 deg keeps >= 2 orders of margin over that estimate while still failing on any model or pipeline change at the ppm level. Events: bit-exact (grid arithmetic; a flipped condition-trigger step, e.g. the terminal perigee_above insertion moving by one 0.1 s step, is a genuine regression signal and fails the n/t_s equality loudly). config_sha256 and every n: exact."
+
+[[file]]
+name = "generate.py"
+source = "authored in this repository"
+citation = "Probe/freeze method per tests/golden/README.md (FR-22 layer 1); regression-instrument rationale per PRD Phase 5 exit criterion 1"
+generation = "not generated; the generator itself, committed for reproducibility"
+date = "2026-07-04"
+tolerance = "not applicable (script, not values)"
