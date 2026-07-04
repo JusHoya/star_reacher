@@ -34,7 +34,7 @@ def _core_or_fail():
 def test_gm_table_covers_exactly_the_supported_central_bodies():
     # The core's central-body vocabulary (cpp/include/star/run.hpp): any
     # body a log header can name must have a Python GM, and nothing more.
-    assert set(derived.GM_M3_PER_S2) == {"earth", "moon", "mars"}
+    assert set(derived.GM_M3_PER_S2) == {"earth", "moon", "mars", "sun"}
 
 
 def test_gm_values_match_core_bit_exactly():

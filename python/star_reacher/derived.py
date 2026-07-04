@@ -50,8 +50,8 @@ import numpy as np
 _TWO_PI = 2.0 * np.pi
 
 # Gravitational parameters GM [m^3/s^2] per central body, keyed by the SRLOG
-# header's central_body vocabulary ("earth" | "moon" | "mars", cpp/include/
-# star/run.hpp). These deliberately duplicate the C++ single-home values in
+# header's central_body vocabulary ("earth" | "moon" | "mars" | "sun",
+# cpp/include/star/run.hpp). These deliberately duplicate the C++ single-home values in
 # cpp/include/star/constants.hpp, because this module must work without the
 # compiled core (FR-31); tests/python/test_gm_crosscheck.py compares every
 # entry bit-exactly against star_reacher._core.gm() so the copies cannot
@@ -64,6 +64,10 @@ GM_M3_PER_S2 = {
     "moon": 4.902800118e12,
     # DE440 Mars-system GM, same source (GM_MARS_SYS_DE440_M3_PER_S2).
     "mars": 4.2828375816e13,
+    # DE440 header constant, same source (GM_SUN_DE440_M3_PER_S2): the
+    # heliocentric central body that entered with the Phase 5 Mars-cruise
+    # mission.
+    "sun": 1.32712440041279419e20,
 }
 
 
