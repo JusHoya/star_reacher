@@ -268,9 +268,15 @@ TEST_CASE("ACT-WHEEL-MOMENTUM-CONSERVATION") {
   Eigen::Quaterniond q = Eigen::Quaterniond::Identity();
   Eigen::Vector3d omega(0.02, -0.015, 0.01);
 
+  // Explicit Vector3d return: the body is an Eigen product expression over
+  // two temporaries (the rotation matrix and the returned momentum vector);
+  // returning it through `auto` would keep the expression template alive past
+  // those temporaries and read freed stack (a dangling read that happens to
+  // survive on some toolchains but zeroes on others). Naming the type forces
+  // the product to evaluate before the temporaries expire.
   const auto h_total_inertial = [&](const Eigen::Quaterniond& qq,
                                     const Eigen::Vector3d& w,
-                                    const WheelState& st) {
+                                    const WheelState& st) -> Eigen::Vector3d {
     return qq.toRotationMatrix() *
            star::models::total_angular_momentum_Nms(inertia, w, {wheel},
                                                     {st});
