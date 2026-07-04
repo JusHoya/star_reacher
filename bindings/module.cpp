@@ -585,9 +585,9 @@ PYBIND11_MODULE(_core, m) {
 
   m.def("gm", &star::gm, py::arg("body"),
         "Gravitational parameter GM [m^3/s^2] of a named central body "
-        "(\"earth\": IERS Conventions 2010, TN No. 36; \"moon\", \"mars\": "
-        "DE440 header values, Park et al. 2021). The single home of the "
-        "constant - use this for Keplerian conversions.");
+        "(\"earth\": IERS Conventions 2010, TN No. 36; \"moon\", \"mars\", "
+        "\"sun\": DE440 header values, Park et al. 2021). The single home of "
+        "the constant - use this for Keplerian conversions.");
 
   // -- Phase 3 model surface (verification and test access) ----------------
 

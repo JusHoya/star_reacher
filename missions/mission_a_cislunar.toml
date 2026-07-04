@@ -1,0 +1,78 @@
+# Mission A: the FR-32 cislunar performance-gate mission (Phase 5). A
+# point-mass spacecraft coasts a 4.5-day trans-lunar transfer under exactly
+# the FR-32 force set - J2 Earth gravity, Moon and Sun third bodies, and SRP -
+# integrated with the adaptive RKF7(8) and logged at 1 Hz. Phase 5 exit
+# criterion 4 gates this mission at < 60 s wall on a Raspberry Pi 5 single
+# core, so the force models are exactly FR-32's, nothing more.
+#
+# Initial state: the trans-lunar injection cutoff (MECO, t = 353 s) truth
+# state of missions/tli.toml, taken verbatim from its 1 Hz truth log, with the
+# epoch shifted from the tli MECO epoch (2025-12-28T12:05:53Z) to
+# 2025-12-30T12:00:00Z. The transfer ellipse is inertially fixed, so the
+# +1.996-day shift re-phases the Moon along its orbit and places the closest
+# lunar approach inside the 4.5-day window: the coast reaches a ~19,350 km
+# perilune (center distance ~1.94e7 m, ~17,600 km above the mean lunar
+# surface) at t ~ 3.71 d and logs the outbound leg after the flyby. The mass
+# is the tli truth-log mass at MECO (the post-burn kick stage). Cr*A/m uses
+# round cannonball values: Cr = 1.3 with A = 2.5 m^2 over the MECO mass,
+# rounded to 0.0124 m^2/kg.
+#
+# The run terminates on duration_s: the point-mass path has no event
+# sequence, and FR-32 fixes the 4.5-day span (388800 s) as the benchmark.
+# The ephemeris is the committed continuous DE440 excerpt already covering
+# this window (provenance in tests/golden/ephemeris/manifest.toml), so the
+# mission runs in CI and on a clean clone with no fetched data.
+#
+# provenance "representative": the state is a targeting output derived from
+# the tli mission (itself representative), not a real mission plan.
+
+schema_version = 1
+
+[mission]
+name = "mission-a-cislunar"
+epoch_utc = "2025-12-30T12:00:00Z"
+duration_s = 388800.0
+
+[run]
+seed = 20251230
+
+[integrator]
+type = "rkf78"
+rtol = 1e-11
+atol_pos_m = 1e-6
+atol_vel_mps = 1e-9
+h_init_s = 30.0
+# 900 s cap: the dense-output interpolation error the 1 Hz truth log samples
+# is bounded by h_max^4 (ch:integrators), and the cap keeps that bound small
+# on the slow outer coast while the tolerance controls the perigee passes.
+h_max_s = 900.0
+
+[spacecraft]
+mass_kg = 261.3248662897089
+cr_a_over_m_m2pkg = 0.0124
+
+# The missions/tli.toml MECO (t = 353 s) truth state, verbatim; see the
+# header for the epoch re-phasing.
+[initial_state.cartesian]
+r_m = [2924891.584486244, -5365244.555941103, -2784572.1816338734]
+v_mps = [10216.13418693073, 2908.0441568688716, 1897.3059054097675]
+frame = "GCRF"
+
+[environment]
+central_body = "earth"
+third_bodies = ["sun", "moon"]
+ephemeris = "tests/golden/ephemeris/excerpt_de440s_crosstool.sreph"
+
+# FR-32 names the J2 tier: degree 0 plus C(2,0) from the committed EGM2008
+# excerpt (the J2 tier accepts no degree/order keys).
+[environment.gravity]
+model = "j2"
+field = "tests/golden/gravity/earth_egm2008_n20.srgrav"
+
+# FR-7 cannonball SRP with the central body as the only occulter: the Moon's
+# shadow is irrelevant on this geometry (the flyby passes 19,000+ km out).
+[environment.srp]
+occulters = ["earth"]
+
+[logging]
+truth_rate_hz = 1

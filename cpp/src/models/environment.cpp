@@ -88,6 +88,8 @@ EnvironmentModel::Body central_as_body(CentralBody central) {
       return EnvironmentModel::Body::kMoon;
     case CentralBody::kMars:
       return EnvironmentModel::Body::kMars;
+    case CentralBody::kSun:
+      return EnvironmentModel::Body::kSun;
   }
   throw std::logic_error("environment: unreachable central-body enum");
 }
@@ -104,6 +106,8 @@ double central_body_gm(CentralBody body) {
       return constants::GM_MOON_DE440_M3_PER_S2;
     case CentralBody::kMars:
       return constants::GM_MARS_SYS_DE440_M3_PER_S2;
+    case CentralBody::kSun:
+      return constants::GM_SUN_DE440_M3_PER_S2;
   }
   throw std::logic_error("environment: unreachable central-body enum");
 }
@@ -115,6 +119,13 @@ EnvironmentModel::EnvironmentModel(const EnvironmentSpec& spec)
   if (spec.gravity_model == "pointmass" || spec.gravity_model.empty()) {
     use_field_ = false;
   } else if (spec.gravity_model == "j2" || spec.gravity_model == "harmonic") {
+    if (central_ == CentralBody::kSun) {
+      // FR-5 defines harmonic tiers for Earth, Moon, and Mars only; the Sun
+      // is point-mass by specification, so a field request is a mis-wiring.
+      throw std::invalid_argument(
+          "environment: the Sun central body is point-mass only (FR-5 "
+          "defines no Sun harmonic field)");
+    }
     if (spec.gravity_field_path.empty()) {
       throw std::invalid_argument(
           "environment: gravity model \"" + spec.gravity_model +
@@ -159,7 +170,10 @@ EnvironmentModel::EnvironmentModel(const EnvironmentSpec& spec)
           "environment: SRP requires a positive, finite Cr*A/m");
     }
     cr_a_over_m_ = spec.cr_a_over_m_m2pkg;
-    if (spec.srp_occulters.empty()) {
+    // The FR-7 "central body always occults" rule applies to the planetary
+    // regimes; about the Sun there is no occulting central body and the
+    // occulter set is legitimately empty (nu = 1, see EnvironmentSpec).
+    if (spec.srp_occulters.empty() && central_ != CentralBody::kSun) {
       throw std::invalid_argument(
           "environment: SRP requires at least one occulter (the central "
           "body at minimum, FR-7)");
@@ -228,6 +242,7 @@ Eigen::Vector3d EnvironmentModel::central_ssb(double tdb_s) const {
   static const std::string kEarthSeg = "earth";
   static const std::string kMoonSeg = "moon";
   static const std::string kMarsBary = "mars_bary";
+  static const std::string kSunSeg = "sun";
   switch (central_) {
     case CentralBody::kEarth:
       return eph_->state(kEmb, tdb_s).r_m + eph_->state(kEarthSeg, tdb_s).r_m;
@@ -238,6 +253,11 @@ Eigen::Vector3d EnvironmentModel::central_ssb(double tdb_s) const {
       // it is bounded by the Phobos/Deimos mass fractions (~2e-4 m) and is a
       // documented approximation (ch:environment).
       return eph_->state(kMarsBary, tdb_s).r_m;
+    case CentralBody::kSun:
+      // The Sun's own SREPH segment; SRP's Sun-relative-to-central position
+      // then differences this against itself, so the spacecraft-Sun vector
+      // reduces to exactly -r (Sun at the origin of the heliocentric frame).
+      return eph_->state(kSunSeg, tdb_s).r_m;
   }
   throw std::logic_error("environment: unreachable central-body enum");
 }
@@ -296,6 +316,12 @@ Eigen::Matrix3d EnvironmentModel::c_gcrf_to_bodyfixed(double t_s,
     }
     case CentralBody::kMars:
       return frames::c_gcrf_to_marsfixed(tai);
+    case CentralBody::kSun:
+      // Unreachable by construction: the only body-fixed consumers are the
+      // harmonic gravity tiers and the atmospheres, and the constructor
+      // rejects both for the Sun central body.
+      throw std::logic_error(
+          "environment: no body-fixed frame is defined for the Sun");
   }
   throw std::logic_error("environment: unreachable central-body enum");
 }
@@ -380,7 +406,7 @@ Eigen::Vector3d EnvironmentModel::acceleration(double t_s,
         rho = hp_density(alt_m, cos_psi, hp_n_);
       }
     } else {
-      // Mars (the constructor rejects drag about the Moon).
+      // Mars (the constructor rejects drag about the Moon and the Sun).
       omega = constants::OMEGA_MARS_RAD_PER_S;
       const double alt_m = geodetic_altitude(
           r_bf, constants::MARS_ELLIPSOID_A_M, constants::MARS_ELLIPSOID_INV_F);

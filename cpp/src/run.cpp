@@ -47,9 +47,12 @@ double gm(const std::string& body) {
   if (body == "mars") {
     return models::central_body_gm(models::CentralBody::kMars);
   }
+  if (body == "sun") {
+    return models::central_body_gm(models::CentralBody::kSun);
+  }
   throw std::invalid_argument(
       "unknown central body: \"" + body +
-      "\" (supported: \"earth\", \"moon\", \"mars\")");
+      "\" (supported: \"earth\", \"moon\", \"mars\", \"sun\")");
 }
 
 namespace {
@@ -229,9 +232,10 @@ models::CentralBody central_body_from_name(const std::string& name) {
   if (name == "earth") return models::CentralBody::kEarth;
   if (name == "moon") return models::CentralBody::kMoon;
   if (name == "mars") return models::CentralBody::kMars;
+  if (name == "sun") return models::CentralBody::kSun;
   throw std::invalid_argument(
       "unknown central body: \"" + name +
-      "\" (supported: \"earth\", \"moon\", \"mars\")");
+      "\" (supported: \"earth\", \"moon\", \"mars\", \"sun\")");
 }
 
 models::AtmosphereModel atmosphere_from_name(const std::string& name) {
@@ -701,6 +705,15 @@ double tdb_s_at(const time::TaiEpoch& epoch, double t_s) {
 }
 
 void check_config_vehicle(const RunConfig& cfg) {
+  if (cfg.central_body == "sun") {
+    // The vehicle path's altitude events, pad geometry, and aero assume a
+    // planetary central body; the Phase 5 heliocentric regime is served by
+    // the point-mass run_env path only (the Python validator enforces the
+    // same restriction, mission.py sun-regime rules).
+    throw std::invalid_argument(
+        "run_vehicle: central_body \"sun\" is not supported by the vehicle "
+        "path (heliocentric missions are point-mass, use run_env)");
+  }
   if (cfg.integrator != "rk4") {
     throw std::invalid_argument(
         "run_vehicle: integrator must be \"rk4\" in Phase 4");
