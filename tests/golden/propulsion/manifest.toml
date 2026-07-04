@@ -1,0 +1,45 @@
+# Provenance manifest for the propulsion golden vectors in this directory
+# (FR-22 layer 1: uncited golden = lint failure; schema documented in
+# tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "propulsion"
+date = "2026-07-03"
+generation = """
+Both value files are written by tests/golden/propulsion/generate.py
+(mpmath 1.3.0, CPython 3.14.0, 60 significant decimal digits). References
+are evaluated in extended precision from the exact binary64 inputs and
+rounded once to binary64. The mpmath evaluation mirrors the model
+formulation of math-library chapter ch:propulsion term for term but shares
+no binary64 rounding with the C++ path, so the committed values check the
+double-precision implementation to its own rounding floor. The thrust and
+mass-flow relations are derived from first principles in ch:propulsion
+(control-volume momentum balance for F = lambda F_vac - p_amb A_e, the
+vacuum-Isp mass-flow definition mdot = lambda F_vac / (g0 Isp_vac), and
+the Tsiolkovsky integral dv = g0 Isp_vac ln(m0/m1)); the standard gravity
+g0 = 9.80665 m/s^2 is the exact conventional value (BIPM SI Brochure,
+9th edition, 2019 - the value fixed by the 3rd CGPM, 1901). Engine
+dimensions, ratings, and gimbal geometry are round-decimal representative
+values (kerolox-booster and storable-kick-stage class); the model takes
+every parameter from the caller. Regenerating is
+`python tests/golden/propulsion/generate.py`; output is
+byte-deterministic.
+"""
+
+[[file]]
+name = "engine.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the thrust magnitude, mass flow, Rodrigues gimbal deflection, and force/torque coupling from the exact binary64 inputs, rounded once to binary64"
+citation = "Thrust relation F = lambda F_vac - p_amb A_e and mass-flow definition mdot = lambda F_vac / (g0 Isp_vac) derived from a nozzle control-volume momentum balance and the vacuum-specific-impulse definition in math-library chapter ch:propulsion (eq:propulsion:thrust, eq:propulsion:mdot); g0 = 9.80665 m/s^2 exact per BIPM SI Brochure, 9th ed. (2019); sea-level ambient pressure 101325 Pa per U.S. Standard Atmosphere, 1976 (NOAA-S/T 76-1562), the value the consuming test reproduces through cpp/src/models/atmosphere_ussa76.cpp at z = 0"
+generation = "engine_cases table in generate.py: vacuum full throttle, sea-level full throttle (the exit-criterion-3 back-pressure anchor), mid-throttle vacuum, a gimballed ascent state with off-CG mounting, and the exactly-zero zero-throttle case"
+date = "2026-07-03"
+tolerance = "consuming doctest (PROP-ENGINE-GOLDEN) compares thrust_N and mdot_kgps at 1e-12 relative and force_N/torque_Nm at norm-relative 1e-12: the C++ path accumulates a handful of IEEE roundings plus 1-2 ulp libm sin/cos in the gimbal rotation (~1e-15 floor), so 1e-12 carries three orders of margin while a sign, ordering, or formula error fails at O(1e-2) or worse. The zero-throttle case requires every output numerically equal to zero (the model returns literal zeros below the spool floor, so no residue is possible)"
+
+[[file]]
+name = "tsiolkovsky.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of m1 = m0 - mdot t_burn and dv = g0 Isp_vac ln(m0/m1) from the exact binary64 inputs, rounded once to binary64"
+citation = "Tsiolkovsky rocket equation derived from first principles in math-library chapter ch:propulsion (eq:propulsion:tsiolkovsky) by integrating dv/dt = F_vac / m(t) over a constant-mdot vacuum burn; g0 = 9.80665 m/s^2 exact per BIPM SI Brochure, 9th ed. (2019)"
+generation = "tsiolkovsky_cases table in generate.py: a kick-stage full burn (mass ratio ~2) and a low-thrust long burn (mass ratio ~1.06), both full throttle in vacuum"
+date = "2026-07-03"
+tolerance = "consuming doctest (PROP-TSIOLKOVSKY-BURN) integrates the burn with RK4 through the model's thrust and mdot (fixed attitude, vacuum) and gates the accumulated dv against dv_mps at 0.1 % relative, the Phase 4 exit-criterion-3 gate; the RK4 discretization error at the committed step counts is below 1e-10 relative, so the gate is dominated by pure margin and any Isp/mdot bookkeeping error (e.g. sea-level Isp used in place of vacuum) fails at the full formula-difference scale. m1_kg is additionally checked at 1e-12 relative to pin the mass bookkeeping independently of the log evaluation"

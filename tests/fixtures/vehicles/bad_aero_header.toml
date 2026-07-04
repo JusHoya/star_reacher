@@ -1,0 +1,46 @@
+# Malformed-vehicle fixture (FR-15 pass 3, cross-field): the aero block
+# references a CSV whose header row does not declare the required columns
+# (mach,ca,cnalpha_per_rad,xcp_m). Expected error: [aero.1]
+# mach_table_csv header. The CSV path resolves against the working
+# directory (same rule as [environment] ephemeris in mission files).
+
+schema_version = 1
+provenance = "representative"
+
+[vehicle]
+name = "fixture-bad-aero-header"
+
+[[stage]]
+name = "stage1"
+dry_mass_kg = 500.0
+dry_cg_m = [2.0, 0.0, 0.0]
+dry_inertia_kgm2 = [[150.0, 0.0, 0.0], [0.0, 1200.0, 0.0], [0.0, 0.0, 1200.0]]
+
+[[stage.tank]]
+name = "main_tank"
+radius_m = 0.5
+length_m = 3.0
+position_m = [2.0, 0.0, 0.0]
+propellant_mass_kg = 2000.0
+density_kgpm3 = 1030.0
+
+[[stage.engine]]
+name = "main_engine"
+feeds_tank = "main_tank"
+thrust_vac_N = 60000.0
+isp_vac_s = 320.0
+exit_area_m2 = 0.08
+position_m = [0.1, 0.0, 0.0]
+axis = [1.0, 0.0, 0.0]
+gimbal_max_deg = 5.0
+gimbal_rate_dps = 10.0
+throttle_min = 0.6
+throttle_max = 1.0
+spool_time_s = 0.5
+ignitions = 1
+
+[[aero]]
+config = "full_stack"
+ref_area_m2 = 1.13
+ref_diameter_m = 1.2
+mach_table_csv = "tests/fixtures/vehicles/bad_header.csv"

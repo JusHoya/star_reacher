@@ -176,3 +176,122 @@ def test_loaded_arrays_are_writable_copies(tmp_path):
     run = load(_write(tmp_path, data))
     run.groups["truth"]["mass_kg"][0] = 0.0
     assert run.groups["truth"]["mass_kg"][0] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# v1.1 vehicle channel groups (format doc section 3.1; FR-16).
+# ---------------------------------------------------------------------------
+
+
+def _v11_header(**overrides):
+    kwargs = dict(
+        minor=1,
+        force_sources=["gravity", "thrust"],
+        forces_rate_hz=1,
+        mass_rate_hz=1,
+        env_rate_hz=2,
+    )
+    kwargs.update(overrides)
+    return _fixtures.contract_header(**kwargs)
+
+
+def test_v11_vehicle_groups_load_alongside_truth_and_events(tmp_path):
+    header = _v11_header()
+    fi = _fixtures.group_index(header, "forces")
+    mi = _fixtures.group_index(header, "mass")
+    ei = _fixtures.group_index(header, "env")
+    # Records of different groups interleave freely (format doc section 5);
+    # per-group order must survive the interleaving.
+    records = [
+        _fixtures.event_record(0.0, 1, "run_start"),
+        _fixtures.truth_record(0.0, mass_kg=150.0),
+        (fi, (0.0, (1.0, 2.0, 3.0), (0.0, 0.0, 0.0), (0.0, 0.0, 900.0), (0.5, 0.0, 0.0))),
+        (mi, (0.0, 150.0, (0.1, 0.0, -0.2), (10.0, 0.5, 0.25, 12.0, 0.125, 8.0))),
+        (ei, (0.0, 120.5, 0.8, 24000.0, 0.4135, 0.5061)),
+        (ei, (0.5, 900.0, 1.2, 32000.0, 0.3119, 0.4553)),
+        (fi, (1.0, (1.1, 2.1, 3.1), (0.0, 0.0, 0.1), (0.0, 0.0, 890.0), (0.4, 0.0, 0.0))),
+        (mi, (1.0, 149.0, (0.1, 0.0, -0.19), (9.9, 0.5, 0.25, 11.9, 0.125, 7.9))),
+        _fixtures.event_record(2.0, 2, "run_end"),
+    ]
+    run = load(_write(tmp_path, _fixtures.build_srlog(header, records)))
+    assert run.header["format"] == {"name": "SRLOG", "major": 1, "minor": 1}
+
+    forces = run.groups["forces"]
+    assert forces["t_s"].tolist() == [0.0, 1.0]
+    assert forces["f_gravity_b_n"].shape == (2, 3)
+    assert forces["f_gravity_b_n"][0].tolist() == [1.0, 2.0, 3.0]
+    assert forces["tq_gravity_b_nm"][1].tolist() == [0.0, 0.0, 0.1]
+    assert forces["f_thrust_b_n"][0].tolist() == [0.0, 0.0, 900.0]
+    assert forces["tq_thrust_b_nm"][1].tolist() == [0.4, 0.0, 0.0]
+
+    mass = run.groups["mass"]
+    assert mass["mass_kg"].tolist() == [150.0, 149.0]
+    assert mass["cg_b_m"].shape == (2, 3)
+    # Packed upper triangle, row-major: [Ixx, Ixy, Ixz, Iyy, Iyz, Izz].
+    assert mass["inertia_b_kgm2"].shape == (2, 6)
+    assert mass["inertia_b_kgm2"][0].tolist() == [10.0, 0.5, 0.25, 12.0, 0.125, 8.0]
+
+    env = run.groups["env"]
+    assert env["alt_m"].tolist() == [120.5, 900.0]
+    assert env["mach"][1] == 1.2
+    assert env["q_pa"][0] == 24000.0
+    assert env["rho_kgpm3"][1] == 0.3119
+    assert env["fpa_rad"][0] == 0.5061
+
+    # The pre-v1.1 groups are unaffected by the additions.
+    assert run.groups["truth"]["mass_kg"].tolist() == [150.0]
+    assert list(run.events["detail"]) == ["run_start", "run_end"]
+
+
+def test_v11_forces_layout_follows_declared_source_subset(tmp_path):
+    # The channel dictionary, not the reader, decides which sources exist:
+    # a different subset yields a different (self-describing) layout.
+    header = _v11_header(force_sources=["srp"], mass_rate_hz=0, env_rate_hz=0)
+    fi = _fixtures.group_index(header, "forces")
+    records = [(fi, (0.0, (1e-6, 0.0, 0.0), (0.0, 0.0, 0.0)))]
+    run = load(_write(tmp_path, _fixtures.build_srlog(header, records)))
+    forces = run.groups["forces"]
+    assert set(forces.dtype.names) == {"t_s", "f_srp_b_n", "tq_srp_b_nm"}
+    assert forces["f_srp_b_n"][0].tolist() == [1e-6, 0.0, 0.0]
+
+
+def test_v10_file_exposes_no_vehicle_groups(tmp_path):
+    # A 1.0-era file (the Phase 1 shape) keeps loading exactly as before:
+    # nothing invents groups the header does not declare.
+    data = _fixtures.build_srlog(_fixtures.contract_header(), _standard_records())
+    run = load(_write(tmp_path, data))
+    assert set(run.groups) == {"truth", "events"}
+
+
+def test_unknown_extra_group_is_read_cleanly(tmp_path):
+    # Group-level forward compatibility (FR-17 / Phase 1 exit criterion
+    # pattern): a file from a newer minor version carrying a whole group this
+    # reader has never heard of loads cleanly, with known groups intact and
+    # the unknown group exposed dictionary-driven like any other.
+    header = _v11_header(
+        minor=999,
+        extra_groups=[
+            {
+                "name": "sensors.magnetometer",
+                "rate_hz": 5,
+                "channels": [
+                    {"name": "t_s", "dtype": "f64", "units": "s", "frame": ""},
+                    {"name": "b_body_t", "dtype": "f64[3]", "units": "T", "frame": "body"},
+                ],
+            }
+        ],
+    )
+    si = _fixtures.group_index(header, "sensors.magnetometer")
+    records = [
+        _fixtures.truth_record(0.0, mass_kg=150.0),
+        (si, (0.0, (2.5e-5, -1.0e-5, 4.0e-5))),
+        _fixtures.event_record(0.0, 1, "run_start"),
+        (si, (0.2, (2.4e-5, -1.1e-5, 4.1e-5))),
+    ]
+    run = load(_write(tmp_path, _fixtures.build_srlog(header, records)))
+    assert run.header["format"]["minor"] == 999
+    unknown = run.groups["sensors.magnetometer"]
+    assert unknown["t_s"].tolist() == [0.0, 0.2]
+    assert unknown["b_body_t"][0].tolist() == [2.5e-5, -1.0e-5, 4.0e-5]
+    assert run.groups["truth"]["mass_kg"].tolist() == [150.0]
+    assert list(run.events["detail"]) == ["run_start"]

@@ -1,0 +1,115 @@
+# Provenance manifest for the Phase 4 EC-11 independent ascent cross-check
+# (schema in tests/golden/README.md). This directory holds an independent 3DOF
+# point-mass ascent oracle (ascent_3dof.py) and its consuming pytest
+# (tests/python/test_crosscheck_ascent.py). It commits no numeric value files:
+# the 6DOF reference is regenerated live as a black box by running
+# missions/ascent_leo.toml through the compiled core, and the 3DOF comparison
+# state is computed live. This manifest records the provenance of the physical
+# models, constants, and the representative Electron-class sanity-band figures
+# the cross-check depends on, plus the derivation of every tolerance and band.
+
+schema_version = 1
+
+[golden]
+directory = "crosscheck"
+date = "2026-07-03"
+generation = """
+The EC-11 cross-check runs two independent simulators of the same ascent and
+compares their insertion orbits at the EXACT perigee crossing. The reference is
+the project's own 6DOF run of missions/ascent_leo.toml (electron-class vehicle),
+executed as a BLACK BOX: the consuming test propagates it through
+star_reacher.runner.run_mission and reduces the truth trajectory to osculating
+apsides; no 6DOF model source is read. The comparison is
+tests/crosscheck/ascent_3dof.py, a from-scratch 3DOF point-mass integrator that
+shares no code with the 6DOF: it imports no star_reacher module and reimplements
+its own RK4, USSA76 atmosphere, spherical point-mass gravity (J2 optional),
+vacuum-Isp back-pressure thrust, staged mass model, and osculating reduction. It
+parses only the vehicle and mission TOML. The pitch program is flown as a pitch
+above the launch-site local horizontal, frozen inertially at liftoff (open-loop
+launch-frame attitude): the only reading that reaches orbit. Determining that
+convention is convention alignment, not physics tuning; the vehicle physics is
+never adjusted to close any gap.
+
+Both trajectories are interpolated to the same exact osculating perigee of
+180.000 km before comparison (step-granularity removal), so perigee agreement is
+exact by construction and apogee reflects only the true insertion-energy
+difference.
+
+Attitude is prescribed open-loop in this ascent. In pitch_program mode the 6DOF
+sets the vehicle attitude directly to the commanded pitch direction in the frozen
+launch-site frame (up/east/north at liftoff); there is no attitude controller, no
+TVC loop, and no rigid-body attitude integration, so the body axis (its thrust
+line) equals the command exactly. The independent 3DOF flies that same
+frozen-frame command, so the two thrust directions agree (consistent with the
+stage-1 match below; a real few-degree thrust-direction difference would destroy
+it). The ~3 deg between the body axis and the CURRENT local horizontal that a
+naive readout shows is a frame-geometry effect -- the launch-frame horizontal
+rotates away from the local horizontal by the downrange central angle plus Earth
+rotation over the flight -- not a body-vs-command offset.
+
+Source of the residual gap. The atmospheric phase (to MECO, t <= 121 s)
+reproduces the 6DOF to < 0.1 km in altitude with matched specific energy, so the
+independent drag-only aerodynamics is faithful. Gravity is exact point mass in
+both (the logged gravity magnitude equals mu/r^2 to 1e-6), the integrator is
+converged in both (the 6DOF's rk4 dt = 0.1 s accounts for only ~0.06 % of
+semi-major axis versus a finer step), and stage-2 thrust magnitude and mass agree
+to 0.01 kN and 0.3 kg. The residual ~0.3 % semi-major-axis (insertion-energy)
+difference is the engine-cutoff transient: the 6DOF tails stage-1 thrust off over
+the ~1 s engine spool time at MECO (its logged thrust is full 234 kN at t = 121.0
+and zero at t = 122.0), delivering extra impulse, while this oracle cuts thrust
+instantly at the commanded MECO time. Diagnostic confirmation: adding a 1.0 s
+stage-1 cutoff ramp (the vehicle's declared spool_time_s) to the 3DOF raises its
+apogee from 3370.7 km to 3427.5 km, converging on the 6DOF (+0.33 %); a 0.5 s
+ramp gives 3422.4 km (+0.19 %). The oracle keeps the instant-cutoff point-mass
+model deliberately -- it is a legitimate, simpler independent choice, and the
+resulting difference is small and fully attributed.
+
+Insertion target. That ~0.3 % semi-major-axis difference, harmless in itself, is
+amplified into apogee altitude by 2*a/apogee: ~33x for a near-circular insertion
+(~9 % of apogee), but only ~6x for an eccentric 180 x 3444 km insertion, so the
+same ~0.3 % energy difference maps to < 2 % of apogee altitude. The mission
+therefore inserts into that eccentric orbit rather than a near-circular LEO. The
+vehicle has the propellant margin (Tsiolkovsky on the ~130 kg stage-2 residual of
+the original near-circular profile gives several hundred m/s). Only the mission
+pitch table and apoapsis target change; the vehicle physics is untouched.
+
+Measured agreement (3DOF at dt = 0.02 s vs the 6DOF black box, both at exact
+perigee 180.000 km): apogee altitude -1.33 % (3370.7 vs 3416.1 km), perigee
+altitude -0.0006 % (exact by construction), insertion inertial speed -0.04 %
+(8396.6 vs 8400.0 m/s), stage-2 residual 27 kg. Both literal EC-11 2 %
+sub-criteria are met on apogee and perigee. EC-6 remains green: the 6DOF reaches
+perigee >= 180 km (181 km terminal) with apoapsis within 5 % of the 3444 km
+target, and reruns byte-identically.
+"""
+
+[[file]]
+name = "electron_class_sanity_bands"
+source = "Sanity-band constants MAXQ_ALT_BAND_KM, MACH1_ALT_BAND_KM, BURNOUT_SPEED_BAND_KMPS defined in tests/python/test_crosscheck_ascent.py. Electron is not on the PRD verified-reference list, so these are representative small-launch-vehicle-class bands, deliberately generous (sanity checks, not equality gates)."
+citation = "Vehicle class (two-stage kerolox small launch vehicle, ~150-300 kg to LEO): Rocket Lab, 'Electron Payload User's Guide' (public document, rocketlabusa.com). Ascent-phase envelope from first principles: for a launch vehicle max dynamic pressure occurs in the lower atmosphere where rho*v^2 peaks, typically ~8-15 km, and transonic passage occurs low and early in the first ascent minute (standard ascent trajectory analysis, e.g. Vallado, 'Fundamentals of Astrodynamics and Applications', 4th ed.). Insertion (burnout) speed from the vis-viva equation v = sqrt(mu*(2/r - 1/a)): ~7.6-7.9 km/s for near-circular 180-500 km orbits, rising to ~8.4 km/s at the perigee of the eccentric 180 x 3444 km insertion (Vallado, ch. 1-2). No real-vehicle telemetry value is cited; specific per-flight Electron max-q / Mach-1 altitudes are not published to a citable precision and are NOT invented here."
+generation = "Bands bracket the representative-class envelope with margin: max-q altitude in [8, 15] km, Mach-1 altitude in [2, 10] km, burnout (insertion inertial) speed in [7.4, 8.8] km/s (the upper bound covers the eccentric-insertion perigee velocity). The 3DOF lands at 11.0 km, 5.2 km, and 8.40 km/s; the 6DOF black box at 11.3 km, 5.2 km, and 8.40 km/s. The atmospheric-phase pitch is unchanged by the eccentric retarget, so max-q and Mach-1 are unaffected."
+date = "2026-07-03"
+tolerance = "Membership tests, not equality gates: each measured quantity must fall inside its band. Bands are wide (each spans several km or several hundred m/s) so they screen for a grossly wrong ascent profile (e.g. max-q in vacuum, supersonic-at-liftoff, or a sub- or super-orbital insertion speed) without pretending to a precision the public class data does not support."
+
+[[file]]
+name = "atmosphere_ussa76"
+source = "The atmosphere() function in tests/crosscheck/ascent_3dof.py: an independent Python implementation of the 0-86 km geopotential-layer formulation, coded from the published layer base geopotential heights, base temperatures, lapse rates, and base pressures."
+citation = "U.S. Standard Atmosphere, 1976 (NOAA / NASA / USAF), NOAA-S/T 76-1562: hydrostatic layer relations (eqs. and layer tables in Part 1), specific gas constant R*/M0 with R* = 8.31432 J/(mol.K) and M0 = 28.9644 g/mol, and the geometric-to-geopotential height mapping with effective radius r0 = 6356766 m. Sound speed a = sqrt(gamma*R_specific*T) with gamma = 1.4. This is the same atmosphere authority the sim's own golden set cites (tests/golden/atmosphere/manifest.toml), reached here through independent code."
+generation = "Seven layers to 84852 m' geopotential (86 km geometric); above 86 km an exponential continuation anchored at the cap with the local scale height, whose dynamic-pressure contribution on this ascent is < ~20 Pa (negligible against a ~52 kPa max-q)."
+date = "2026-07-03"
+tolerance = "Not a gated value file. Correctness is evidenced end to end: the independent atmosphere reproduces the 6DOF black box at max-q to within 0.7 kPa (52.0 vs 52.7 kPa) and 0.3 km in altitude, the Mach-1 crossing altitude to within 0.1 km, and the 6DOF specific energy at MECO, without any shared code."
+
+[[file]]
+name = "physical_constants"
+source = "Module constants in tests/crosscheck/ascent_3dof.py."
+citation = "MU_EARTH = 3.986004418e14 m^3/s^2, OMEGA_EARTH = 7.292115e-5 rad/s, and J2 = 1.08262668e-3 from IERS Conventions (2010), IERS Technical Note No. 36. R_EARTH / WGS84 equatorial radius = 6378137 m and flattening 1/298.257223563 from WGS84 (NIMA TR8350.2). Standard gravity g0 = 9.80665 m/s^2 exact per the BIPM SI Brochure (9th ed., 2019). MU_EARTH equals the core's gm('earth') because both cite IERS, not because either copied the other."
+generation = "Used directly; the WGS84 ellipsoid places the pad and defines geodetic altitude, while gravity and the osculating reduction use the spherical equatorial radius, matching the sim's own osculating convention (verified: the module's osculating_apsides reproduces the sim's reported apogee/perigee from the same final truth state)."
+date = "2026-07-03"
+tolerance = "Exact constants; no tolerance."
+
+[[file]]
+name = "insertion_comparison"
+source = "interpolate_to_perigee / run_to_perigee in tests/crosscheck/ascent_3dof.py and the assertions in tests/python/test_crosscheck_ascent.py."
+citation = "Two-body osculating relations ra = a(1+e), rp = a(1-e) with a from specific energy and e from the eccentricity vector (Vallado, 'Fundamentals of Astrodynamics and Applications', 4th ed., ch. 1-2). Both trajectories are interpolated to the exact osculating perigee of 180.000 km, the 6DOF mission's perigee-insertion gate condition."
+generation = "Comparing at a matched exact perigee makes perigee agreement exact by construction and isolates the apogee comparison from the discrete step at which each run trips the gate; the residual apogee difference is then the true insertion-energy difference, which the eccentric insertion keeps well conditioned."
+date = "2026-07-03"
+tolerance = "Literal EC-11: apogee and perigee altitudes each within 2 % of the 6DOF (measured -1.33 % apogee, -0.0006 % perigee). Insertion inertial speed within 0.5 % (measured -0.04 %). The gate is mutation-checked: a +3 % stage-2 vacuum-thrust error moves the apogee ~+17 %, far outside 2 %, so the acceptance is not vacuous (test_ec11_gate_rejects_wrong_physics)."

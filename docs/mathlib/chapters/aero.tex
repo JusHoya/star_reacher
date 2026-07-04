@@ -1,0 +1,354 @@
+% Chapter — Axisymmetric ascent aerodynamics (FR-9). Follows the mandatory
+% FR-29 six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. The equation labels eq:aero:mach, eq:aero:qbar,
+% eq:aero:alpha, eq:aero:interp, eq:aero:axial, eq:aero:normal,
+% eq:aero:cpmoment, and eq:aero:damping are echoed verbatim in comments in
+% cpp/src/models/aero.cpp (FR-29 equation-label-to-code traceability);
+% renaming them breaks that trace.
+\chapter{Axisymmetric Ascent Aerodynamics}
+\label{ch:aero}
+
+\section{Purpose}
+\label{sec:aero:purpose}
+
+This chapter documents the FR-9 continuum ascent aerodynamics model: the
+body-frame aerodynamic force and the moment about the current composite
+center of gravity (CG) of an axisymmetric launch vehicle, evaluated from a
+per-stack-configuration Mach-table database $C_A(M)$, $C_{N\alpha}(M)$,
+$x_{cp}(M)$ with an optional constant pitch-damping derivative $C_{mq}$,
+using the total-angle-of-attack formulation. The database is configured by
+the FR-13 vehicle schema's \texttt{[[aero]]} blocks and their CSV Mach
+tables; this model is the ascent-regime counterpart of the cannonball
+orbital-drag model (Chapter~\ref{ch:drag}), and the two regimes never
+apply simultaneously (the FR-9 domain split). The model is implemented in
+\texttt{cpp/src/models/aero.cpp} with its interface in
+\texttt{cpp/include/star/models/aero.hpp}.
+
+\section{Assumptions and domain of validity}
+\label{sec:aero:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Axisymmetric configuration, total-angle-of-attack
+    loading.} The stack is aerodynamically axisymmetric about the
+    structural $+X$ axis (FR-13: $+X$ toward the nose, origin at the aft
+    plane). The loading then depends on Mach number and on the single
+    total angle of attack $\alpha_t$ between $+\hat{\vv{x}}$ and the
+    air-relative velocity; by symmetry the resultant force lies in the
+    wind plane spanned by $\hat{\vv{x}}$ and $\vv{v}_{\mathrm{rel}}$.
+    There is no side force out of that plane and no aerodynamic roll
+    torque (no fins, no $C_{lp}$): the torque $x$-component is
+    structurally zero.
+  \item \textbf{Air-relative velocity supplied by the caller (the FR-8
+    rule).} All aerodynamic quantities --- Mach number, dynamic pressure,
+    angle of attack --- use the air-relative velocity of a co-rotating
+    atmosphere, $\vv{v}_{\mathrm{rel}} = \vv{v} - \vv{\omega}_p \times
+    \vv{r}$ (Chapter~\ref{ch:drag}, equation eq:drag:vrel), which the
+    equations-of-motion layer computes and rotates into the body frame;
+    this module is frame-agnostic given the body-frame
+    $\vv{v}_{\mathrm{rel}}$. Winds are neglected, as in
+    Chapter~\ref{ch:drag}. The density $\rho$ and speed of sound $a$ come
+    from the atmosphere models (Chapter~\ref{ch:ussa76} provides both for
+    Earth ascent).
+  \item \textbf{Normal force linear in $\sin\alpha_t$ (documented
+    choice).} The database carries the normal-force slope
+    $C_{N\alpha}(M)$ per radian and the model evaluates
+    $C_N = C_{N\alpha}(M)\,\sin\alpha_t$. This is the standard
+    slender-body crossflow form: it is odd in $\alpha_t$, matches the
+    linear-in-$\alpha$ slope at small angles to within
+    $\alpha_t^3/6$ (relative error $\le 0.5\,\%$ at
+    $\alpha_t = 10^\circ$), is algebraically free of normalization
+    singularities (Section~\ref{sec:aero:derivation}), and degrades
+    gracefully toward the crossflow-only geometry at
+    $\alpha_t \to 90^\circ$. The database itself is fitted for the
+    small-to-moderate angles of ascent flight; evaluations at large
+    $\alpha_t$ are a geometric extension of the formulation, not data.
+  \item \textbf{Composite CG on the symmetry axis.} The moment uses only
+    the axial CG station $x_{cg}$: the axial force acts along the
+    symmetry axis and therefore produces no moment about an on-axis CG,
+    and the normal force acts at the center-of-pressure station
+    $x_{cp}(M)$ on the axis. Lateral CG offsets of the FR-13 stacks
+    (whose sub-blocks are nominally axisymmetric) are neglected; the
+    induced moment error is of order (lateral offset) $\times$ (force),
+    second-order for near-axis CGs.
+  \item \textbf{Quasi-steady coefficients with optional constant pitch
+    damping.} Unsteady effects are collapsed into the single optional
+    constant $C_{mq}$ (per radian of nondimensional pitch rate
+    $\hat{q} = \omega\, d_{\mathrm{ref}} / (2\lVert \vv{v}_{\mathrm{rel}}
+    \rVert)$, referenced to $S_{\mathrm{ref}}$ and the reference diameter
+    $d_{\mathrm{ref}}$ --- the convention declared for the vehicle
+    schema's \texttt{cmq\_per\_rad} key). $C_{mq} \le 0$ opposes the
+    transverse rate; exactly zero disables the term. The roll rate is
+    undamped (assumption 1).
+  \item \textbf{Piecewise-linear Mach interpolation, clamped ends
+    (documented approximation).} Coefficients between breakpoints are
+    piecewise-linear in Mach; below the first and above the last
+    breakpoint the end row is held constant. Both choices are
+    deterministic, continuous, and exact at the breakpoints
+    (Section~\ref{sec:aero:implementation}).
+\end{enumerate}
+
+Domain of validity: continuum ascent flight only --- the orbital
+free-molecular regime is Chapter~\ref{ch:drag}'s cannonball model (FR-9
+domain split) --- in forward flight at the small-to-moderate total angles
+of attack for which a linear normal-force-slope database is meaningful,
+with Mach inside the configured table (clamped outside, per assumption 6).
+Zero air-relative velocity (the vehicle on the pad before release) returns
+exactly zero force, moment, Mach, dynamic pressure, and angle of attack.
+Out-of-domain behavior, matching the code exactly: malformed tables
+(fewer than two rows, column-length mismatches, a non-increasing or
+negative Mach grid, non-finite entries, non-positive $S_{\mathrm{ref}}$ or
+$d_{\mathrm{ref}}$, positive $C_{mq}$) and malformed inputs (non-finite
+velocity, rates, or CG station; negative or non-finite $\rho$;
+non-positive or non-finite $a$; a negative or non-finite Mach passed to
+the coefficient lookup) throw \texttt{std::domain\_error}.
+
+\section{Derivation}
+\label{sec:aero:derivation}
+
+\subsection{Air data and total angle of attack}
+
+With the body-frame air-relative velocity $\vv{v}_{\mathrm{rel}} =
+(v_x, v_y, v_z)^{\mathsf T}$, speed
+$v = \lVert \vv{v}_{\mathrm{rel}} \rVert$, and the caller-supplied speed
+of sound $a$ and density $\rho$:
+\begin{equation}
+  M \;=\; \frac{v}{a},
+  \label{eq:aero:mach}
+\end{equation}
+\begin{equation}
+  \bar{q} \;=\; \tfrac{1}{2}\, \rho\, v^2 .
+  \label{eq:aero:qbar}
+\end{equation}
+Decompose $\vv{v}_{\mathrm{rel}}$ into its axial part $v_x \hat{\vv{x}}$
+and the crossflow part
+$\vv{v}_\perp = (0, v_y, v_z)^{\mathsf T}$. The total angle of attack is
+the angle between the symmetry axis and the wind,
+\begin{equation}
+  \alpha_t \;=\; \operatorname{atan2}\!\bigl(
+    \lVert \vv{v}_\perp \rVert,\; v_x \bigr)
+  \;\in\; [0, \pi],
+  \qquad
+  \sin\alpha_t = \frac{\lVert \vv{v}_\perp \rVert}{v}, \quad
+  \cos\alpha_t = \frac{v_x}{v}.
+  \label{eq:aero:alpha}
+\end{equation}
+
+\subsection{Force decomposition}
+
+For an axisymmetric body the pressure and shear distribution is invariant
+under a rotation about $\hat{\vv{x}}$ applied jointly to the body and the
+wind vector, so the resultant force lies in the wind plane and is fully
+described by two dimensionless coefficients on the dynamic pressure and
+the configured reference area $S_{\mathrm{ref}}$
+\cite[Sect.~3.5]{montenbruck2000}, \cite[Sect.~8.6.2]{vallado2013}: an
+axial force coefficient $C_A$ along $-\hat{\vv{x}}$ and a normal force
+coefficient $C_N$ in the wind plane, perpendicular to the axis, opposing
+the crossflow. With the database convention of assumption~3,
+$C_N = C_{N\alpha}(M) \sin\alpha_t$:
+\begin{equation}
+  \boxed{\;
+  \vv{F}_A \;=\; -\,\bar{q}\, S_{\mathrm{ref}}\, C_A(M)\, \hat{\vv{x}},
+  \;}
+  \label{eq:aero:axial}
+\end{equation}
+\begin{equation}
+  \boxed{\;
+  \vv{F}_N \;=\; -\,\bar{q}\, S_{\mathrm{ref}}\, C_{N\alpha}(M)\,
+    \sin\alpha_t\; \hat{\vv{v}}_\perp
+  \;=\; -\,\frac{\bar{q}\, S_{\mathrm{ref}}\, C_{N\alpha}(M)}{v}\,
+    \vv{v}_\perp ,
+  \;}
+  \label{eq:aero:normal}
+\end{equation}
+where the second form of \eqref{eq:aero:normal} substitutes
+$\sin\alpha_t$ from \eqref{eq:aero:alpha} and absorbs the crossflow
+normalization: it involves no trigonometric evaluation and no division by
+$\lVert \vv{v}_\perp \rVert$, so zero crossflow yields an exactly zero
+normal force with no special case, and the only excluded point of the
+whole formulation is $v = 0$, which returns the structural zero of
+Section~\ref{sec:aero:domain}. The total force is
+$\vv{F} = \vv{F}_A + \vv{F}_N$.
+
+\subsection{Center-of-pressure moment}
+
+The database locates the resultant normal force at the
+center-of-pressure station $x_{cp}(M)$ on the symmetry axis, expressed in
+the same structural frame as every vehicle station (origin at the aft
+plane, $+X$ toward the nose --- exactly the \texttt{xcp\_m} column the
+vehicle schema declares). With the composite CG at station $x_{cg}$ on
+the axis (assumption 4), the moment about the CG is the lever arm crossed
+with the normal force:
+\begin{equation}
+  \boxed{\;
+  \vv{m}_{cp} \;=\; \bigl( x_{cp}(M) - x_{cg} \bigr)\, \hat{\vv{x}}
+    \times \vv{F}_N .
+  \;}
+  \label{eq:aero:cpmoment}
+\end{equation}
+The axial force contributes no moment (it acts along the axis through the
+on-axis CG), so $\alpha_t = 0$ produces exactly zero static moment. When
+the center of pressure is forward of the CG ($x_{cp} > x_{cg}$),
+\eqref{eq:aero:cpmoment} is an overturning (destabilizing) moment --- the
+normal case for the finless launchers of the starter fleet, which are
+stabilized by thrust-vector control; $x_{cp} < x_{cg}$ gives a restoring
+moment.
+
+\subsection{Pitch-damping moment}
+
+The optional damping term models the moment that opposes the transverse
+angular rate. Using the classical rate nondimensionalization
+$\hat{q} = \omega\, d_{\mathrm{ref}} / (2 v)$ with the configured
+reference diameter $d_{\mathrm{ref}}$, the damping contribution to the
+moment coefficient about each transverse axis is
+$C_{mq}\,\hat{q}$, i.e.\ a dimensional moment
+$\bar{q} S_{\mathrm{ref}} d_{\mathrm{ref}} \cdot C_{mq}\,
+\omega d_{\mathrm{ref}}/(2v)$ per transverse axis. Applied isotropically
+in the transverse plane (axisymmetry), with
+$\vv{\omega}_\perp = (0, \omega_y, \omega_z)^{\mathsf T}$ the transverse
+part of the body angular velocity:
+\begin{equation}
+  \boxed{\;
+  \vv{m}_q \;=\; \frac{\bar{q}\, S_{\mathrm{ref}}\,
+    d_{\mathrm{ref}}^2\, C_{mq}}{2\, v}\; \vv{\omega}_\perp .
+  \;}
+  \label{eq:aero:damping}
+\end{equation}
+$C_{mq} \le 0$ makes \eqref{eq:aero:damping} dissipative; $C_{mq} = 0$
+disables the term exactly, and a pure roll rate
+($\vv{\omega}_\perp = \vv{0}$) produces exactly zero damping moment. The
+total moment about the CG is $\vv{m} = \vv{m}_{cp} + \vv{m}_q$.
+
+\subsection{Mach-table interpolation}
+
+Each coefficient column $c \in \{C_A, C_{N\alpha}, x_{cp}\}$ is tabulated
+on one strictly increasing Mach grid $M_1 < M_2 < \dots < M_n$
+($n \ge 2$, $M_1 \ge 0$). The lookup is piecewise linear with clamped
+ends:
+\begin{equation}
+  c(M) \;=\;
+  \begin{cases}
+    c_1, & M \le M_1, \\[2pt]
+    c_i + u\, (c_{i+1} - c_i),
+      \quad u = \dfrac{M - M_i}{M_{i+1} - M_i},
+      & M_i \le M < M_{i+1}, \\[8pt]
+    c_n, & M \ge M_n .
+  \end{cases}
+  \label{eq:aero:interp}
+\end{equation}
+The interpolant is continuous everywhere, including at the clamp
+junctions, and exact at every breakpoint: the clamp branches return the
+end rows literally, and an interior breakpoint selects its own segment
+with $u = 0$, so $c_i + u(c_{i+1} - c_i)$ reproduces $c_i$ exactly in
+IEEE arithmetic.
+
+\section{Discretization and implementation}
+\label{sec:aero:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/aero.cpp}; the source comments echo the labels
+    \texttt{eq:aero:mach} through \texttt{eq:aero:damping} verbatim.
+  \item \textbf{Structural zeros.} $v = 0$ returns literal zeros in every
+    output before any table access --- the logged dynamic pressure on the
+    pad is exactly zero (Phase~4 exit criterion 10). Zero crossflow
+    ($v_y = v_z = 0$) skips the normal-force/center-of-pressure block
+    entirely, leaving literal zeros (axial force only); $C_{mq} = 0$ or a
+    purely axial rate skips the damping block; the torque $x$-component
+    is never written (no roll torque, assumption 1). These are branch
+    decisions on exact binary64 comparisons, not epsilon tests.
+  \item \textbf{Fixed evaluation order.} Segment selection scans the grid
+    in ascending order; every product chain is written in one fixed
+    association. Together with the exact-breakpoint property of
+    \eqref{eq:aero:interp}, evaluation at a committed table breakpoint
+    reads the table row exactly.
+  \item \textbf{Determinism.} The force/moment path uses IEEE-754 basic
+    operations and square roots only (Eigen's \texttt{norm()}), so it is
+    bit-portable across platforms under the D-10 flags. The reported
+    $\alpha_t$ diagnostic \eqref{eq:aero:alpha} is the module's only libm
+    call (\texttt{atan2}); it is never consumed by the force/moment path,
+    so its one-ulp cross-platform spread never feeds back into the
+    dynamics.
+  \item \textbf{Pure function over plain structs.} The table struct
+    mirrors the FR-13 vocabulary (\texttt{ref\_area\_m2},
+    \texttt{ref\_diameter\_m}, \texttt{cmq\_per\_rad}, and the CSV
+    columns \texttt{mach}, \texttt{ca}, \texttt{cnalpha\_per\_rad},
+    \texttt{xcp\_m}); the Python layer validates and fills it across the
+    binding (D-2: the core never parses text). The caller supplies the
+    body-frame $\vv{v}_{\mathrm{rel}}$ (FR-8), $\rho$ and $a$ from the
+    atmosphere model, the CG station $x_{cg}$ from the mass-property
+    model (Chapter~\ref{ch:massprops}), and the body rates; selecting the
+    active \texttt{[[aero]]} configuration across staging events is the
+    vehicle layer's responsibility.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:aero:validation}
+
+Table~\ref{tab:aero:validation} lists the tests that constitute this
+chapter's validation evidence. Each test identifier is machine-checked to
+exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
+provenance and tolerances are recorded in
+\texttt{tests/golden/aero/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the axisymmetric aero model (doctest,
+    \texttt{cpp/tests/test\_aero.cpp}).}
+  \label{tab:aero:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{AERO-INTERP-GOLDEN} &
+      The lookup \eqref{eq:aero:interp} reproduces every committed table
+      row exactly (bit equality) at every Mach breakpoint of both fleet
+      tables and at the clamped ends, and matches the independent
+      60-digit mpmath references to $10^{-12}$ relative at every segment
+      midpoint. \\
+    \testid{AERO-BREAKPOINT-GOLDEN} &
+      Force/moment reconstruction at every
+      $C_A/C_{N\alpha}/x_{cp}$ Mach breakpoint of both committed fleet
+      tables matches the independent 60-digit mpmath references to
+      $10^{-12}$ (norm-)relative on force and moment, and to $10^{-12}$
+      relative on Mach, dynamic pressure, and total angle of attack
+      (Phase~4 exit criterion 8). \\
+    \testid{AERO-FORCETORQUE-GOLDEN} &
+      The formulation families --- total-alpha sweep ($0$, $0.5^\circ$,
+      $10^\circ$, $90^\circ$, retrograde), crossflow roll orientations,
+      CG fore and aft of the center of pressure, damping on/off/roll-only
+      per \eqref{eq:aero:damping}, reference-area/diameter scaling,
+      off-breakpoint interpolation, and above-table clamping --- match
+      the mpmath references to $10^{-12}$, with every reference recorded
+      as zero required exactly zero. \\
+    \testid{AERO-STRUCTURAL-ZEROS} &
+      Zero air-relative velocity returns exactly zero in every output
+      including the dynamic pressure (Phase~4 exit criterion 10 hook);
+      zero total alpha yields exactly zero normal force and static
+      moment; $C_{mq} = 0$ and pure-roll-rate evaluations are
+      bit-identical to their damping-free counterparts; the torque
+      $x$-component is exactly zero in a generic evaluation. \\
+    \testid{AERO-DOMAIN} &
+      Out-of-domain inputs per Section~\ref{sec:aero:domain} throw
+      \texttt{std::domain\_error}. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:aero:references}
+
+The dynamic-pressure dimensionless-coefficient force convention follows
+Montenbruck and Gill~\cite[Sect.~3.5]{montenbruck2000} and
+Vallado~\cite[Sect.~8.6.2]{vallado2013}, the same convention already
+relied on by Chapter~\ref{ch:drag}. The axisymmetric total-angle-of-attack
+decomposition \eqref{eq:aero:axial}--\eqref{eq:aero:normal} is derived in
+Section~\ref{sec:aero:derivation} from the symmetry of the configured
+vehicle; the center-of-pressure moment \eqref{eq:aero:cpmoment} and the
+pitch-damping nondimensionalization \eqref{eq:aero:damping} are the
+coefficient-database conventions this project declares for the FR-13
+vehicle schema (documented choices of this chapter, not external physical
+results). The committed fleet tables carry provenance
+``representative'' in their CSV headers. Full bibliographic details
+appear in the bibliography.

@@ -1,0 +1,22 @@
+# Axisymmetric aero Mach table for the electron-class full stack (FR-9).
+# Provenance "representative": a smooth slender cone-cylinder shape typical
+# of finless small launch vehicles; not measured or published data.
+# Columns (units declared by name): mach (1), ca (1, power-off axial force
+# coefficient on ref_area_m2), cnalpha_per_rad (1/rad, normal-force slope),
+# xcp_m (m, center-of-pressure station in the structural frame: origin at
+# the aft plane, +X toward the nose; nose tip at ~18 m). The CP sits forward
+# of the composite CG (~8 m at liftoff): the airframe is statically
+# unstable and is stabilized by TVC, as is normal for finless vehicles.
+mach,ca,cnalpha_per_rad,xcp_m
+0.0,0.30,2.0,13.5
+0.4,0.30,2.1,13.5
+0.8,0.35,2.4,13.2
+0.95,0.55,3.0,12.9
+1.05,0.75,3.4,12.6
+1.2,0.70,3.2,12.7
+1.5,0.60,2.9,12.9
+2.0,0.50,2.6,13.0
+3.0,0.40,2.3,13.1
+4.0,0.34,2.2,13.2
+6.0,0.28,2.0,13.3
+8.0,0.26,2.0,13.3

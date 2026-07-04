@@ -1,0 +1,14 @@
+# Axisymmetric aero Mach table for the electron-class upper stack (stage 2
+# plus fairing, stations 12-18 m), used from stage separation to fairing
+# jettison. Provenance "representative": the upper stack flies above ~55 km
+# where dynamic pressure is small, so this table mainly bounds the brief
+# post-separation transient; values follow the same slender cone-cylinder
+# family as the full-stack table with the CP in the fairing cone region.
+# Columns as in electron_class_aero_full.csv: mach (1), ca (1),
+# cnalpha_per_rad (1/rad), xcp_m (m, structural frame, nose at ~18 m).
+mach,ca,cnalpha_per_rad,xcp_m
+0.0,0.35,2.2,16.2
+1.05,0.80,3.5,15.8
+2.0,0.55,2.8,16.0
+4.0,0.38,2.3,16.3
+8.0,0.30,2.1,16.4

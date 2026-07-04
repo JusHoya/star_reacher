@@ -1,0 +1,69 @@
+# Provenance manifest for the axisymmetric-aero golden vectors in this
+# directory (FR-22 layer 1: uncited golden = lint failure; schema documented
+# in tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "aero"
+date = "2026-07-03"
+generation = """
+All four value files are written by tests/golden/aero/generate.py (mpmath
+1.3.0, CPython 3.14.0, 60 significant decimal digits). References are
+evaluated in extended precision from the exact binary64 inputs and rounded
+once to binary64. The mpmath evaluation mirrors the model formulation of
+math-library chapter ch:aero branch for branch -- the structural-zero
+predicates (zero air-relative velocity, zero crossflow components, zero
+Cmq, zero transverse rate) are decided on exact binary64 values, and the
+Mach lookup uses the same piecewise-linear segment selection and end
+clamping -- but shares no binary64 rounding with the C++ path, so the
+committed values check the double-precision implementation to its own
+rounding floor. The piecewise-linear interpolant is continuous at
+breakpoints and clamp junctions, so extended-precision and binary64
+segment selection within an ulp of a junction perturbs the value only by
+O(ulp x segment slope); there is no discontinuous branch to disagree on.
+The Mach-table columns are copied at generation time from the committed
+FR-13 starter-fleet CSVs (vehicles/electron_class_aero_full.csv and
+vehicles/electron_class_aero_upper.csv, provenance "representative"), so
+regenerating tracks the fleet. Breakpoint-sweep airspeeds are the
+breakpoint Mach times the dyadic speed of sound 256 m/s (exact binary64
+scaling); velocity components at nonzero alpha are rounded once to
+binary64 and the references follow from the rounded components.
+Regenerating is `python tests/golden/aero/generate.py`; output is
+byte-deterministic. The script also prints an advisory binary64 shadow
+evaluation in the implementation's operation order; at generation it
+reported a worst relative error of 7.4e-16 against the committed
+references, three orders inside the 1e-12 doctest gate.
+"""
+
+[[file]]
+name = "tables.toml"
+source = "generate.py: verbatim binary64 copy of the Mach-table columns of vehicles/electron_class_aero_full.csv and vehicles/electron_class_aero_upper.csv, plus one synthetic 3-row table whose Mach grid starts above zero"
+citation = "Committed FR-13 starter-fleet aero tables (provenance \"representative\", documented in the CSV headers and vehicles/electron_class.toml); column semantics per docs/formats/vehicle_toml_v1.md section 3: mach and ca dimensionless, cnalpha per radian, xcp_m meters in the structural frame (origin at the aft plane, +X toward the nose)"
+generation = "read_table_csv in generate.py parses the committed CSVs; the synthetic_clamp table is defined in the script and exists only to make the below-table clamp branch reachable (the fleet grids start at Mach 0 and Mach is non-negative)"
+date = "2026-07-03"
+tolerance = "exact (binary64 hex round trip); the consuming tests construct star::models::AeroTables from these values, so any drift against the fleet CSVs is a regeneration diff, not a runtime comparison"
+
+[[file]]
+name = "interp.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the piecewise-linear Mach lookup from the exact binary64 inputs, rounded once to binary64"
+citation = "Piecewise-linear interpolation with end clamping as defined in math-library chapter ch:aero (eq:aero:interp); the interpolation scheme is a documented modeling choice of this project, not an external physical result"
+generation = "interp cases in generate.py: every breakpoint of all three tables, every binary64 segment midpoint, and the clamped readouts above every table and below the synthetic table"
+date = "2026-07-03"
+tolerance = "consuming doctest (AERO-INTERP-GOLDEN) requires bp_* and clamp_* cases exact (bit equality): clamped lookups return the end row literally and a breakpoint lookup has interpolation weight u = 0, so c_i + u*(c_{i+1} - c_i) reproduces the row value exactly in IEEE arithmetic. mid_* cases compare at 1e-12 relative (one subtraction, one division, one fused multiply-add-free multiply-add per column: <= 3 roundings, floor ~1e-15)"
+
+[[file]]
+name = "breakpoints.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the total-angle-of-attack force/moment reconstruction from the exact binary64 inputs, rounded once to binary64"
+citation = "Axisymmetric total-angle-of-attack decomposition derived in math-library chapter ch:aero (eq:aero:axial, eq:aero:normal, eq:aero:cpmoment) from the axisymmetry of the configured vehicle; the dynamic-pressure dimensionless-coefficient force convention follows Vallado, Fundamentals of Astrodynamics and Applications, 4th ed. (2013) and Montenbruck and Gill, Satellite Orbits (2000), as already relied on by ch:drag"
+generation = "breakpoint sweep in generate.py: one case per Mach breakpoint of both fleet tables at 5 deg nominal total alpha with per-case crossflow roll, CG at 8.0 m (full stack) and 14.0 m (upper stack); the Mach 0 rows are exercised at the dyadic Mach 2^-10 inside the first segment because Mach exactly 0 implies zero airspeed, which is the structural-zero path (its exact row readout is covered by interp.toml)"
+date = "2026-07-03"
+tolerance = "consuming doctest (AERO-BREAKPOINT-GOLDEN) compares force_N and torque_Nm at norm-relative 1e-12 and mach, q_bar_Pa, and alpha_total_rad at 1e-12 relative -- the Phase 4 exit-criterion-8 gate. Error budget: the longest path (a torque component) passes through the norm, q_bar, the coefficient lookup, one division, and the lever-arm product, about 12 roundings with no cancellation (lever arms are >= 1.8 m from zero by construction), floor ~5e-15; alpha_total_rad is one faithful atan2 against a correctly rounded reference, floor ~2e-16. The binary64 shadow evaluation at generation observed 7.4e-16 worst-case across all files"
+
+[[file]]
+name = "forcetorque.toml"
+source = "generate.py: mpmath 1.3.0 (mp.dps = 60) evaluation of the total-angle-of-attack force/moment reconstruction from the exact binary64 inputs, rounded once to binary64"
+citation = "Axisymmetric total-angle-of-attack decomposition, center-of-pressure moment, and pitch-damping moment derived in math-library chapter ch:aero (eq:aero:axial, eq:aero:normal, eq:aero:cpmoment, eq:aero:damping); the Cmq nondimensionalization (reference diameter, rate scaled by d/(2V)) is the convention declared for the vehicle schema's cmq_per_rad key in docs/formats/vehicle_toml_v1.md"
+generation = "ft case table in generate.py: total-alpha family (exact-axial 0, 0.5 deg, 10 deg, exact-90-deg, exact-retrograde), crossflow roll family (0/45/90/210 deg), CG fore and aft of the Mach 0.8 center of pressure, pitch damping with alpha, pure damping at zero alpha, roll-rate-only (damping structurally zero), Cmq = 0 disabled, reference-area/diameter scaling, upper-table mid-segment interpolation, above-table clamping, and the pad case (zero air-relative velocity)"
+date = "2026-07-03"
+tolerance = "consuming doctest (AERO-FORCETORQUE-GOLDEN) requires every reference recorded as zero to be exactly zero in the model output (structural zeros: the pad case in every output including q_bar_Pa -- the Phase 4 exit-criterion-10 hook -- plus the crossflow force/moment at zero total alpha and the damping torque under a pure roll rate); all nonzero outputs compare at 1e-12 relative (scalars) and norm-relative 1e-12 (vectors), same error budget as breakpoints.toml"

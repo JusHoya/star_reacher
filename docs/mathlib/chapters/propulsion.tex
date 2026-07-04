@@ -1,0 +1,293 @@
+% Chapter — Engine propulsion with thrust-vector control (FR-10). Follows
+% the mandatory FR-29 six-section template: purpose; assumptions and
+% domain of validity; derivation; discretization and implementation;
+% validation evidence; references. The equation labels
+% eq:propulsion:thrust, eq:propulsion:mdot, eq:propulsion:direction,
+% eq:propulsion:forcetorque, eq:propulsion:tsiolkovsky,
+% eq:propulsion:spool, and eq:propulsion:gimbalslew are echoed verbatim in
+% comments in cpp/src/models/propulsion.cpp (FR-29
+% equation-label-to-code traceability); renaming them breaks that trace.
+\chapter{Engine Propulsion and Thrust-Vector Control}
+\label{ch:propulsion}
+
+\section{Purpose}
+\label{sec:propulsion:purpose}
+
+This chapter documents the FR-10 engine model: per-engine delivered
+thrust with ambient back-pressure, mass flow from the constant vacuum
+specific impulse, throttle limits, linear spool-up and spool-down ramps,
+ignition-count enforcement, and gimbal (TVC) angle and rate limits. The
+engine produces a body force and a torque about the current composite CG
+(Chapter~\ref{ch:massprops}) and a propellant mass-flow rate that drives
+the settled-tank depletion. The model is implemented in
+\texttt{cpp/src/models/propulsion.cpp} with its interface in
+\texttt{cpp/include/star/models/propulsion.hpp}.
+
+\section{Assumptions and domain of validity}
+\label{sec:propulsion:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Constant vacuum specific impulse.} Each engine's
+    $I_{\mathrm{sp,vac}}$ is constant over its throttle range (FR-10):
+    chamber conditions scale proportionally with throttle, so vacuum
+    thrust and mass flow scale together. Real engines lose a few
+    seconds of $I_{\mathrm{sp}}$ at deep throttle; that error is
+    absorbed into the configured rating.
+  \item \textbf{Back pressure acts only on delivered thrust.} The
+    ambient term $p_{\mathrm{amb}} A_e$ is the static-pressure force on
+    the nozzle exit plane; it does not alter the internal flow, so the
+    mass flow follows the vacuum rating and throttle only
+    (equation~\eqref{eq:propulsion:mdot}). Flow separation in heavily
+    overexpanded operation is not modeled; the delivered thrust may go
+    negative if an engine is run at low throttle deep in an atmosphere,
+    and the configuration layer is responsible for physically sensible
+    throttle floors.
+  \item \textbf{Rigid TVC geometry.} The engine is mounted at a fixed
+    position with a fixed nominal thrust axis in the vehicle frame
+    (FR-13, $+X$ forward); gimbal deflection rotates the thrust
+    direction but not the application point. Inertial (tail-wags-dog)
+    effects of the swiveling engine mass are not modeled.
+  \item \textbf{Quasi-static throttle response.} Spool-up and spool-down
+    are linear ramps of the delivered throttle level between 0 and the
+    commanded setting (FR-10); combustion transients are not modeled.
+\end{enumerate}
+
+Domain of validity: non-negative vacuum thrust and exit area; positive
+$I_{\mathrm{sp,vac}}$; throttle limits
+$0 \le \lambda_{\min} \le \lambda_{\max} \le 1$; unit-norm nominal axis
+and mutually orthogonal unit gimbal axes; non-negative spool times,
+gimbal limit, and gimbal rate; ambient pressure $p_{\mathrm{amb}} \ge 0$
+supplied by the atmosphere model in use (USSA76 for Earth ascent,
+Chapter~\ref{ch:ussa76}). Out-of-domain behavior, matching the code
+exactly: non-finite inputs, negative ratings, malformed axis vectors,
+inverted throttle limits, and negative step sizes throw
+\texttt{std::domain\_error}. A zero delivered throttle level returns
+exactly zero force, torque, and mass flow --- an engine that is off
+exerts no back-pressure force because its nozzle is not flowing.
+
+\section{Derivation}
+\label{sec:propulsion:derivation}
+
+\subsection{Delivered thrust and mass flow}
+
+Consider a steady control volume enclosing the engine, cut at the
+nozzle exit plane of area $A_e$. Momentum conservation for exhaust
+leaving at effective exhaust speed $v_e$ with mass flow $\dot{m}$ and
+exit static pressure $p_e$, immersed in ambient pressure
+$p_{\mathrm{amb}}$ (which acts on every outer surface of the vehicle
+and leaves only the exit-plane imbalance uncancelled), gives the
+delivered thrust
+\begin{equation*}
+  F \;=\; \dot{m} v_e + (p_e - p_{\mathrm{amb}})\, A_e.
+\end{equation*}
+Define the \emph{vacuum thrust} at the same operating point,
+$F_{\mathrm{vac}} = \dot{m} v_e + p_e A_e$, i.e.\ the thrust the same
+chamber state delivers with $p_{\mathrm{amb}} = 0$. With a throttle
+level $\lambda$ scaling the chamber mass flow (and hence
+$F_{\mathrm{vac}}$) proportionally,
+\begin{equation}
+  \boxed{\; F \;=\; \lambda\, F_{\mathrm{vac}}
+    - p_{\mathrm{amb}}\, A_e \quad (\lambda > 0); \qquad
+    F \;=\; 0 \quad (\lambda = 0). \;}
+  \label{eq:propulsion:thrust}
+\end{equation}
+The vacuum specific impulse is defined by
+$F_{\mathrm{vac}} = \dot{m}\, g_0\, I_{\mathrm{sp,vac}}$ with the
+standard gravity $g_0 = \qty{9.80665}{\metre\per\second\squared}$ exact
+(the conventional value fixed by the 3rd CGPM, 1901, as published in the
+SI Brochure~\cite{bipm2019}). Solving for the mass flow at throttle
+$\lambda$:
+\begin{equation}
+  \boxed{\; \dot{m} \;=\;
+    \frac{\lambda\, F_{\mathrm{vac}}}{g_0\, I_{\mathrm{sp,vac}}}. \;}
+  \label{eq:propulsion:mdot}
+\end{equation}
+The mass flow is set by the vacuum rating and the throttle alone:
+ambient back pressure reduces the \emph{delivered} thrust
+\eqref{eq:propulsion:thrust} but never the propellant consumption
+\eqref{eq:propulsion:mdot}. Equivalently, the delivered specific
+impulse $F / (\dot{m} g_0)$ falls with altitude while
+$I_{\mathrm{sp,vac}}$ stays constant.
+
+\subsection{Gimbal deflection and force/torque coupling}
+
+The engine's nominal thrust direction is the unit vector $\hat{\vv{u}}$
+(vehicle frame; $+X$ for an aft-mounted main engine). TVC deflects it
+by two gimbal angles $(\gamma_1, \gamma_2)$ about two configured
+orthogonal unit axes $\hat{\vv{a}}_1, \hat{\vv{a}}_2$ perpendicular to
+$\hat{\vv{u}}$ (defaults $+Y$, $+Z$), applied in that fixed order with
+the Rodrigues rotation
+$\mat{R}(\hat{\vv{a}}, \gamma)\vv{v} = \vv{v}\cos\gamma +
+(\hat{\vv{a}} \times \vv{v})\sin\gamma + \hat{\vv{a}}
+(\hat{\vv{a}} \cdot \vv{v})(1 - \cos\gamma)$:
+\begin{equation}
+  \hat{\vv{d}} \;=\; \mat{R}(\hat{\vv{a}}_2, \gamma_2)\,
+    \mat{R}(\hat{\vv{a}}_1, \gamma_1)\, \hat{\vv{u}}.
+  \label{eq:propulsion:direction}
+\end{equation}
+Both factors are proper rotations, so $\hat{\vv{d}}$ is exactly unit
+norm up to rounding. With the engine mounted at $\vv{r}_e$ and the
+composite CG at $\bar{\vv{c}}$, the body force and the torque about the
+CG are
+\begin{equation}
+  \boxed{\; \vv{F} \;=\; F\, \hat{\vv{d}}, \qquad
+  \vv{\tau} \;=\; (\vv{r}_e - \bar{\vv{c}}) \times \vv{F}. \;}
+  \label{eq:propulsion:forcetorque}
+\end{equation}
+
+\subsection{Tsiolkovsky benchmark}
+
+For a fixed-attitude vacuum burn at constant throttle, the
+translational speed obeys $\mathrm{d}v/\mathrm{d}t = \lambda
+F_{\mathrm{vac}} / m(t)$ with $m(t) = m_0 - \dot{m} t$ and $\dot{m}$
+from \eqref{eq:propulsion:mdot}. Substituting
+$\lambda F_{\mathrm{vac}} = \dot{m}\, g_0 I_{\mathrm{sp,vac}}$ and
+integrating from $m_0$ to $m_1 = m(t_{\mathrm{burn}})$:
+\begin{equation}
+  \Delta v \;=\; \int_0^{t_b}
+    \frac{\dot{m}\, g_0 I_{\mathrm{sp,vac}}}{m_0 - \dot{m} t}\,
+    \mathrm{d}t
+  \;=\; g_0\, I_{\mathrm{sp,vac}} \ln \frac{m_0}{m_1},
+  \label{eq:propulsion:tsiolkovsky}
+\end{equation}
+the rocket equation. It is exact under this chapter's assumptions and
+independent of the throttle profile (only the endpoint masses enter),
+which makes it the Phase 4 exit-criterion-3 acceptance instrument for
+the thrust/mass-flow bookkeeping.
+
+\section{Discretization and implementation}
+\label{sec:propulsion:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/propulsion.cpp}; the source comments echo
+    the labels \texttt{eq:propulsion:thrust} through
+    \texttt{eq:propulsion:gimbalslew} verbatim.
+  \item \textbf{State advance vs.\ pure evaluation.} The actuator state
+    (running flag, ignition count, delivered throttle level, gimbal
+    angles) advances once per step by a discrete update; force, torque,
+    and mass flow are pure functions of parameters and state so the
+    integrator may evaluate them at any stage without side effects
+    (D-2 core discipline: plain structs in, plain structs out).
+  \item \textbf{Spool ramp.} The delivered level $\lambda$ slews
+    linearly toward the target
+    $\lambda^\ast = \operatorname{clamp}(\lambda_{\mathrm{cmd}},
+    \lambda_{\min}, \lambda_{\max})$ while running and toward $0$ when
+    shut down, at the configured full-range rates:
+    \begin{equation}
+      \lambda' \;=\; \lambda + \operatorname{clamp}\!\bigl(
+        \lambda^\ast - \lambda,\;
+        -\Delta t / t_{\mathrm{down}},\;
+        +\Delta t / t_{\mathrm{up}} \bigr),
+      \label{eq:propulsion:spool}
+    \end{equation}
+    where $t_{\mathrm{up}}$ ($t_{\mathrm{down}}$) is the 0-to-1
+    (1-to-0) spool time; a zero spool time applies the target
+    immediately. The ramp is exactly linear: away from the endpoints
+    each step adds exactly $\Delta t / t_{\mathrm{up}}$.
+  \item \textbf{Ignition count.} A run command on a non-running engine
+    consumes one ignition; when the configured count is exhausted the
+    command is refused and the engine stays off (the level target
+    remains $0$). Shutting down mid-spool and re-igniting consumes a
+    new count.
+  \item \textbf{Gimbal slew and clamp.} Each gimbal angle slews toward
+    its command at exactly the configured rate and is clamped at the
+    angle limit, per axis:
+    \begin{equation}
+      \gamma_i' \;=\; \operatorname{clamp}\!\bigl(
+        \gamma_i + \operatorname{clamp}(
+          \gamma_{\mathrm{cmd},i} - \gamma_i,\;
+          -\dot{\gamma}_{\max} \Delta t,\;
+          +\dot{\gamma}_{\max} \Delta t ),\;
+        -\gamma_{\max},\; +\gamma_{\max} \bigr).
+      \label{eq:propulsion:gimbalslew}
+    \end{equation}
+    A step command therefore produces a ramp whose per-step increment
+    is exactly $\dot{\gamma}_{\max} \Delta t$ until the final partial
+    step (Phase 4 exit criterion 7). The angle limit is a per-axis
+    (square) clamp, not a cone.
+  \item \textbf{Determinism.} The only libm calls are the
+    $\sin/\cos$ pair per gimbal axis in
+    \eqref{eq:propulsion:direction}; everything else is IEEE-754 basic
+    operations in fixed order. Zero throttle returns literal zeros.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:propulsion:validation}
+
+Table~\ref{tab:propulsion:validation} lists the tests that constitute
+this chapter's validation evidence. Each test identifier is
+machine-checked to exist in the test tree by
+\texttt{scripts/lint\_chapters.py}; golden provenance and tolerances
+are recorded in \texttt{tests/golden/propulsion/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the propulsion model (doctest,
+    \texttt{cpp/tests/test\_propulsion.cpp}).}
+  \label{tab:propulsion:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{PROP-ENGINE-GOLDEN} &
+      Five committed operating points (vacuum, sea level, mid-throttle,
+      gimballed, zero-throttle) match the independent 60-digit mpmath
+      evaluation of \eqref{eq:propulsion:thrust},
+      \eqref{eq:propulsion:mdot}, \eqref{eq:propulsion:direction}, and
+      \eqref{eq:propulsion:forcetorque} to $10^{-12}$ relative
+      (norm-relative for vectors); the zero-throttle case is exactly
+      zero in every output. \\
+    \testid{PROP-BACKPRESSURE-USSA76} &
+      The sea-level operating point evaluated with
+      $p_{\mathrm{amb}}$ taken live from the USSA76 model at $z = 0$
+      (Chapter~\ref{ch:ussa76}) reproduces the committed golden thrust:
+      the exit-criterion-3 back-pressure anchor
+      $F = F_{\mathrm{vac}} - \qty{101325}{\pascal} \cdot A_e$. \\
+    \testid{PROP-TSIOLKOVSKY-BURN} &
+      RK4 integration of the fixed-attitude vacuum burn through the
+      model's thrust and mass flow accumulates a $\Delta v$ matching
+      \eqref{eq:propulsion:tsiolkovsky} within $0.1\,\%$ (Phase 4 exit
+      criterion 3), with the endpoint mass checked at $10^{-12}$
+      relative. \\
+    \testid{PROP-SPOOL-RAMP} &
+      The delivered level under \eqref{eq:propulsion:spool} rises by
+      exactly $\Delta t / t_{\mathrm{up}}$ per step from ignition to
+      the throttle target, holds exactly, and falls by exactly
+      $\Delta t / t_{\mathrm{down}}$ per step after cutoff to exactly
+      zero. \\
+    \testid{PROP-THROTTLE-CLAMP} &
+      Commands outside $[\lambda_{\min}, \lambda_{\max}]$ settle
+      exactly on the violated bound; in-range commands settle exactly
+      on the command. \\
+    \testid{PROP-IGNITION-COUNT} &
+      An engine with $N$ configured ignitions accepts exactly $N$
+      run transitions and refuses the $(N{+}1)$-th, remaining at zero
+      level with zero force and mass flow. \\
+    \testid{PROP-TVC-RATE-LIMIT} &
+      A step gimbal command produces per-step increments of exactly
+      $\dot{\gamma}_{\max} \Delta t$ (Phase 4 exit criterion 7) and the
+      angle clamps exactly at $\pm\gamma_{\max}$ under an
+      over-limit command, per \eqref{eq:propulsion:gimbalslew}. \\
+    \testid{PROP-DOMAIN} &
+      Out-of-domain inputs per Section~\ref{sec:propulsion:domain}
+      throw \texttt{std::domain\_error}. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:propulsion:references}
+
+The thrust and mass-flow relations, the gimbal geometry, and the
+Tsiolkovsky benchmark are derived from first principles in
+Section~\ref{sec:propulsion:derivation} (momentum balance over a
+steady nozzle control volume and the definition of vacuum specific
+impulse); no listed project reference covers the rocket-propulsion
+formulation, so the derivation is self-contained by design. The exact
+conventional standard gravity $g_0 = \qty{9.80665}{\metre\per\second
+\squared}$ is taken from the BIPM SI Brochure~\cite{bipm2019}; the
+sea-level anchor pressure is the U.S. Standard Atmosphere, 1976
+standard sea-level pressure~\cite{ussa1976} as served by
+Chapter~\ref{ch:ussa76}.

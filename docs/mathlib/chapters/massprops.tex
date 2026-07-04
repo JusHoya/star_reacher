@@ -1,0 +1,307 @@
+% Chapter — Vehicle mass properties (FR-10). Follows the mandatory FR-29
+% six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. The equation labels eq:massprops:fillheight,
+% eq:massprops:slug, eq:massprops:slugrates, eq:massprops:parallelaxis,
+% eq:massprops:compose, eq:massprops:composerates, and eq:massprops:remove
+% are echoed verbatim in comments in cpp/src/models/massprops.cpp (FR-29
+% equation-label-to-code traceability); renaming them breaks that trace.
+\chapter{Vehicle Mass Properties}
+\label{ch:massprops}
+
+\section{Purpose}
+\label{sec:massprops:purpose}
+
+This chapter documents the analytic settled-tank mass-properties model
+(FR-10): the closed forms that supply the composite vehicle mass, center
+of gravity, inertia tensor, and their exact time derivatives to the
+rigid-body dynamics (Euler's equation with the $\dot{\mat{I}}\vv{\omega}$
+term, FR-1) and to the staging state remap (FR-10). A vehicle is a
+collection of rigid bodies resolved in the single structural frame of
+FR-13 ($+X$ forward): per-stage dry bodies, attached jettisonable items,
+and one settled-propellant slug per cylindrical tank. Depletion moves the
+composite CG continuously; jettison changes the composite discretely in
+closed form. The model is implemented in
+\texttt{cpp/src/models/massprops.cpp} with its interface in
+\texttt{cpp/include/star/models/massprops.hpp}.
+
+\section{Assumptions and domain of validity}
+\label{sec:massprops:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Settled propellant (assumption A-2).} The liquid in each
+    tank is a rigid slug resting against the aft ($-X$) tank face, as
+    under sustained axial thrust acceleration. Slosh, ullage gas, and
+    pressurant mass are not modeled; their omission is acceptable for the
+    v1 ascent and orbit studies A-2 scopes this model to.
+  \item \textbf{Cylindrical tanks with axis along $+X$.} Each tank is a
+    right circular cylinder whose axis is parallel to the vehicle $+X$
+    axis. This is a deliberate v1 restriction: the closed forms below are
+    specific to that geometry, and the tank parameter struct documents
+    it. Off-$X$ tank \emph{positions} (transverse offsets of the axis)
+    are fully supported; off-$X$ tank \emph{orientations} are not.
+  \item \textbf{Rigid bodies, constant dry properties.} Dry-body masses,
+    CGs, and inertia tensors (about each body's own CG, resolved in the
+    vehicle frame) are constants supplied by the configuration; only the
+    propellant slugs vary in time.
+  \item \textbf{Homogeneous propellant.} Each slug has the constant bulk
+    density of its tank's propellant; thermal density variation is
+    absorbed into the configured density.
+\end{enumerate}
+
+Domain of validity: propellant mass $m_p \in [0, \rho \pi R^2 L]$ per
+tank (fill height inside the cylinder); positive tank radius, length,
+and density; non-negative body masses with at least one strictly
+positive mass in any composition; removal mass strictly below the
+composite mass. Out-of-domain behavior, matching the code exactly:
+non-finite inputs, non-positive tank dimensions or density, negative
+masses, propellant beyond capacity, an empty body list, a non-positive
+composite mass, and a removal that would leave a non-positive remainder
+all throw \texttt{std::domain\_error}. An exactly empty tank
+($m_p = 0$) is in-domain and yields a zero-mass slug whose CG sits at
+the aft-face center and whose inertia and rates are exactly zero.
+
+\section{Derivation}
+\label{sec:massprops:derivation}
+
+\subsection{Settled slug of a draining cylinder}
+
+Let a tank have interior radius $R$, interior length $L$, propellant
+bulk density $\rho$, and aft-face center $\vv{a}$ (vehicle frame), with
+the cylinder axis along $+X$. A settled slug of mass $m_p$ occupies the
+aft fraction of the cylinder: a solid cylinder of radius $R$ and height
+$h$ along $x$ with $m_p = \rho \pi R^2 h$, so the fill height is
+\begin{equation}
+  h \;=\; \frac{m_p}{\rho \pi R^2}.
+  \label{eq:massprops:fillheight}
+\end{equation}
+By symmetry the slug CG lies on the tank axis at half the fill height.
+The inertia tensor about the slug's own CG, in vehicle axes, follows
+from the definition
+$\mat{I} = \int \bigl(\lVert\vv{s}\rVert^2 \mat{E}_3 -
+\vv{s}\vv{s}^{\mathsf{T}}\bigr)\,\mathrm{d}m$
+(with $\vv{s}$ measured from the CG and $\mat{E}_3$ the identity)
+evaluated in cylindrical coordinates. About the symmetry axis,
+\begin{equation*}
+  I_{xx} \;=\; \int (y^2 + z^2)\,\mathrm{d}m
+  \;=\; \rho h \int_0^R r^2\, 2\pi r\,\mathrm{d}r
+  \;=\; \frac{\rho \pi h R^4}{2}
+  \;=\; \frac{m_p R^2}{2},
+\end{equation*}
+and about a transverse axis through the CG, using
+$\int y^2\,\mathrm{d}m = \int z^2\,\mathrm{d}m = \tfrac{1}{2} I_{xx}$
+(circular symmetry) and
+$\int \xi^2\,\mathrm{d}m = m_p h^2 / 12$ for the axial coordinate $\xi$
+measured from the mid-height,
+\begin{equation*}
+  I_{yy} \;=\; \int (\xi^2 + z^2)\,\mathrm{d}m
+  \;=\; \frac{m_p h^2}{12} + \frac{m_p R^2}{4}
+  \;=\; \frac{m_p (3R^2 + h^2)}{12} \;=\; I_{zz}.
+\end{equation*}
+Collecting the slug properties:
+\begin{equation}
+  \boxed{\;
+  \vv{c} \;=\; \vv{a} + \frac{h}{2}\,\hat{\vv{x}}, \qquad
+  I_{xx} \;=\; \frac{m_p R^2}{2}, \qquad
+  I_{yy} \;=\; I_{zz} \;=\; \frac{m_p\,(3R^2 + h^2)}{12},\;}
+  \label{eq:massprops:slug}
+\end{equation}
+with all off-diagonal terms exactly zero by symmetry.
+
+\subsection{Depletion rates of the slug}
+
+With a signed propellant mass-flow rate $\dot{m}_p$ (negative while
+draining), the chain rule through the fill height
+\eqref{eq:massprops:fillheight} gives $\dot{h} = \dot{m}_p /
+(\rho \pi R^2)$ and the exact slug rates
+\begin{equation}
+  \boxed{\;
+  \dot{\vv{c}} \;=\; \frac{\dot{h}}{2}\,\hat{\vv{x}}, \qquad
+  \dot{I}_{xx} \;=\; \frac{\dot{m}_p R^2}{2}, \qquad
+  \dot{I}_{yy} \;=\; \dot{I}_{zz} \;=\;
+    \frac{\dot{m}_p\,(3R^2 + h^2)}{12} + \frac{m_p\, h \dot{h}}{6}.\;}
+  \label{eq:massprops:slugrates}
+\end{equation}
+These are analytic derivatives of \eqref{eq:massprops:slug}, not finite
+differences; the second term of $\dot{I}_{yy}$ is
+$m_p \cdot 2 h \dot{h} / 12$ from differentiating $h^2$.
+
+\subsection{Parallel-axis composition}
+
+For a body of mass $m$ with CG at $\vv{c}$ and inertia $\mat{I}_c$ about
+its own CG, the inertia about a reference point $\vv{p}$ follows from
+substituting $\vv{s} = (\vv{r} - \vv{c}) + \vv{d}$ with
+$\vv{d} = \vv{c} - \vv{p}$ into the inertia definition; the cross terms
+vanish because $\int (\vv{r} - \vv{c})\,\mathrm{d}m = \vv{0}$ by the
+definition of the CG, leaving the parallel-axis theorem
+\begin{equation}
+  \mat{I}_p \;=\; \mat{I}_c
+    + m \bigl(\lVert\vv{d}\rVert^2 \mat{E}_3
+    - \vv{d}\,\vv{d}^{\mathsf{T}}\bigr)
+  \;\equiv\; \mat{I}_c + \mat{P}(m, \vv{d}).
+  \label{eq:massprops:parallelaxis}
+\end{equation}
+For bodies $b = 1, \dots, N$ with masses $m_b$, CGs $\vv{c}_b$, and
+own-CG inertias $\mat{I}_b$, the composite mass, CG, and inertia about
+the composite CG are
+\begin{equation}
+  \boxed{\;
+  M \;=\; \sum_b m_b, \qquad
+  \bar{\vv{c}} \;=\; \frac{1}{M} \sum_b m_b \vv{c}_b, \qquad
+  \mat{I} \;=\; \sum_b \Bigl[ \mat{I}_b
+    + \mat{P}\bigl(m_b,\, \vv{c}_b - \bar{\vv{c}}\bigr) \Bigr].\;}
+  \label{eq:massprops:compose}
+\end{equation}
+
+\subsection{Composite depletion rates}
+
+Differentiating \eqref{eq:massprops:compose} with the product rule,
+using $\vv{d}_b = \vv{c}_b - \bar{\vv{c}}$ and
+$\dot{\vv{d}}_b = \dot{\vv{c}}_b - \dot{\bar{\vv{c}}}$:
+\begin{equation}
+  \boxed{\;
+  \begin{aligned}
+  \dot{M} &\;=\; \sum_b \dot{m}_b, \qquad
+  \dot{\bar{\vv{c}}} \;=\; \frac{1}{M} \Bigl[ \sum_b
+    \bigl( \dot{m}_b \vv{c}_b + m_b \dot{\vv{c}}_b \bigr)
+    - \dot{M}\,\bar{\vv{c}} \Bigr], \\
+  \dot{\mat{I}} &\;=\; \sum_b \Bigl[ \dot{\mat{I}}_b
+    + \dot{m}_b \bigl(\lVert\vv{d}_b\rVert^2 \mat{E}_3
+      - \vv{d}_b \vv{d}_b^{\mathsf{T}}\bigr)
+    + m_b \bigl( 2\,(\vv{d}_b \cdot \dot{\vv{d}}_b)\, \mat{E}_3
+      - \dot{\vv{d}}_b \vv{d}_b^{\mathsf{T}}
+      - \vv{d}_b \dot{\vv{d}}_b^{\mathsf{T}} \bigr) \Bigr].
+  \end{aligned}\;}
+  \label{eq:massprops:composerates}
+\end{equation}
+Fixed bodies have $\dot{m}_b = 0$, $\dot{\vv{c}}_b = \vv{0}$, and
+$\dot{\mat{I}}_b = \mat{0}$, but still contribute to $\dot{\mat{I}}$
+through $\dot{\vv{d}}_b = -\dot{\bar{\vv{c}}}$: the composite CG moves
+underneath them. Tank slugs contribute their rates
+\eqref{eq:massprops:slugrates}. Every term is analytic; the
+$\dot{\mat{I}}\vv{\omega}$ term of Euler's equation therefore never
+relies on finite differencing (FR-1).
+
+\subsection{Closed-form body removal (jettison)}
+
+At a staging or jettison event a body $j$ leaves the composite. Writing
+the pre-separation composite $(M, \bar{\vv{c}}, \mat{I})$ as the
+two-body composition of the departing item
+$(m_j, \vv{c}_j, \mat{I}_j)$ and the retained remainder
+$(M^-, \bar{\vv{c}}^-, \mat{I}^-)$ and inverting
+\eqref{eq:massprops:compose}:
+\begin{equation}
+  \boxed{\;
+  M^- \;=\; M - m_j, \qquad
+  \bar{\vv{c}}^- \;=\; \frac{M \bar{\vv{c}} - m_j \vv{c}_j}{M^-}, \qquad
+  \mat{I}^- \;=\; \mat{I} - \mat{I}_j
+    - \mat{P}\bigl(m_j,\, \vv{c}_j - \bar{\vv{c}}\bigr)
+    - \mat{P}\bigl(M^-,\, \bar{\vv{c}}^- - \bar{\vv{c}}\bigr).\;}
+  \label{eq:massprops:remove}
+\end{equation}
+The discrete CG jump $\bar{\vv{c}}^- - \bar{\vv{c}}$ feeds the FR-10
+tracked-state remap
+$\vv{v}_{\mathrm{new}} = \vv{v} + \vv{\omega} \times
+\Delta\vv{r}_{\mathrm{cg}}$ applied by the dynamics layer.
+
+\section{Discretization and implementation}
+\label{sec:massprops:implementation}
+
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model lives in
+    \texttt{cpp/src/models/massprops.cpp}; the source comments echo the
+    labels \texttt{eq:massprops:fillheight} through
+    \texttt{eq:massprops:remove} verbatim.
+  \item \textbf{Exact wet-mass identity.} The slug mass is the
+    propellant-mass argument passed through verbatim --- it is never
+    reconstructed as $\rho \pi R^2 h$ from the fill height, which would
+    add two roundings --- and the composite mass is the plain sum of the
+    body masses in the caller's vector order. The wet mass at $t_0$
+    therefore equals dry plus propellant \emph{exactly} (bit-level) for
+    any same-order binary64 sum, the Phase 4 exit-criterion-2 identity.
+  \item \textbf{Fixed summation order (D-10).} All compositions iterate
+    the body vector in index order; callers list fixed bodies first and
+    tank slugs after, and the convention is documented at the API so two
+    call sites cannot disagree.
+  \item \textbf{No finite differencing.} $\dot{\mat{I}}$ and
+    $\dot{\bar{\vv{c}}}$ are the closed forms
+    \eqref{eq:massprops:slugrates} and
+    \eqref{eq:massprops:composerates}; the validation suite
+    cross-checks them against central differences of the composite
+    properties as an independent (different-mathematics) reference.
+  \item \textbf{Determinism.} Fixed-order sums and products with no
+    libm calls; every operation is an IEEE-754 basic operation, so the
+    module is bit-portable across platforms under the D-10 flags.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:massprops:validation}
+
+Table~\ref{tab:massprops:validation} lists the tests that constitute
+this chapter's validation evidence. Each test identifier is
+machine-checked to exist in the test tree by
+\texttt{scripts/lint\_chapters.py}; golden provenance and tolerances are
+recorded in \texttt{tests/golden/massprop/manifest.toml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the mass-properties model (doctest,
+    \texttt{cpp/tests/test\_massprops.cpp}).}
+  \label{tab:massprops:validation}
+  \begin{tabular}{lp{8.6cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{MASSPROP-SLUG-GOLDEN} &
+      Five committed tank states (half full, near empty, near full,
+      exactly empty, off-axis) match the independent 60-digit mpmath
+      evaluation of \eqref{eq:massprops:slug} and
+      \eqref{eq:massprops:slugrates} to $10^{-12}$ relative
+      (norm-relative for vectors and matrices); the empty-tank outputs
+      are exactly zero. \\
+    \testid{MASSPROP-COMPOSITE-GOLDEN} &
+      Two committed stack configurations match the mpmath evaluation of
+      \eqref{eq:massprops:compose}, \eqref{eq:massprops:composerates},
+      and \eqref{eq:massprops:remove} to $10^{-12}$ norm-relative;
+      composite and post-jettison masses are bit-exact (Phase 4 exit
+      criterion 2). \\
+    \testid{MASSPROP-WET-MASS-IDENTITY} &
+      The composite mass equals the same-order binary64 sum of dry and
+      propellant masses bit-exactly at $t_0$ and at every point of a
+      depletion sweep. \\
+    \testid{MASSPROP-CG-CONTINUITY} &
+      Along a continuous depletion trajectory sampled densely, the
+      composite CG moves monotonically with per-sample steps bounded by
+      the analytic rate \eqref{eq:massprops:composerates} times the
+      sample spacing (no jumps above numerical noise). \\
+    \testid{MASSPROP-JETTISON-CLOSED-FORM} &
+      The closed-form removal \eqref{eq:massprops:remove} agrees with an
+      independent recomposition of the retained bodies via
+      \eqref{eq:massprops:compose} to $10^{-12}$ relative on mass, CG,
+      and inertia (the exit-criterion-2 staging jump gate). \\
+    \testid{MASSPROP-IDOT-CONSISTENCY} &
+      The analytic $\dot{\mat{I}}$, $\dot{\bar{\vv{c}}}$, and $\dot{M}$
+      of \eqref{eq:massprops:composerates} match central differences of
+      the composite properties over a shrinking step, with the
+      difference decreasing as $O(\Delta t^2)$ and the smallest-step
+      agreement at the finite-difference conditioning floor. \\
+    \testid{MASSPROP-DOMAIN} &
+      Out-of-domain inputs per
+      Section~\ref{sec:massprops:domain} throw
+      \texttt{std::domain\_error}; in-domain boundary states (empty
+      tank, single body) evaluate exactly. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{References}
+\label{sec:massprops:references}
+
+Every result in this chapter --- the cylinder mass integrals, the
+parallel-axis theorem, their time derivatives, and the composition
+algebra --- is derived from the definitions of the center of mass and
+the inertia tensor in Section~\ref{sec:massprops:derivation}; the
+inertia-tensor definition and rigid-body context follow the notation of
+Markley and Crassidis~\cite{markley2014}. No further external results
+are relied on.

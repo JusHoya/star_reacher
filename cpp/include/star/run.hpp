@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include "star/vehicle_config.hpp"
+
 namespace star {
 
 // Mirror of star_reacher._core.RunConfig (Phase 1 contract section 3; Phase 3
@@ -64,6 +66,31 @@ struct RunConfig {
   double cd_a_over_m_m2pkg = 0.0;
   double hp_exponent_n = 4.0;
   std::string ephemeris_path;               // SREPH file when any model needs it
+
+  // --- Phase 4 extension (consumed by run_vehicle only) --------------------
+  // The vehicle definition and event sequence as plain data (D-2). run() and
+  // run_env() ignore these; a mission takes the vehicle path only when the
+  // Python frontend has populated a nonempty vehicle.stages and calls
+  // run_vehicle. Every field the vehicle path re-checks throws
+  // std::invalid_argument on violation, matching check_config_env.
+  VehicleConfig vehicle;
+  std::vector<SequenceEntry> sequence;
+
+  // Initial-state form for the vehicle path: "cartesian" | "keplerian" (both
+  // fill r0_m/v0_mps) or "geodetic" (fills the launch-site fields below and
+  // starts pad-fixed until a pad_release sequence event, FR-14).
+  std::string initial_form = "cartesian";
+  double launch_lat_deg = 0.0;
+  double launch_lon_deg = 0.0;
+  double launch_alt_m = 0.0;
+
+  // v1.1 vehicle-group logging rates (FR-16). Nonzero enables the group; each
+  // must divide truth_rate_hz (the SRLOG writer re-checks). run_vehicle
+  // decides the enabled force-source subset from the configured environment
+  // and vehicle (canonical order, format doc section 3.1).
+  std::uint32_t forces_rate_hz = 0;
+  std::uint32_t mass_rate_hz = 0;
+  std::uint32_t env_rate_hz = 0;
 };
 
 // Run summary returned across the binding: enough for the CLI to print a
@@ -104,6 +131,21 @@ RunSummary run_twobody(const RunConfig& cfg, const std::string& out_path);
 // are run_start/run_end as in run_twobody; the SRLOG schema is unchanged
 // (the FR-16 forces group lands with the Phase 4 torque channels).
 RunSummary run_env(const RunConfig& cfg, const std::string& out_path);
+
+// Propagate the full 6DOF vehicle case (Phase 4): a staged vehicle
+// (star/vehicle_config.hpp) flown under the composed environment
+// (star/models/environment.hpp) plus its own thrust, aerodynamics, and
+// attitude, driven by the open-loop event [[sequence]]. The translational
+// state [r, v] is advanced with fixed-step RK4; attitude, per-tank propellant
+// masses, and per-engine spool/gimbal/ignition states are advanced per control
+// cycle (D-5 zero-order hold). The SRLOG carries the v1.1 truth (with real q
+// and omega), forces, mass, and env groups. Events (pad release, ignition,
+// cutoff, staging/jettison with the FR-10 remap, orbit-insertion, and
+// SOI-transition) are located at control-cycle boundaries; a terminal event
+// stops the run. Defensive re-checks throw std::invalid_argument, matching
+// run_env's check_config_env style. run() and run_env() are byte-frozen and
+// share none of this path.
+RunSummary run_vehicle(const RunConfig& cfg, const std::string& out_path);
 
 }  // namespace star
 

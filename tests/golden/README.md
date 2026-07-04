@@ -166,3 +166,57 @@ this policy.
   `ATM-USSA76-UPPER-NODES`, `ATM-HP-NODES`, `ATM-HP-OFFNODE`,
   `ATM-MARS-NODES`, `ATM-MARS-CONT`, and `DRAG-CANNONBALL-GOLDEN`. See
   `atmosphere/manifest.toml` for provenance and tolerances.
+
+## Phase 4 contents
+
+- `attitude/` — rigid-body attitude dynamics and gravity-gradient torque
+  golden set (FR-1, Phase 4 exit criteria 4 and 9): pointwise quaternion-
+  kinematics and Euler-equation RHS vectors (including structural
+  exact-zero cases), gravity-gradient torques with the planar pitch case
+  cross-checked against the closed-form pitch torque, closed-form
+  torque-free axisymmetric coning checkpoints (machine-verified at
+  generation time against the kinematics and dynamics ODEs by
+  extended-precision finite differences), intermediate-axis (Dzhanibekov)
+  flip references (conserved H/T plus early-time mpmath Taylor-integration
+  checkpoints), and the analytic pitch-libration frequency with its
+  finite-amplitude pendulum correction. Consumed by the doctest cases
+  `rigidbody_rhs_golden`, `rigidbody_zero_torque_properties`,
+  `rigidbody_coning_closed_form`, `rigidbody_intermediate_axis_flip`,
+  `rigidbody_quaternion_norm_drift`, `gravgrad_torque_golden`,
+  `gravgrad_exact_zero_geometries`, and `gravgrad_libration_frequency`.
+  See `attitude/manifest.toml` for provenance and tolerances.
+- `massprop/` — vehicle mass-properties golden vectors (FR-10, exit
+  criterion 2): draining-cylinder settled-slug fill height, CG, inertia,
+  and their exact depletion rates, plus composite (two bodies + two tanks)
+  mass/CG/inertia, composite rates, and the closed-form single-body
+  removal that models a jettison event, all mpmath-generated (60 digits)
+  from the ch:massprops closed forms; consumed by the doctest cases
+  `MASSPROP-SLUG-GOLDEN` and `MASSPROP-COMPOSITE-GOLDEN`. See
+  `massprop/manifest.toml` for provenance and tolerances.
+- `propulsion/` — engine golden vectors (FR-10, exit criterion 3):
+  back-pressure thrust F = λF_vac − p_amb·Ae, vacuum-Isp mass flow,
+  gimbal-deflected force/torque coupling with the exactly-zero
+  zero-throttle case, and analytic Tsiolkovsky vacuum-burn scenarios, all
+  mpmath-generated (60 digits); consumed by the doctest cases
+  `PROP-ENGINE-GOLDEN` and `PROP-TSIOLKOVSKY-BURN`. See
+  `propulsion/manifest.toml` for provenance and tolerances.
+- `actuators/` — RCS and reaction-wheel golden vectors (FR-1, exit
+  criterion 7): minimum-impulse-bit pulse enforcement (below-MIB exactly
+  zero, 2×-MIB spec impulse) with force/torque coupling, and wheel-step
+  torque/momentum saturation with exact rail landing and exact-zero
+  saturated delivery, all mpmath-generated (60 digits); consumed by the
+  doctest cases `ACT-RCS-MIB`, `ACT-RCS-COUPLING-GOLDEN`, and
+  `ACT-WHEEL-SATURATION`. See `actuators/manifest.toml` for provenance
+  and tolerances.
+- `aero/` — axisymmetric ascent-aerodynamics golden set (FR-9, Phase 4
+  exit criterion 8): the committed fleet Mach-table columns copied at
+  generation time from the vehicles/ CSVs, exact-readout and midpoint
+  interpolation values, force/moment reconstruction at every
+  CA/CNalpha/xcp Mach breakpoint of both fleet tables, and the
+  formulation families (total-alpha sweep, crossflow roll orientations,
+  CG fore/aft of the center of pressure, pitch damping on/off, and the
+  pad structural zero with every output exactly zero), all
+  mpmath-generated (60 digits); consumed by the doctest cases
+  `AERO-INTERP-GOLDEN`, `AERO-BREAKPOINT-GOLDEN`, and
+  `AERO-FORCETORQUE-GOLDEN`. See `aero/manifest.toml` for provenance and
+  tolerances.

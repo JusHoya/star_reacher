@@ -85,3 +85,38 @@ label = "ch:drag"
 module = "cpp/src/models/environment.cpp"
 chapter = "docs/mathlib/chapters/environment.tex"
 label = "ch:environment"
+
+[[chapter]]
+module = "cpp/src/models/rigidbody.cpp"
+chapter = "docs/mathlib/chapters/rigidbody.tex"
+label = "ch:rigidbody"
+
+[[chapter]]
+module = "cpp/src/models/gravgrad.cpp"
+chapter = "docs/mathlib/chapters/gravgrad.tex"
+label = "ch:gravgrad"
+
+[[chapter]]
+module = "cpp/src/models/massprops.cpp"
+chapter = "docs/mathlib/chapters/massprops.tex"
+label = "ch:massprops"
+
+[[chapter]]
+module = "cpp/src/models/propulsion.cpp"
+chapter = "docs/mathlib/chapters/propulsion.tex"
+label = "ch:propulsion"
+
+[[chapter]]
+module = "cpp/src/models/actuators.cpp"
+chapter = "docs/mathlib/chapters/actuators.tex"
+label = "ch:actuators"
+
+[[chapter]]
+module = "cpp/src/models/aero.cpp"
+chapter = "docs/mathlib/chapters/aero.tex"
+label = "ch:aero"
+
+[[chapter]]
+module = "cpp/src/models/vehicle6dof.cpp"
+chapter = "docs/mathlib/chapters/vehicle6dof.tex"
+label = "ch:vehicle6dof"
