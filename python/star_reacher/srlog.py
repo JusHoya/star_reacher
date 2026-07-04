@@ -54,6 +54,26 @@ class SrlogCorruptError(SrlogError):
     """Structurally invalid file: bad magic, truncated data, or an unknown dtype."""
 
 
+def _flat_columns(arr: np.ndarray) -> list[tuple[str, str, int | None]]:
+    """Flattened column plan for a structured group array.
+
+    Returns ``(column_name, field_name, index)`` triples in field order,
+    where vector channels expand to indexed columns (``r_m_0, r_m_1,
+    r_m_2``) and scalar channels carry ``index = None``. This is the one
+    shared definition of the tabular-export column convention, used by
+    ``Run.to_pandas()`` and the Parquet exporter so every flat-table view
+    of a log agrees with the CSV exporter's layout.
+    """
+    columns: list[tuple[str, str, int | None]] = []
+    for field_name in arr.dtype.names:
+        shape = arr.dtype[field_name].shape
+        if shape:
+            columns.extend((f"{field_name}_{i}", field_name, i) for i in range(shape[0]))
+        else:
+            columns.append((field_name, field_name, None))
+    return columns
+
+
 @dataclass
 class Run:
     """One loaded SRLOG file.
@@ -63,11 +83,102 @@ class Run:
     subarrays, e.g. ``run.groups["truth"]["r_m"]`` has shape ``(n, 3)``);
     ``events`` is the events group with str16 details decoded to Python
     strings (an empty array when the file has no events group).
+
+    Derived quantities are computed lazily, never logged (FR-16):
+    ``elements()`` reduces a group's ``r_m``/``v_mps`` channels to osculating
+    orbital elements about the header's central body, ``time_s()`` returns a
+    group's time axis, and ``to_pandas()`` gives per-group DataFrames when
+    pandas is installed (D-12 optional extra).
     """
 
     header: dict
     groups: dict[str, np.ndarray]
     events: np.ndarray
+
+    def _group(self, group: str) -> np.ndarray:
+        try:
+            return self.groups[group]
+        except KeyError:
+            available = ", ".join(sorted(self.groups)) or "none"
+            raise KeyError(
+                f"this log has no channel group named {group!r}; "
+                f"available groups: {available}"
+            ) from None
+
+    def time_s(self, group: str = "truth") -> np.ndarray:
+        """The ``t_s`` time axis [s] of a channel group.
+
+        Every group the format defines carries a leading ``t_s`` channel
+        (docs/formats/srlog_v1.md section 3); a synthetic or third-party
+        group without one raises ``ValueError`` naming the group.
+        """
+        arr = self._group(group)
+        if "t_s" not in arr.dtype.names:
+            raise ValueError(
+                f"group {group!r} carries no 't_s' channel; its channels are "
+                f"{list(arr.dtype.names)}"
+            )
+        return arr["t_s"]
+
+    def elements(self, group: str = "truth") -> dict[str, np.ndarray]:
+        """Osculating elements derived from a group's ``r_m``/``v_mps``.
+
+        Computed lazily on first call and cached per group (FR-16:
+        "osculating elements are derived in the loader, not logged"). The
+        central body's GM comes from the log header's ``central_body`` via
+        ``star_reacher.derived.central_body_gm``. Element definitions,
+        angle ranges, and singular-geometry conventions are documented in
+        ``star_reacher.derived.osculating_elements`` and
+        ``docs/formats/derived_elements.md``.
+        """
+        cache = getattr(self, "_elements_cache", None)
+        if cache is None:
+            cache = {}
+            self._elements_cache = cache
+        if group not in cache:
+            # Local import keeps plain log reading free of the derived-math
+            # module until elements are actually requested.
+            from star_reacher import derived
+
+            arr = self._group(group)
+            for channel in ("r_m", "v_mps"):
+                if channel not in arr.dtype.names:
+                    raise ValueError(
+                        f"group {group!r} carries no {channel!r} channel, so "
+                        f"osculating elements cannot be derived from it; its "
+                        f"channels are {list(arr.dtype.names)}"
+                    )
+            gm = derived.central_body_gm(self.header.get("central_body"))
+            cache[group] = derived.osculating_elements(arr["r_m"], arr["v_mps"], gm)
+        return cache[group]
+
+    def to_pandas(self) -> dict:
+        """Per-group pandas DataFrames with CSV-convention flat columns.
+
+        Vector channels expand to indexed columns (``r_m_0, r_m_1, r_m_2``)
+        exactly like the CSV exporter, so column names agree across every
+        tabular view of a log. pandas is a documented optional extra
+        (D-12): when it is not installed this raises an actionable
+        ``ImportError`` instead of adding a hard dependency.
+        """
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError(
+                "Run.to_pandas() requires pandas, which star_reacher treats "
+                "as an optional dependency (D-12); install it with "
+                'pip install "star-reacher[pandas]" (or pip install pandas)'
+            ) from exc
+        frames = {}
+        for group_name, arr in self.groups.items():
+            data = {}
+            for column_name, field_name, index in _flat_columns(arr):
+                if index is None:
+                    data[column_name] = arr[field_name]
+                else:
+                    data[column_name] = arr[field_name][:, index]
+            frames[group_name] = pd.DataFrame(data)
+        return frames
 
 
 @dataclass
