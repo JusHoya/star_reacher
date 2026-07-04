@@ -918,6 +918,15 @@ RunSummary run_vehicle(const RunConfig& cfg, const std::string& out_path) {
   bool stop = false;
   int aero_sep_count = 0;
 
+  // One reusable buffer for the whole run: the per-source forces record is
+  // rebuilt in place each logged step (clear() retains the capacity) rather
+  // than allocating and freeing a fresh vector every cycle. On a high-volume
+  // log (order 10^5 records) removing this per-cycle allocation churn is what
+  // makes the by-source write path reliable on the build host; the logged
+  // bytes are identical either way (see docs/KNOWN_ISSUES.md, KNOWN-ISSUE-P4-1).
+  std::vector<log::ForceSourceSample> samples;
+  samples.reserve(sources.size());
+
   for (std::int64_t i = 0; i <= steps && !stop; ++i) {
     const double t = static_cast<double>(i) * dt;
     const time::TaiEpoch tai = time::tai_add_seconds(epoch, t);
@@ -1121,7 +1130,7 @@ RunSummary run_vehicle(const RunConfig& cfg, const std::string& out_path) {
           ctx.c_i2b * (sp.composite.mass_kg * (a_env - a_grav));
       const Eigen::Vector3d tq_gg = models::gravgrad_torque(
           mu, r_m, q, sp.composite.inertia_kgm2);
-      std::vector<log::ForceSourceSample> samples;
+      samples.clear();
       for (const std::string& src : sources) {
         // Eigen vectors are not zero-initialized by their default constructor;
         // zeroing both channels keeps a source that produces only a force or

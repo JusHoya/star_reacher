@@ -43,14 +43,10 @@ ephemeris = "tests/golden/ephemeris/excerpt_de440s_crosstool.sreph"
 truth_rate_hz = 1
 # The interesting dynamics are the ~350 s burn; the rest is a multi-day coast,
 # so the by-source force/mass/env groups are disabled here (truth + the
-# SOI-transition event suffice for the EC-6 gate). Beyond keeping the log
-# small, this also avoids KNOWN-ISSUE-P4-1: at ~200 MB (this mission's
-# ~455k records with all groups at 1 Hz) the by-source logging path
-# intermittently corrupts memory and aborts. The trajectory itself is
-# deterministic and bit-identical whenever a full-groups run completes; the
-# fault is confined to the large-volume by-source write path and does not
-# affect truth-only runs or the shorter ascent mission (which exercises the
-# FR-16 vehicle groups at full 1 Hz reliably). See docs/KNOWN_ISSUES.md.
+# SOI-transition event suffice for the EC-6 gate) to keep the log small -- at
+# 1 Hz over the full coast they would add ~200 MB (~455k records) of
+# largely-static coast data. The shorter ascent mission exercises the FR-16
+# vehicle groups at full 1 Hz.
 forces_rate_hz = 0
 mass_rate_hz = 0
 env_rate_hz = 0

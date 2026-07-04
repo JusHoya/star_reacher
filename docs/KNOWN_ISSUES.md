@@ -4,37 +4,49 @@ Tracked defects and documented limitations, with the exit-criterion impact of
 each stated plainly. Entries are removed when fixed (with the fixing commit
 noted in the changelog history, not here).
 
-## KNOWN-ISSUE-P4-1 — memory corruption in the high-volume by-source log path
+## KNOWN-ISSUE-P4-1 — intermittent native fault on the high-volume by-source log path (mitigated)
 
-**Symptom.** Running a mission with the FR-16 `forces`/`mass`/`env` channel
-groups enabled *and* a very large record count (order 10^5 records, order
-100 MB of log) intermittently aborts partway through the run with a native
-memory fault (observed exit codes `0xC0000409` STATUS_STACK_BUFFER_OVERRUN and
-`0xC0000005` access violation), leaving a truncated `run.srlog` and no
-`meta.json`. Reproduced on roughly 1 run in 4 for the trans-lunar case
+**Symptom (original).** With the FR-16 `forces`/`mass`/`env` channel groups
+enabled *and* a very large record count (order 10^5 records, order 100 MB of
+log), the run intermittently aborted partway through with a native memory fault
+(access violation / `0xC0000005`, occasionally surfacing as
+`0xC0000409`), leaving a truncated `run.srlog` and no `meta.json`. Measured on
+the build host at roughly 8 faults in 48 runs of the trans-lunar case
 (`missions/tli.toml` with all groups at 1 Hz: ~455k records, ~211 MB).
 
-**Scope and severity.** The propagation itself is deterministic: every
-full-groups run that *completes* produces a bit-identical log, so the fault is
-confined to the high-volume by-source write path and does not affect the
-computed trajectory. The `truth`-only path (no vehicle groups) is unaffected
-and reliable at any length, and the shorter ascent mission
-(`missions/ascent_leo.toml`, ~390 by-source records) exercises the FR-16 groups
-reliably. This is not machine flakiness — the failure correlates specifically
-with the large by-source log volume and never occurs on truth-only runs.
+**Investigation.** The propagation is deterministic — every full-groups run
+that *completes* produces a bit-identical log — so the fault was confined to the
+high-volume by-source write path, not the computed trajectory. The SRLOG writer
+streams directly to the file with no unbounded in-memory buffer (peak RSS ~444
+MB for a 211 MB log), and every record write is bounds-checked. The per-cycle
+logging assembly was examined under four independent memory tools — Linux
+AddressSanitizer at the full 211 MB volume, UndefinedBehaviorSanitizer
+(including alignment), Valgrind memcheck with `--track-origins`, and an earlier
+MSVC AddressSanitizer pass — and **none reported a memory-safety defect**
+(Valgrind: zero errors, all ~180k allocations freed). No code-level buffer
+overrun, use-after-free, or uninitialized read was found. The fault correlates
+with high-frequency heap-allocation churn during the large-volume write; a
+code-level root cause could not be isolated, and a contribution from build-host
+instability cannot be excluded (this host's compiler intermittently faults with
+the same access-violation code during compilation).
+
+**Mitigation.** The per-source forces record now reuses a single buffer across
+the whole run instead of allocating and freeing a fresh vector every logged
+step (`cpp/src/run.cpp`). This removes ~455k per-cycle allocations on the
+trans-lunar case and eliminated the fault across 45 consecutive full-groups runs
+(versus ~17 % previously), with **byte-identical** log output (same SHA-256).
+The change is a determinism-preserving optimization; it does not alter the
+logged bytes.
+
+**Residual caveat.** Because no code defect was isolated, the possibility of an
+environmental (build-host) contribution remains. The mitigation removes the
+observed symptom but is not proven to address a specific logic defect, since
+none was found.
 
 **Exit-criterion impact: none.** No Phase 4 exit criterion depends on the
 by-source groups at high volume. EC-6 evaluates `missions/tli.toml` in its
-committed `truth`-only configuration (truth records plus the SOI-transition
-event), which is reliable and bit-reproducible.
-
-**Workaround.** For long missions, leave `forces_rate_hz`/`mass_rate_hz`/
-`env_rate_hz` at 0 (the committed `missions/tli.toml` does this), or lower the
-group rates so the by-source record count stays modest.
-
-**Status.** Under investigation. The SRLOG writer streams directly to the file
-with no unbounded in-memory buffer, so the fault is being traced with a
-sanitizer build of the vehicle run path's per-cycle logging assembly.
+committed configuration (truth records plus the SOI-transition event), which is
+reliable and bit-reproducible.
 
 ## KNOWN-ISSUE-P4-2 — FR-16 `thirdbody` force channel lumps the environment residual
 
