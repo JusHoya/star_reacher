@@ -1,15 +1,21 @@
 # Raspberry Pi 5 checklist (manual, pre-release)
 
-This checklist implements the PRD section 9 provision for the Pi 5
-performance gates: *"a pinned self-hosted Pi runner is required for honest
-gating (if unavailable, perf gates move to a manual pre-release checklist)."*
-No self-hosted Pi 5 runner is attached to this repository, so this document
-is that checklist. A maintainer runs it on real Raspberry Pi 5 hardware
-before each release. It also carries the two other Phase 5 exit-criterion
-clauses that name literal Pi 5 hardware — the headless quicklook-plot
-render (exit criterion 1) and the viewer-in-Chromium check (exit
-criterion 2) — so every Pi 5 clause in the phase has exactly one manual
-home (steps 6 and 7).
+This checklist implements the PRD section 9 valve for the Pi 5 hardware
+clauses: honest gating requires a pinned self-hosted Pi runner, none is
+attached to this repository, and the affected exit-criterion clauses
+therefore move to this manual pre-release checklist. A maintainer runs it
+on real Raspberry Pi 5 hardware before each release. Besides the
+performance gates it carries the two other Phase 5 exit-criterion clauses
+that name literal Pi 5 hardware — the headless quicklook-plot render (exit
+criterion 1) and the viewer-in-Chromium check (exit criterion 2) — so
+every Pi 5 clause in the phase has exactly one manual home (steps 6
+and 7). It is registered as item 1 of the pre-release checklist
+(`docs/release_checklist.md`). Steps 1–3 also serve as the Pi 5 bring-up
+procedure for any downstream deployment of the simulator: they take a bare
+Raspberry Pi OS image to an installed, verified `star` CLI using only the
+project's standard from-source install (toolchain, clone, `pip install .`,
+`star verify --quick`) — nothing in them is specific to release
+qualification.
 
 **Proxy honesty.** The nightly workflow (`.github/workflows/nightly.yml`)
 runs the same gates on the GitHub-hosted `ubuntu-24.04-arm` runner class.
@@ -45,6 +51,10 @@ to one core with `taskset`; child processes inherit the affinity mask.
    cd star_reacher
    git checkout vX.Y.Z
    ```
+
+   For a bring-up that is not qualifying a tagged release — for example, a
+   downstream Pi 5 deployment before the first tagged release exists —
+   check out `main` or the commit under test instead of a tag.
 
 2. Build and install into a fresh venv (the native core builds from source;
    allow several minutes on the Pi):

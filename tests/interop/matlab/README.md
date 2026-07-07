@@ -11,6 +11,13 @@ input hashes -- and executes on any machine with MATLAB R2019a or newer
 as-run console transcript is committed here when the run is performed, per
 the exit criterion.
 
+**Status (Phase 5 close, 2026-07-07): prepared, not yet executed.** No
+MATLAB-licensed host is available to the maintainer, so this item is
+deferred through the PRD section 9 valve and registered on the pre-release
+checklist (`docs/release_checklist.md`, item 2). The procedure below is
+unchanged and is written to run on any MATLAB R2019a+ host (per the
+`parquetread` availability note above).
+
 ## Contents
 
 - `read_truth_parquet.m` -- self-contained validation script. Reads
