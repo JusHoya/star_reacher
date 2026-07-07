@@ -29,6 +29,13 @@ void IGncComponent::error_state(const TruthState&, double*) const {
       "estimator state (state_dim() == 0)");
 }
 
+const std::vector<InnovationSample>& IGncComponent::innovations() const {
+  // Non-aiding components share one immutable empty list; a function-local
+  // static avoids any global-initialization ordering concern.
+  static const std::vector<InnovationSample> kEmpty;
+  return kEmpty;
+}
+
 namespace {
 
 // Function-local static: initialized on first use, so registration from

@@ -111,6 +111,17 @@ struct GncInitContext {
   double dt_s = 0.0;
 };
 
+// One applied aiding update, reported by an estimator for nav.innov
+// logging: the innovation vector y (size m) and the innovation covariance S
+// packed row-major upper triangle (size m(m+1)/2). sensor_id indexes the
+// run's configured sensor list (GncConfig::sensors order, which is also the
+// log header's "gnc" sensors array).
+struct InnovationSample {
+  std::uint32_t sensor_id = 0;
+  std::vector<double> y;
+  std::vector<double> s_upper;
+};
+
 // The FR-25 abstract base. update() runs once per control cycle in chain
 // order and must be deterministic (D-10): no clock, no I/O, no global
 // state. The state/covariance/error introspection exists so the loop can
@@ -126,6 +137,16 @@ class IGncComponent {
 
   // Estimator state dimension n for nav.est logging; 0 = not an estimator.
   virtual int state_dim() const { return 0; }
+  // Maximum innovation dimension across this estimator's aiding sensors;
+  // 0 = no aiding, and nav.innov is then not declared in the log. An
+  // aiding estimator (the reference EKF of a later workstream) overrides
+  // this and innovations() - no change to this interface is required.
+  virtual int innov_max_dim() const { return 0; }
+  // The aiding updates applied during the most recent update() call, in
+  // application order; the loop logs each to nav.innov zero-padded to
+  // innov_max_dim(). Rebuilt by the component on every update(); the
+  // default returns an empty list.
+  virtual const std::vector<InnovationSample>& innovations() const;
   // State vector into x_hat[0..n). Called only when state_dim() > 0.
   virtual void state(double* x_hat) const;
   // Covariance packed row-major upper triangle into p[0..n(n+1)/2).

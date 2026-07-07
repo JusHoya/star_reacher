@@ -1,0 +1,37 @@
+# Provenance manifest for the GNC built-in component golden vectors
+# (FR-22 layer 1: uncited golden = lint failure; schema documented in
+# tests/golden/README.md).
+
+schema_version = 1
+
+[golden]
+directory = "gnc"
+date = "2026-07-07"
+generation = """
+Both value files are produced by generate.py in this directory (mpmath at
+60 significant digits). Inputs are snapped to binary64 first and recorded
+as float.hex strings, so the consuming doctest evaluates the C++ built-ins
+on bit-identical inputs; the expected outputs are the extended-precision
+evaluation of the laws documented in cpp/include/star/gnc/builtin.hpp
+(normative arithmetic) on those exact inputs, rounded once to binary64.
+Generation-time asserts verify the branch-coverage cases actually exercise
+their branches: the sign-branch case has dq0 < 0, the sign-zero case has
+dq0 == 0 exactly, and the saturation case clamps at least one axis while
+leaving at least one axis unclamped.
+"""
+
+[[file]]
+name = "pd_attitude.toml"
+source = "generate.py (this directory), mpmath 60-digit evaluation of the pd_attitude law from cpp/include/star/gnc/builtin.hpp"
+citation = "Quaternion-feedback attitude regulation with the shortest-rotation sign term: B. Wie, H. Weiss, and A. Arapostathis, 'Quaternion Feedback Regulator for Spacecraft Eigenaxis Rotations', Journal of Guidance, Control, and Dynamics 12(3), 1989, pp. 375-380 (the -k sign(dq0) dq_vec unwinding form); per-axis symmetric saturation is a project definition (PRD FR-25, Phase 6 exit criterion 2)"
+generation = "python tests/golden/gnc/generate.py (write_pd_cases)"
+date = "2026-07-07"
+tolerance = "per component |got - expected| <= max(5e-15 * |expected|, 1e-18). The C++ path performs at most a few binary64 roundings beyond the once-rounded 60-digit reference (Hamilton product, two multiplies, one subtraction, clamp), so agreement to a few ulp (~2.2e-16 relative each) is guaranteed; 5e-15 relative leaves >20x margin. Saturated components equal the tau_max config constant exactly and zero components are exact, covered by the absolute floor."
+
+[[file]]
+name = "dead_reckoning.toml"
+source = "generate.py (this directory), mpmath 60-digit evaluation of the dead_reckoning attitude update from cpp/include/star/gnc/builtin.hpp"
+citation = "Attitude update by composition of an accumulated angle-increment rotation (axis-angle exponential of the gyro increment): D. H. Titterton and J. L. Weston, Strapdown Inertial Navigation Technology, 2nd ed., IET, 2004, section 11.2 (attitude update algorithms); Hamilton scalar-first composition per project decision D-7"
+generation = "python tests/golden/gnc/generate.py (write_dead_reckoning_case)"
+date = "2026-07-07"
+tolerance = "per component |got - expected| <= max(5e-15 * |expected|, 1e-18) after each of the five increments. Each step is one sin/cos pair, one Hamilton product, and one normalization in binary64 against the once-rounded extended-precision reference; five accumulated steps stay well under 5e-15 relative (libm sin/cos are faithfully rounded on the supported platforms). The exactly-zero increment exercises the identity branch, where the state must pass through unchanged up to the renormalization rounding."
