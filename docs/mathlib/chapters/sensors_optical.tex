@@ -1,0 +1,454 @@
+% Chapter — Optical sensors: star tracker and sun sensor (FR-23). Follows
+% the mandatory FR-29 six-section template: purpose; assumptions and domain
+% of validity; derivation; discretization and implementation; validation
+% evidence; references. Written ahead of the implementation (Phase 6): this
+% chapter is the binding specification for the optical sensor modules and
+% for the velocity-aberration correction shared with the camera hook
+% (Chapter ch:camera). The implementing change adds the chapter-manifest
+% entry and the \testid{} evidence table. The equation labels
+% eq:optical:aberration, eq:optical:beta, eq:optical:rho, eq:optical:qab,
+% eq:optical:stmodel, eq:optical:noiseq, and eq:optical:sunsensor are
+% intended to be echoed verbatim in the module source (FR-29 traceability).
+\chapter{Sensors: Star Tracker and Sun Sensor}
+\label{ch:sensors-optical}
+
+\section{Purpose}
+\label{sec:optical:purpose}
+
+This chapter specifies the FR-23 optical attitude sensors: a star tracker
+that emits a small-angle-corrupted attitude quaternion with Sun/body
+exclusion and slew-rate gating, and a sun sensor that emits a noisy unit
+vector toward the apparent Sun. It also defines, once for the whole
+project, the \emph{velocity-aberration correction} that FR-23 applies to
+every optical truth direction (star tracker, sun sensor, and the camera
+hook of Chapter~\ref{ch:camera}): the project's light-time/aberration
+policy is that dynamics use geometric ephemeris positions
+(Chapter~\ref{ch:ephemeris}), while optical sensor truth adds the
+velocity aberration of Section~\ref{sec:optical:aberration} --- a
+$\approx \qty{20.5}{\arcsecond}$ effect at Earth's heliocentric orbital
+speed, an order of magnitude above an arcsecond-class star-tracker error
+budget --- with the residual light-time effects bounded in
+Section~\ref{sec:optical:domain}. Phase~6 exit criterion~9 gates an
+independent recomputation of the stated aberration formula to
+$< \qty{1}{\mas}$, and exit criterion~1 gates the star-tracker error
+statistics inside two-sided 95\,\% chi-square bounds over 1{,}000 draws,
+so every convention here --- frames, sign, normalization, composition
+order --- is stated exactly.
+
+\section{Assumptions and domain of validity}
+\label{sec:optical:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Light-time/aberration policy (FR-23).} Source directions
+    are computed from \emph{geometric} (instantaneous) ephemeris
+    positions and then corrected for velocity (stellar) aberration only.
+    The neglected planetary-aberration term --- the source's own motion
+    during the light time --- displaces the apparent Sun by
+    $\lesssim \qty{11}{\mas}$ (solar barycentric velocity
+    $\lesssim \qty{16}{\metre\per\second}$ acting over
+    \qty{499}{\second}) and a Moon-fixed landmark seen from
+    \qty{4e8}{\metre} by $\lesssim \qty{0.7}{\arcsecond}$ (lunar orbital
+    velocity $\approx \qty{1}{\kilo\metre\per\second}$ over
+    \qty{1.3}{\second}); both are below the arcsecond-class sensor noise
+    this suite targets, and both bounds scale linearly with source
+    velocity and light time for other geometries.
+  \item \textbf{First-order aberration.} The first-order formula of
+    equation~\eqref{eq:optical:aberration} is used, not the exact
+    special-relativistic form; the difference is
+    $(\beta^2/4)\sin 2\vartheta + O(\beta^3)$ in apparent angle
+    ($\vartheta$ the source--velocity angle), at most
+    $\qty{0.52}{\mas}$ at $\beta = 10^{-4}$
+    ($v = \qty{30}{\kilo\metre\per\second}$) --- below every stated gate.
+  \item \textbf{Stars at infinity.} Catalog directions are truth by
+    construction; parallax is not modeled (the simulator has no star
+    catalog --- the tracker abstraction below absorbs it).
+  \item \textbf{Narrow-field tracker abstraction.} The star tracker is
+    modeled at the attitude level: matching, centroiding, and the star
+    field itself are abstracted into a body-frame small-angle error with
+    configured per-axis standard deviations (about-boresight typically
+    the largest). The aberration of the observed star field enters as
+    the rigid field rotation of equation~\eqref{eq:optical:rho}; the
+    residual differential aberration across the field of view is
+    $O(\beta \alpha^2)$ for FOV half-angle $\alpha$ --- below
+    \qty{1}{\arcsecond} for $\alpha \le 10^{\circ}$ at
+    $\beta = 10^{-4}$ --- and is absorbed in the configured noise.
+  \item \textbf{Exclusion angles as configuration.} Exclusion gating
+    compares the boresight to the apparent direction of each configured
+    excluded body against a configured half-angle per body; the angle is
+    understood to include the body's angular radius plus stray-light
+    margin. The model does not compute limb geometry for the tracker.
+\end{enumerate}
+
+Domain of validity: $\beta = \norm{\vv{v}_{\mathrm{obs}}}/c \le 10^{-3}$
+(the first-order error bound above grows as $\beta^2$), configured error
+sigmas $\le \qty{e-2}{\radian}$ (the small-angle statistics of
+Section~\ref{sec:optical:stats} degrade as $O(\sigma^2)$ beyond that),
+and exclusion/FOV half-angles in $(0, \pi/2)$. Out-of-domain
+configurations are rejected by the FR-15 validator; the in-loop model is
+a total function and never throws. Milliarcsecond-grade astrometry
+(relativistic light deflection, parallax, proper motion) is explicitly
+out of scope.
+
+\section{Derivation}
+\label{sec:optical:derivation}
+
+\subsection{Velocity aberration}
+\label{sec:optical:aberration}
+
+Let $\hat{\vv{u}}^{I}$ be the geometric unit direction \emph{from the
+observer to the source}, resolved in GCRF axes, and let
+\begin{equation}
+  \vv{\beta} = \frac{\vv{v}_{\mathrm{obs}}^{I}}{c},
+  \qquad
+  \vv{v}_{\mathrm{obs}}^{I} = \vv{v}^{I}
+    + \vv{v}_{\mathrm{cb}/\mathrm{SSB}}^{I},
+  \label{eq:optical:beta}
+\end{equation}
+where $\vv{v}^{I}$ is the vehicle's truth velocity relative to the
+central body (the logged \texttt{truth} channel) and
+$\vv{v}_{\mathrm{cb}/\mathrm{SSB}}^{I}$ is the central body's velocity
+relative to the solar-system barycenter, assembled from the DE440
+segment chain of Chapter~\ref{ch:ephemeris} (for Earth: EMB relative to
+the SSB plus Earth relative to the EMB), all in GCRF axes. Aberration is
+kinematic --- the observed direction depends on the observer's velocity
+in the frame in which the catalog directions are defined, which for
+star catalogs (ICRS) is the barycentric frame --- hence the barycentric
+composition; using the planet-relative velocity alone would omit the
+dominant $\approx \qty{30}{\kilo\metre\per\second}$ annual term.
+
+The apparent direction is, to first order in $\beta$
+(Kaplan~\cite{kaplan2005}),
+\begin{equation}
+  \boxed{\;
+  \hat{\vv{u}}'
+    = \frac{\hat{\vv{u}} + \vv{\beta}
+        - (\hat{\vv{u}} \cdot \vv{\beta})\,\hat{\vv{u}}}
+      {\bigl\lVert \hat{\vv{u}} + \vv{\beta}
+        - (\hat{\vv{u}} \cdot \vv{\beta})\,\hat{\vv{u}} \bigr\rVert} ,
+  \;}
+  \label{eq:optical:aberration}
+\end{equation}
+i.e.\ the geometric direction plus the component of $\vv{\beta}$
+perpendicular to it, renormalized. The sign convention, stated
+explicitly because it is the usual defect: the \emph{apparent} direction
+is displaced from the geometric direction \emph{toward the observer's
+velocity vector} (the telescope tilts forward), by the angle
+\begin{equation}
+  \delta\vartheta = \beta \sin\vartheta + O(\beta^2),
+  \qquad
+  \vartheta = \angle(\hat{\vv{u}}, \vv{\beta}),
+  \label{eq:optical:abmag}
+\end{equation}
+whose maximum $\beta = v_{\mathrm{obs}}/c$ evaluates to
+\qty{20.49}{\arcsecond} at Earth's mean heliocentric speed
+$v = \qty{29.78}{\kilo\metre\per\second}$ and
+\qty{20.64}{\arcsecond} at \qty{30}{\kilo\metre\per\second} --- the
+"$\approx \qty{20.5}{\arcsecond}$" of FR-23. Equation
+\eqref{eq:optical:aberration} is \emph{the} normative formula: exit
+criterion~9 recomputes it independently (NumPy, from the logged truth
+and ephemeris inputs) and gates agreement to $< \qty{1}{\mas}$; the
+formula-choice error relative to the exact relativistic form is bounded
+in Section~\ref{sec:optical:domain}, item~2, and was verified
+numerically over the full $\vartheta$ range during drafting.
+
+\subsection{Star tracker measurement model}
+\label{sec:optical:startracker}
+
+The tracker is configured with a body-frame boresight unit vector
+$\hat{\vv{b}}^{B}$, per-axis error standard deviations
+$\vv{\sigma}_{\mathrm{st}} = (\sigma_1, \sigma_2, \sigma_3)$
+(\unit{\radian}, body axes), exclusion half-angles
+$\theta_{\mathrm{excl},j}$ for the Sun and each configured excluded
+body, and a slew-rate limit $\omega_{\max}$.
+
+\paragraph{Aberration as a field rotation.} Over a narrow field of view
+the aberration field of equation~\eqref{eq:optical:aberration} acts, to
+first order, as a rigid rotation of the observed sky: for directions
+$\hat{\vv{u}}$ near the boresight $\hat{\vv{b}}^{I} =
+{\dcm{I}{B}}^{\mathsf T}\hat{\vv{b}}^{B}$,
+\begin{equation}
+  \hat{\vv{u}}' = \hat{\vv{u}} + \vv{\rho} \times \hat{\vv{u}}
+    + O(\beta\,\alpha^2),
+  \qquad
+  \boxed{\;
+  \vv{\rho}^{I} = \hat{\vv{b}}^{I} \times \vv{\beta}^{I},
+  \;}
+  \label{eq:optical:rho}
+\end{equation}
+verified at the boresight: $\vv{\rho} \times \hat{\vv{b}} =
+\vv{\beta} - (\hat{\vv{b}} \cdot \vv{\beta})\hat{\vv{b}}$, exactly the
+first-order displacement of equation~\eqref{eq:optical:aberration}. A
+tracker that matches this rotated sky against the geometric catalog
+reports the attitude of the body relative to the \emph{apparent}
+inertial frame. Working in the project convention
+(Chapter~\ref{ch:notation}): the apparent frame $I'$ satisfies
+$\dcm{I'}{I} = \mat{I}_3 + \skewm{\vv{\rho}}$, so the reported attitude
+is $\quat{q}_{i'2b} = \quat{q}_{i'2i} \quatmul \quat{q}_{i2b}$ with
+$\dcm{I'}{I}(\quat{q}_{i'2i})$ as above; by
+equation~\eqref{eq:notation:quat2dcm} the corresponding unit quaternion
+has vector part $-\vv{\rho}/2$ to first order. The model uses the exact
+unit quaternion of the rotation vector $-\vv{\rho}$:
+\begin{equation}
+  \quat{q}_{\mathrm{ab}}
+    = \Bigl[\cos\tfrac{\rho}{2},\;
+        -\sin\tfrac{\rho}{2}\,\frac{\vv{\rho}}{\rho}\Bigr],
+  \qquad \rho = \norm{\vv{\rho}},
+  \qquad
+  \quat{q}_{\mathrm{ab}} = [1, \vv{0}] \text{ when } \rho = 0 .
+  \label{eq:optical:qab}
+\end{equation}
+Consistency check, binding on the implementation: the boresight
+direction implied by the aberrated attitude,
+${\dcm{I}{B}(\quat{q}_{\mathrm{ab}} \quatmul
+\quat{q}_{i2b})}^{\mathsf T} \hat{\vv{b}}^{B} = \hat{\vv{b}}^{I} -
+\vv{\rho} \times \hat{\vv{b}}^{I} + O(\rho^2)$, points \emph{away} from
+the velocity --- correct, because the star whose apparent position sits
+on the boresight has its catalog position displaced against the
+velocity.
+
+\paragraph{Measurement equation.} With the noise quaternion
+$\delta\quat{q}_n$ below, the emitted measurement is
+\begin{equation}
+  \boxed{\;
+  \quat{q}_{\mathrm{meas}}
+    = \quat{q}_{\mathrm{ab}} \quatmul \quat{q}_{i2b}^{\mathrm{true}}
+      \quatmul \delta\quat{q}_n ,
+  \;}
+  \label{eq:optical:stmodel}
+\end{equation}
+Hamilton, scalar-first, $\quat{q}_{i2b}$ chaining per decision D-7 and
+equation~\eqref{eq:notation:quatcomp}: the aberration is an
+inertial-side factor (left), the sensor noise a body-side factor
+(right). Transcription note: in the composition convention of Markley
+and Crassidis~\cite{markley2014}, where $\mat{A}(\quat{p} \quatmul
+\quat{q}) = \mat{A}(\quat{p})\mat{A}(\quat{q})$, the same physical model
+reads with the factor order reversed
+($\delta\quat{q} \quatmul \quat{q}_{\mathrm{true}}$ for a body-side
+error); the form~\eqref{eq:optical:stmodel} is the normative one for
+this project's code, logs, and cross-checks.
+
+\paragraph{Noise quaternion.} Draw
+$\vv{\epsilon} \sim \mathcal{N}\bigl(\vv{0},\,
+\mathrm{diag}(\sigma_1^2, \sigma_2^2, \sigma_3^2)\bigr)$
+(body axes) and form the \emph{exact} rotation
+\begin{equation}
+  \delta\quat{q}_n
+    = \Bigl[\cos\tfrac{\theta}{2},\;
+        \sin\tfrac{\theta}{2}\,\frac{\vv{\epsilon}}{\theta}\Bigr],
+  \qquad \theta = \norm{\vv{\epsilon}},
+  \qquad
+  \delta\quat{q}_n = [1, \vv{0}] \text{ when } \theta = 0 ,
+  \label{eq:optical:noiseq}
+\end{equation}
+the exponential map of the drawn rotation vector. Using the exact map
+rather than a small-angle construction costs nothing and makes the
+statistic of Section~\ref{sec:optical:stats} exactly chi-square
+distributed, because the extraction below recovers $\vv{\epsilon}$
+identically.
+
+\paragraph{Validity gating.} The emitted flag is
+\begin{equation}
+  \mathrm{valid} =
+    \Bigl[\bigwedge_{j}
+      \angle\bigl(\hat{\vv{b}}^{I},\, \hat{\vv{u}}'_j\bigr)
+        \ge \theta_{\mathrm{excl},j}\Bigr]
+    \wedge
+    \bigl[\norm{\vv{\omega}^{B}} \le \omega_{\max}\bigr],
+  \label{eq:optical:gating}
+\end{equation}
+where $j$ ranges over the Sun and the configured excluded bodies,
+$\hat{\vv{u}}'_j$ is the \emph{apparent} (aberrated) direction to body
+$j$'s center per equation~\eqref{eq:optical:aberration} (the
+$\le \qty{20.5}{\arcsecond}$ geometric-versus-apparent difference is
+immaterial against degree-scale exclusion angles, but a single code path
+computes all optical directions), $\angle(\vv{a},\vv{b}) =
+\operatorname{atan2}(\norm{\vv{a}\times\vv{b}}, \vv{a}\cdot\vv{b})$, and
+$\vv{\omega}^{B}$ is the true body rate. Semantics, normative: the
+measurement is computed, logged, and flagged every sample regardless of
+validity; noise draws are unconditional (stream-schedule stability, as
+in Chapter~\ref{ch:sensors-imu}); consumers must treat
+$\mathrm{valid} = \mathrm{false}$ samples as absent --- the reference
+navigation components of Chapters~\ref{ch:gnc-builtin} and~\ref{ch:ekf}
+skip the corresponding updates.
+
+\subsection{Sun sensor measurement model}
+\label{sec:optical:sunsensor}
+
+The sun sensor is configured with a boresight $\hat{\vv{s}}^{B}$, a
+field-of-view half-angle $\alpha_{\mathrm{ss}}$, and an error standard
+deviation $\sigma_{\mathrm{ss}}$ (\unit{\radian}). With
+$\hat{\vv{u}}'^{\,I}_{\odot}$ the apparent Sun direction from
+equation~\eqref{eq:optical:aberration} and $\hat{\vv{u}}^{B} =
+\dcm{I}{B}(\quat{q}_{i2b}^{\mathrm{true}})\, \hat{\vv{u}}'^{\,I}_{\odot}$
+its body-frame resolution, the measurement is
+\begin{equation}
+  \boxed{\;
+  \hat{\vv{u}}_{\mathrm{meas}}
+    = \frac{\hat{\vv{u}}^{B} + \vv{\eta}}
+           {\norm{\hat{\vv{u}}^{B} + \vv{\eta}}},
+  \qquad
+  \vv{\eta} \sim \mathcal{N}\bigl(\vv{0},\,
+    \sigma_{\mathrm{ss}}^2\,\mat{I}_3\bigr),
+  \;}
+  \label{eq:optical:sunsensor}
+\end{equation}
+the simplest standard unit-vector error model: the radial noise
+component drops on normalization and the two tangential components give
+a direction error of standard deviation $\sigma_{\mathrm{ss}}$ per axis
+to $O(\sigma_{\mathrm{ss}}^2)$. Validity:
+\begin{equation}
+  \mathrm{valid} =
+    \bigl[\angle(\hat{\vv{u}}^{B}, \hat{\vv{s}}^{B})
+      \le \alpha_{\mathrm{ss}}\bigr]
+    \wedge \bigl[\nu > 0\bigr],
+  \label{eq:optical:sungate}
+\end{equation}
+with $\nu$ the illumination fraction of the Chapter~\ref{ch:srp} conical
+shadow model (equation~\eqref{eq:srp:nu}): a sensor in total umbra sees
+no Sun; partial illumination ($0 < \nu < 1$) is treated as visible, with
+the centroid shift of a partially occulted disk left unmodeled (bounded
+by the solar angular radius, and transited in seconds during eclipse
+entry/exit).
+
+\subsection{Acceptance statistics}
+\label{sec:optical:stats}
+
+Exit criterion~1 gates the star tracker over $M = 1000$ seeded draws at
+fixed truth. Per draw $i$, the evaluation removes the deterministic
+factors of equation~\eqref{eq:optical:stmodel} and extracts the error
+rotation vector exactly:
+\begin{equation}
+  \delta\quat{q}^{(i)}
+    = \bigl(\quat{q}_{\mathrm{ab}} \quatmul
+        \quat{q}_{i2b}^{\mathrm{true}}\bigr)^{-1}
+      \quatmul \quat{q}_{\mathrm{meas}}^{(i)},
+  \qquad
+  \hat{\vv{\epsilon}}^{(i)}
+    = \hat\theta\,\hat{\vv{u}},\quad
+  \hat\theta = 2\operatorname{atan2}\bigl(\norm{\delta\vv{q}_v},
+    |\delta q_w|\bigr),\quad
+  \hat{\vv{u}} = \operatorname{sgn}(\delta q_w)\,
+    \frac{\delta\vv{q}_v}{\norm{\delta\vv{q}_v}},
+  \label{eq:optical:extract}
+\end{equation}
+with $\operatorname{sgn}(0) = +1$ and $\hat{\vv{\epsilon}} = \vv{0}$
+when $\norm{\delta\vv{q}_v} = 0$. By construction
+$\hat{\vv{\epsilon}}^{(i)} = \vv{\epsilon}^{(i)}$ (the log map inverts
+equation~\eqref{eq:optical:noiseq}; the $\theta > \pi$ wrap has
+probability zero for in-domain sigmas), so
+\begin{equation}
+  q^{(i)} = \hat{\vv{\epsilon}}^{(i)\mathsf T}\,
+    \mathrm{diag}(\sigma_1^2, \sigma_2^2, \sigma_3^2)^{-1}\,
+    \hat{\vv{\epsilon}}^{(i)} \sim \chi^2_3
+  \quad\text{exactly, i.i.d.},
+  \label{eq:optical:ststat}
+\end{equation}
+and the gate is two-sided on the ensemble mean:
+\begin{equation}
+  \frac{\chi^2_{0.025}(3M)}{M}
+    \le \frac{1}{M}\sum_{i=1}^{M} q^{(i)}
+    \le \frac{\chi^2_{0.975}(3M)}{M},
+  \qquad
+  [2.850,\; 3.154] \text{ for } M = 1000 ,
+  \label{eq:optical:stbounds}
+\end{equation}
+quantiles per the Wilson--Hilferty evaluation of
+Chapter~\ref{ch:ekf}. The sun sensor uses the tangent-plane statistic:
+with the deterministic orthonormal basis $\hat{\vv{e}}_1 =
+(\hat{\vv{u}}^{B} \times \hat{\vv{z}})/\norm{\cdot}$ (falling back to
+$\hat{\vv{x}}$ when $\norm{\hat{\vv{u}}^{B} \times \hat{\vv{z}}} <
+10^{-8}$), $\hat{\vv{e}}_2 = \hat{\vv{u}}^{B} \times \hat{\vv{e}}_1$,
+the components $e_a^{(i)} = \hat{\vv{e}}_a \cdot
+\hat{\vv{u}}_{\mathrm{meas}}^{(i)}$ give $q^{(i)} = \bigl((e_1^2 +
+e_2^2)/\sigma_{\mathrm{ss}}^2\bigr)^{(i)} \sim \chi^2_2$ to
+$O(\sigma_{\mathrm{ss}}^2)$, gated on the mean within
+$[\chi^2_{0.025}(2M), \chi^2_{0.975}(2M)]/M = [1.878,\; 2.126]$ for
+$M = 1000$.
+
+\section{Discretization and implementation}
+\label{sec:optical:implementation}
+
+Binding implementation notes for the Phase~6 modules:
+\begin{enumerate}
+  \item \textbf{Modules and traceability.} Star tracker and sun sensor
+    are core-side \texttt{ISensor} modules sampled on the major-cycle
+    schedule (D-5), on the named streams \texttt{sensors.st} and
+    \texttt{sensors.sun} respectively (D-9). Source comments echo the
+    labels \texttt{eq:optical:aberration}, \texttt{eq:optical:rho},
+    \texttt{eq:optical:qab}, \texttt{eq:optical:stmodel},
+    \texttt{eq:optical:noiseq}, and \texttt{eq:optical:sunsensor}
+    verbatim; the aberration of
+    equation~\eqref{eq:optical:aberration} is one shared core function
+    used by both sensors and by the camera hook
+    (Chapter~\ref{ch:camera}) --- a single code path is what makes exit
+    criterion~9 a single gate.
+  \item \textbf{Draw schedule, normative.} Star tracker: three normals
+    per sample ($\epsilon_1, \epsilon_2, \epsilon_3$). Sun sensor: three
+    normals per sample ($\eta_1, \eta_2, \eta_3$). Unconditional draws,
+    per the Chapter~\ref{ch:sensors-imu} rule.
+  \item \textbf{Quaternion output.} Scalar-first per
+    Table~\ref{tab:notation:eigenmap}; the emitted quaternion is
+    normalized after the product~\eqref{eq:optical:stmodel} (the factors
+    are unit to rounding; the explicit normalization pins the invariant)
+    and is \emph{not} sign-canonicalized --- consumers own the double
+    cover, as does the extraction~\eqref{eq:optical:extract}.
+  \item \textbf{Ephemeris inputs.} $\vv{\beta}$ per
+    equation~\eqref{eq:optical:beta} from the same DE440 chain the
+    dynamics use; for a Mars- or Moon-centered run the central-body
+    barycentric velocity replaces the Earth chain. No sensor code reads
+    the clock or any state outside \texttt{GncInput}-visible truth
+    supplied by the core scheduler.
+  \item \textbf{Logged channels.} Measurement, validity flag, and the
+    per-sample apparent-direction inputs land in
+    \texttt{sensors.st.*} / \texttt{sensors.sun.*} with unit-suffixed
+    names, at the sensor rate.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:optical:validation}
+
+This chapter precedes its modules; the validation-evidence table with
+machine-checked test identifiers is added by the implementing change.
+The planned gates, mirroring Phase~6 exit criteria~1 and~9:
+\begin{itemize}
+  \item \textbf{Aberration recomputation (exit criterion 9).} An
+    independent NumPy implementation of
+    equations~\eqref{eq:optical:beta}--\eqref{eq:optical:abmag},
+    written from this chapter alone, reproduces the core's apparent
+    directions to $< \qty{1}{\mas}$ at
+    $\beta$ corresponding to \qty{30}{\kilo\metre\per\second}, across a
+    grid of source--velocity angles including the extremes
+    $\vartheta \in \{0, \pi/2, \pi\}$; the displacement is verified to
+    be \emph{toward} the velocity and \qty{20.49}{\arcsecond} at
+    $v = \qty{29.78}{\kilo\metre\per\second}$, $\vartheta = \pi/2$.
+  \item \textbf{Star-tracker statistics (exit criterion 1).} The
+    ensemble-mean statistic of
+    equations~\eqref{eq:optical:extract}--\eqref{eq:optical:stbounds}
+    over 1{,}000 seeded draws falls inside $[2.850, 3.154]$; per-axis
+    sample variances match the configured sigmas within their own
+    two-sided 95\,\% bounds; the same seeds reproduce the same
+    statistic bit-for-bit.
+  \item \textbf{Gating.} Deterministic geometry cases: boresight swept
+    across each exclusion boundary and the rate swept across
+    $\omega_{\max}$ flip the flag at the configured thresholds exactly;
+    an umbra transit (Chapter~\ref{ch:srp} shadow) drops the sun-sensor
+    flag; draws are consumed identically on both sides of every gate.
+  \item \textbf{Sun-sensor statistics.} Tangent-plane ensemble statistic
+    inside $[1.878, 2.126]$ over 1{,}000 draws.
+  \item \textbf{Bit identity.} Two runs of the same seeded scenario
+    produce byte-identical \texttt{sensors.st.*} and
+    \texttt{sensors.sun.*} channels (exit criterion~1).
+\end{itemize}
+
+\section{References}
+\label{sec:optical:references}
+
+The aberration treatment follows the IAU-resolution exposition of
+Kaplan~\cite{kaplan2005} (velocity aberration and its first-order form),
+restricted per the FR-23 policy to the stellar-aberration term; the
+attitude-measurement abstraction and quaternion conventions follow
+Markley and Crassidis~\cite{markley2014}, transcribed to the project
+convention of Chapter~\ref{ch:notation} as noted at
+equation~\eqref{eq:optical:stmodel}. Full bibliographic details appear
+in the bibliography.

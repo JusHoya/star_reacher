@@ -1,0 +1,589 @@
+% Chapter — Reference error-state EKF and consistency gates (FR-25,
+% FR-26). Follows the mandatory FR-29 six-section template: purpose;
+% assumptions and domain of validity; derivation; discretization and
+% implementation; validation evidence; references. Written ahead of the
+% implementation (Phase 6): this chapter is the binding specification for
+% the reference navigation filter and for the star-consistency statistics.
+% The implementing change adds the chapter-manifest entry and the
+% \testid{} evidence table. The equation labels eq:ekf:qerr, eq:ekf:mech,
+% eq:ekf:errdyn, eq:ekf:F, eq:ekf:G, eq:ekf:disc, eq:ekf:joseph,
+% eq:ekf:stinnov, eq:ekf:altH, eq:ekf:reset, eq:ekf:nees, eq:ekf:nis,
+% eq:ekf:ensemble, and eq:ekf:wh are intended to be echoed verbatim in the
+% module source (FR-29 traceability).
+\chapter{Reference Error-State EKF and Consistency Gates}
+\label{ch:ekf}
+
+\section{Purpose}
+\label{sec:ekf:purpose}
+
+This chapter specifies the built-in reference navigation filter (FR-25):
+an error-state (indirect) extended Kalman filter, multiplicative in
+attitude, that mechanizes a nominal state from the
+Chapter~\ref{ch:sensors-imu} IMU increments and corrects it with
+external-nav-fix, star-tracker, and altimeter updates
+(Chapters~\ref{ch:sensors-radio} and~\ref{ch:sensors-optical}). It also
+defines the estimator acceptance instrumentation of FR-26: the logged
+estimate and innovation channels, the NEES and NIS statistics, and the
+two-sided 95\,\% chi-square bounds that \texttt{star consistency}
+computes per run and over ensembles --- the acceptance instrument for
+\emph{every} estimator this project will ever host, classical or
+learned. Phase~6 exit criterion~3 gates the reference filter through
+ensemble NEES and NIS over a 100-run seeded ensemble. The filter is a
+\emph{reference}: the simplest standard formulation, exactly specified,
+chosen so an independent reimplementation from this chapter alone
+reproduces it.
+
+\section{Assumptions and domain of validity}
+\label{sec:ekf:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Fifteen error states.} Attitude (3), velocity (3),
+    position (3), gyro bias (3), accelerometer bias (3), in that order.
+    This is the full observable set for the configured sensor suite:
+    the star tracker observes attitude directly, the nav fix observes
+    position and velocity, biases are observed through their integrated
+    signatures. Scale-factor and misalignment states are deliberately
+    excluded from the reference filter (they are configuration
+    constants of the truth model, not estimated).
+  \item \textbf{Filter dynamics model.} The navigator's internal
+    gravity model is the central-body point mass,
+    $\hat{\vv{g}}(\vv{p}) = -\mu\,\vv{p}/\norm{\vv{p}}^3$. The
+    \emph{reference consistency scenario} configures the truth
+    environment to the same class (point-mass gravity, no third bodies,
+    no SRP), so process-model mismatch is zero and the NEES/NIS gates
+    test the estimator implementation, not a model-error budget. Runs
+    against richer truth environments require process-noise inflation
+    and are diagnostics, not gates --- stated here so nobody tunes
+    $\mat{Q}$ to force a gate.
+  \item \textbf{Bias model match.} The filter models both bias errors
+    as first-order Gauss--Markov with the \emph{configured sensor}
+    parameters $(\sigma_{\mathrm{GM}}, \tau_c)$
+    (equation~\eqref{eq:imu:gm}) --- the reference-implementation
+    stance: the truth model is known. The reference scenario disables
+    the turn-on biases ($\sigma_{g0} = \sigma_{a0} = 0$) and the
+    altimeter bias ($\sigma_b = 0$), making the filter's stochastic
+    model exact; enabled turn-on biases add a non-decaying component
+    the Gauss--Markov model absorbs only over $t \ll \tau_c$, and such
+    scenarios widen NEES beyond the gate by design.
+  \item \textbf{Small-error linearization.} Standard EKF validity:
+    attitude errors $\ll 1$ rad, position/velocity errors small
+    against the linearization scale of
+    $\hat{\vv{g}}$. Divergence under gross initialization error is
+    out of scope for the reference filter.
+  \item \textbf{First-order discretization.} Transition and
+    process-noise matrices are the first-order forms of
+    equation~\eqref{eq:ekf:disc}; adequacy requires
+    $\Delta t\,\norm{\vv{\omega}} \ll 1$,
+    $\Delta t / \tau_c \ll 1$, and $\Delta t$ small against the
+    orbital dynamics ($n\,\Delta t \ll 1$, $n$ the mean motion) ---
+    all satisfied by orders of magnitude at the D-5 cycle rates
+    ($\qty{1}{}$--$\qty{100}{\hertz}$). The Van Loan construction
+    remains the documented upgrade path if a future regime breaks
+    these conditions~\cite{vanloan1978}.
+\end{enumerate}
+
+Domain of validity: cycle-synchronous operation on the D-5 schedule
+with the Chapter~\ref{ch:sensors-imu} increment interface; aiding
+sensors may drop out arbitrarily (validity flags); the filter never
+throws inside the loop --- a non-finite or non-positive-definite input
+covariance is a configuration error caught by the FR-15 validator, and
+the Joseph-form update of equation~\eqref{eq:ekf:joseph} preserves
+symmetry and positive semi-definiteness against accumulation of
+rounding.
+
+\section{Derivation}
+\label{sec:ekf:derivation}
+
+\subsection{State, error definition, and mechanization}
+\label{sec:ekf:mechanization}
+
+The nominal (total) state is
+$\hat{\vv{x}} = (\hat{\quat{q}}_{i2b},\, \hat{\vv{v}}^{I},\,
+\hat{\vv{p}}^{I},\, \hat{\vv{b}}_g,\, \hat{\vv{b}}_a)$; the error state
+is
+\begin{equation}
+  \delta\vv{x} = \bigl[\delta\vv{\theta};\; \delta\vv{v};\;
+    \delta\vv{p};\; \delta\vv{b}_g;\; \delta\vv{b}_a\bigr]
+    \in \mathbb{R}^{15},
+  \label{eq:ekf:staterr}
+\end{equation}
+with additive errors $\delta\vv{v} = \vv{v} - \hat{\vv{v}}$ etc., and
+the multiplicative body-side attitude error
+\begin{equation}
+  \boxed{\;
+  \quat{q}_{i2b} = \hat{\quat{q}}_{i2b} \quatmul
+    \delta\quat{q}(\delta\vv{\theta}),
+  \;}
+  \qquad
+  \delta\quat{q}(\cdot) \text{ the exact map of
+    equation~\eqref{eq:gnc:exactrot}},
+  \label{eq:ekf:qerr}
+\end{equation}
+so $\delta\vv{\theta}$ is the small rotation from the estimated to the
+true body frame, resolved in the body frame --- the same convention as
+the sensor noise of Chapter~\ref{ch:sensors-optical} and the local
+error of Sol\`a~\cite{sola2017}. To first order,
+$\dcm{I}{B}(\quat{q}) = (\mat{I}_3 -
+\skewm{\delta\vv{\theta}})\,\dcm{I}{B}(\hat{\quat{q}})$ by
+equations~\eqref{eq:notation:quat2dcm}
+and~\eqref{eq:notation:quatcomp}.
+
+Per major cycle $\Delta t$, with measured increments
+$\Delta\tilde{\vv{\theta}}_k$, $\Delta\tilde{\vv{v}}_k$
+(Chapter~\ref{ch:sensors-imu}) and $\hat{\mat{C}} \equiv
+{\dcm{I}{B}(\hat{\quat{q}}_{k-1})}^{\mathsf T}$ (body to inertial), the
+nominal state mechanizes as
+\begin{equation}
+  \boxed{\;
+  \begin{aligned}
+    \Delta\hat{\vv{\theta}}_k &= \Delta\tilde{\vv{\theta}}_k
+      - \hat{\vv{b}}_{g,k-1}\,\Delta t,
+    \qquad
+    \Delta\hat{\vv{v}}_k = \Delta\tilde{\vv{v}}_k
+      - \hat{\vv{b}}_{a,k-1}\,\Delta t,\\
+    \hat{\quat{q}}_{k} &= \frac{\hat{\quat{q}}_{k-1} \quatmul
+      \delta\quat{q}(\Delta\hat{\vv{\theta}}_k)}
+      {\norm{\hat{\quat{q}}_{k-1} \quatmul
+      \delta\quat{q}(\Delta\hat{\vv{\theta}}_k)}},\\
+    \hat{\vv{v}}_{k} &= \hat{\vv{v}}_{k-1}
+      + \hat{\mat{C}}\Bigl(\Delta\hat{\vv{v}}_k
+        + \tfrac{1}{2}\,\Delta\hat{\vv{\theta}}_k \times
+          \Delta\hat{\vv{v}}_k\Bigr)
+      + \hat{\vv{g}}(\hat{\vv{p}}_{k-1})\,\Delta t,\\
+    \hat{\vv{p}}_{k} &= \hat{\vv{p}}_{k-1}
+      + \tfrac{1}{2}\bigl(\hat{\vv{v}}_{k-1}
+        + \hat{\vv{v}}_{k}\bigr)\,\Delta t,\\
+    \hat{\vv{b}}_{g,k} &= e^{-\Delta t/\tau_{c,g}}\,
+      \hat{\vv{b}}_{g,k-1},
+    \qquad
+    \hat{\vv{b}}_{a,k} = e^{-\Delta t/\tau_{c,a}}\,
+      \hat{\vv{b}}_{a,k-1},
+  \end{aligned}
+  \;}
+  \label{eq:ekf:mech}
+\end{equation}
+the standard first-order strapdown cycle (Titterton and
+Weston~\cite{titterton2004}; Savage~\cite{savage1998b}): the
+$\tfrac{1}{2}\Delta\vv{\theta} \times \Delta\vv{v}$ term is the
+rotation-of-frame (velocity rotation) compensation, leaving a residual
+$O(\norm{\Delta\vv{\theta}}^2 \norm{\Delta\vv{v}})$ per cycle;
+trapezoidal position integration matches; the bias estimates decay with
+their Gauss--Markov model (a $\ll 1\,\%$ effect per cycle at the
+supported $\tau_c$). The attitude increment shares
+equation~\eqref{eq:gnc:exactrot} with the dead reckoner --- one code
+path.
+
+\subsection{Linearized error dynamics}
+\label{sec:ekf:errordynamics}
+
+Write the rate-level sensor models of Chapter~\ref{ch:sensors-imu} as
+$\tilde{\vv{\omega}} = \vv{\omega} + \vv{b}_g + \vv{n}_g$ and
+$\tilde{\vv{f}} = \vv{f} + \vv{b}_a + \vv{n}_a$, so the corrected
+estimates satisfy $\hat{\vv{\omega}} = \vv{\omega} + \delta\vv{b}_g +
+\vv{n}_g$ and $\hat{\vv{f}} = \vv{f} + \delta\vv{b}_a + \vv{n}_a$.
+Differentiating the error definition~\eqref{eq:ekf:qerr} with the true
+and nominal kinematics $\dot{\quat{q}} = \tfrac12 \quat{q} \quatmul
+[0, \vv{\omega}]$, $\dot{\hat{\quat{q}}} = \tfrac12 \hat{\quat{q}}
+\quatmul [0, \hat{\vv{\omega}}]$ gives $\dot{\delta\quat{q}} =
+\tfrac12\bigl(\delta\quat{q} \quatmul [0, \vv{\omega}] -
+[0, \hat{\vv{\omega}}] \quatmul \delta\quat{q}\bigr)$; expanding the
+Hamilton products~\eqref{eq:notation:hamiltonproduct} at
+$\delta\quat{q} = [1, \delta\vv{\theta}/2]$ and keeping first order,
+the vector part yields the attitude error rate, and the velocity error
+follows from $\dot{\vv{v}} = \dcm{B}{I}\vv{f} + \vv{g}(\vv{p})$ with
+$\dcm{B}{I} = \hat{\mat{C}}(\mat{I}_3 + \skewm{\delta\vv{\theta}})$:
+\begin{equation}
+  \boxed{\;
+  \begin{aligned}
+    \dot{\delta\vv{\theta}} &= -\hat{\vv{\omega}} \times
+      \delta\vv{\theta} - \delta\vv{b}_g - \vv{n}_g,\\
+    \dot{\delta\vv{v}} &= -\hat{\mat{C}}\,\skewm{\hat{\vv{f}}}\,
+      \delta\vv{\theta} + \mat{G}(\hat{\vv{p}})\,\delta\vv{p}
+      - \hat{\mat{C}}\,\delta\vv{b}_a - \hat{\mat{C}}\,\vv{n}_a,\\
+    \dot{\delta\vv{p}} &= \delta\vv{v},\\
+    \dot{\delta\vv{b}}_g &= -\delta\vv{b}_g/\tau_{c,g} + \vv{w}_g,
+    \qquad
+    \dot{\delta\vv{b}}_a = -\delta\vv{b}_a/\tau_{c,a} + \vv{w}_a,
+  \end{aligned}
+  \;}
+  \label{eq:ekf:errdyn}
+\end{equation}
+the local-error form of Sol\`a~\cite{sola2017} transcribed to the
+project convention, with the point-mass gravity gradient
+\begin{equation}
+  \mat{G}(\vv{p}) = \frac{\mu}{\norm{\vv{p}}^3}
+    \bigl(3\,\hat{\vv{p}}\hat{\vv{p}}^{\mathsf T} - \mat{I}_3\bigr),
+  \qquad
+  \hat{\vv{p}} = \vv{p}/\norm{\vv{p}} .
+  \label{eq:ekf:gravgrad}
+\end{equation}
+In block form over the ordering~\eqref{eq:ekf:staterr}, with
+$\hat{\vv{\omega}} = \Delta\hat{\vv{\theta}}_k/\Delta t$ and
+$\hat{\vv{f}} = \Delta\hat{\vv{v}}_k/\Delta t$ the cycle averages,
+\begin{equation}
+  \mat{F} =
+  \begin{bmatrix}
+    -\skewm{\hat{\vv{\omega}}} & \mat{0} & \mat{0} & -\mat{I}_3 &
+      \mat{0} \\
+    -\hat{\mat{C}}\skewm{\hat{\vv{f}}} & \mat{0} &
+      \mat{G}(\hat{\vv{p}}) & \mat{0} & -\hat{\mat{C}} \\
+    \mat{0} & \mat{I}_3 & \mat{0} & \mat{0} & \mat{0} \\
+    \mat{0} & \mat{0} & \mat{0} & -\mat{I}_3/\tau_{c,g} & \mat{0} \\
+    \mat{0} & \mat{0} & \mat{0} & \mat{0} & -\mat{I}_3/\tau_{c,a}
+  \end{bmatrix},
+  \label{eq:ekf:F}
+\end{equation}
+\begin{equation}
+  \mat{\Gamma} =
+  \begin{bmatrix}
+    -\mat{I}_3 & \mat{0} & \mat{0} & \mat{0} \\
+    \mat{0} & -\hat{\mat{C}} & \mat{0} & \mat{0} \\
+    \mat{0} & \mat{0} & \mat{0} & \mat{0} \\
+    \mat{0} & \mat{0} & \mat{I}_3 & \mat{0} \\
+    \mat{0} & \mat{0} & \mat{0} & \mat{I}_3
+  \end{bmatrix},
+  \qquad
+  \mat{Q}_c = \mathrm{diag}\bigl(
+    N_g^2\,\mat{I}_3,\;
+    N_a^2\,\mat{I}_3,\;
+    q_g\,\mat{I}_3,\;
+    q_a\,\mat{I}_3\bigr),
+  \label{eq:ekf:G}
+\end{equation}
+where $N_g, N_a$ are the configured ARW/VRW coefficients
+(equation~\eqref{eq:imu:arw}) and $q = 2\sigma_{\mathrm{GM}}^2/\tau_c$
+is the continuous-time Gauss--Markov drive density consistent with the
+discrete recursion~\eqref{eq:imu:gm} (Maybeck~\cite{maybeck1979}).
+
+\subsection{Discrete propagation and updates}
+\label{sec:ekf:updates}
+
+Discretization, first order by decision (assumption 5):
+\begin{equation}
+  \boxed{\;
+  \mat{\Phi}_k = \mat{I}_{15} + \mat{F}\,\Delta t,
+  \qquad
+  \mat{Q}_k = \mat{\Gamma}\,\mat{Q}_c\,\mat{\Gamma}^{\mathsf T}\,
+    \Delta t,
+  \qquad
+  \mat{P}_k^{-} = \mat{\Phi}_k \mat{P}_{k-1} \mat{\Phi}_k^{\mathsf T}
+    + \mat{Q}_k,
+  \;}
+  \label{eq:ekf:disc}
+\end{equation}
+with $\mat{P} \leftarrow \tfrac12(\mat{P} + \mat{P}^{\mathsf T})$
+after every propagation and update (symmetry pinning against rounding
+drift). Updates process the valid measurements of each cycle
+sequentially in the fixed order \emph{nav fix, star tracker,
+altimeter}, each against the running post-update covariance; invalid
+samples (Chapter~\ref{ch:sensors-optical} flags) are skipped. Every
+update uses the Joseph-form covariance update, chosen over the short
+form for guaranteed symmetric positive semi-definite results:
+\begin{equation}
+  \boxed{\;
+  \vv{y} = \vv{z} - \vv{h}(\hat{\vv{x}}),
+  \quad
+  \mat{S} = \mat{H}\mat{P}^{-}\mat{H}^{\mathsf T} + \mat{R},
+  \quad
+  \mat{K} = \mat{P}^{-}\mat{H}^{\mathsf T}\mat{S}^{-1},
+  \quad
+  \delta\hat{\vv{x}} = \mat{K}\,\vv{y},
+  \quad
+  \mat{P}^{+} = (\mat{I} - \mat{K}\mat{H})\,\mat{P}^{-}\,
+    (\mat{I} - \mat{K}\mat{H})^{\mathsf T}
+    + \mat{K}\mat{R}\mat{K}^{\mathsf T}.
+  \;}
+  \label{eq:ekf:joseph}
+\end{equation}
+
+\paragraph{External nav fix} ($m = 6$): $\vv{z} =
+[\vv{r}_{\mathrm{meas}}; \vv{v}_{\mathrm{meas}}]$, $\vv{h} =
+[\hat{\vv{p}}; \hat{\vv{v}}]$, and over the
+ordering~\eqref{eq:ekf:staterr}
+\begin{equation}
+  \mat{H}_{\mathrm{fix}} =
+  \begin{bmatrix}
+    \mat{0} & \mat{0} & \mat{I}_3 & \mat{0} & \mat{0} \\
+    \mat{0} & \mat{I}_3 & \mat{0} & \mat{0} & \mat{0}
+  \end{bmatrix},
+  \qquad
+  \mat{R}_{\mathrm{fix}} = \mathrm{diag}\bigl(\sigma_{r,x}^2,
+    \sigma_{r,y}^2, \sigma_{r,z}^2,
+    \sigma_{v,x}^2, \sigma_{v,y}^2, \sigma_{v,z}^2\bigr),
+  \label{eq:ekf:navfixH}
+\end{equation}
+position rows first. The optional Gauss--Markov fix component
+(Chapter~\ref{ch:sensors-radio}) is not modeled by the reference filter
+and must be disabled in consistency-gate scenarios.
+
+\paragraph{Star tracker} ($m = 3$): the measurement model is
+equation~\eqref{eq:optical:stmodel}. The filter predicts the aberrated
+attitude with its own state, $\quat{q}_{\mathrm{pred}} =
+\quat{q}_{\mathrm{ab}}(\hat{\vv{\beta}}, \hat{\vv{b}}\mathrm{ore})
+\quatmul \hat{\quat{q}}$ --- $\quat{q}_{\mathrm{ab}}$ per
+equation~\eqref{eq:optical:qab} with $\hat{\vv{\beta}}$ assembled from
+$\hat{\vv{v}}$ and the same ephemeris chain
+(equation~\eqref{eq:optical:beta}); the velocity-estimate contribution
+to the aberration error is $\norm{\delta\vv{v}}/c \approx
+\qty{3.3e-9}{\radian}$ per \unit{\metre\per\second}, negligible ---
+and forms the innovation by exact error extraction:
+\begin{equation}
+  \boxed{\;
+  \delta\quat{q}_y = \quat{q}_{\mathrm{pred}}^{-1} \quatmul
+    \quat{q}_{\mathrm{meas}},
+  \qquad
+  \vv{y}_{\mathrm{st}} = 2\,\operatorname{sgn}(\delta q_{y,w})\,
+    \delta\vv{q}_{y,v},
+  \;}
+  \label{eq:ekf:stinnov}
+\end{equation}
+with $\operatorname{sgn}(0) = +1$. Substituting the models:
+$\delta\quat{q}_y = \hat{\quat{q}}^{-1} \quatmul \quat{q}_{\mathrm{true}}
+\quatmul \delta\quat{q}_n = \delta\quat{q}(\delta\vv{\theta}) \quatmul
+\delta\quat{q}_n$, so $\vv{y}_{\mathrm{st}} = \delta\vv{\theta} +
+\vv{\epsilon}_n + O(\norm{\cdot}^2)$ and
+\begin{equation}
+  \mat{H}_{\mathrm{st}} =
+  \begin{bmatrix}
+    \mat{I}_3 & \mat{0} & \mat{0} & \mat{0} & \mat{0}
+  \end{bmatrix},
+  \qquad
+  \mat{R}_{\mathrm{st}} = \mathrm{diag}\bigl(\sigma_1^2, \sigma_2^2,
+    \sigma_3^2\bigr).
+  \label{eq:ekf:stH}
+\end{equation}
+
+\paragraph{Altimeter} ($m = 1$): $z = h_{\mathrm{meas}}$, $h(\hat{\vv{x}})
+= h_{\mathrm{geo}}(\hat{\vv{p}})$, the same Bowring conversion as the
+sensor (equation~\eqref{eq:radio:alt}). The gradient of geodetic height
+with respect to Cartesian position is exactly the unit ellipsoidal
+normal at the sub-vehicle point, so
+\begin{equation}
+  \boxed{\;
+  \mat{H}_{\mathrm{alt}} =
+  \begin{bmatrix}
+    \mat{0} & \mat{0} & \hat{\vv{n}}^{I\,\mathsf T} & \mat{0} & \mat{0}
+  \end{bmatrix},
+  \;}
+  \qquad
+  \hat{\vv{n}}^{I} = {\dcm{I}{E}}^{\mathsf T}
+  \begin{bmatrix}
+    \cos\hat\phi\cos\hat\lambda \\
+    \cos\hat\phi\sin\hat\lambda \\
+    \sin\hat\phi
+  \end{bmatrix},
+  \qquad
+  R_{\mathrm{alt}} = \sigma_h^2 ,
+  \label{eq:ekf:altH}
+\end{equation}
+with $(\hat\phi, \hat\lambda)$ the geodetic latitude and longitude of
+$\hat{\vv{p}}$ from the same conversion. The altimeter turn-on bias is
+not estimated; when enabled, $\sigma_b^2$ is added to $R_{\mathrm{alt}}$
+as inflation and the residual mismatch is accepted (gate scenarios
+disable it, assumption 3).
+
+\paragraph{Closed-loop reset.} After each update the correction is
+folded into the nominal state and the error mean returns to zero:
+\begin{equation}
+  \boxed{\;
+  \hat{\quat{q}} \leftarrow \frac{\hat{\quat{q}} \quatmul
+    \delta\quat{q}(\delta\hat{\vv{\theta}})}{\norm{\cdot}},
+  \quad
+  \hat{\vv{v}} \leftarrow \hat{\vv{v}} + \delta\hat{\vv{v}},
+  \quad
+  \hat{\vv{p}} \leftarrow \hat{\vv{p}} + \delta\hat{\vv{p}},
+  \quad
+  \hat{\vv{b}} \leftarrow \hat{\vv{b}} + \delta\hat{\vv{b}},
+  \quad
+  \delta\hat{\vv{x}} \leftarrow \vv{0},
+  \;}
+  \label{eq:ekf:reset}
+\end{equation}
+using the same exact map~\eqref{eq:gnc:exactrot}. The exact reset also
+transports the covariance by a Jacobian that differs from identity only
+in the attitude block, by $O(\delta\hat{\vv{\theta}})$
+(Sol\`a~\cite{sola2017}); the reference filter omits this correction,
+a second-order effect in the post-update error, and the omission is
+part of the specification.
+
+\subsection{Consistency statistics: NEES, NIS, and the chi-square
+gates}
+\label{sec:ekf:consistency}
+
+Per FR-26 the filter logs, every cycle, the total-state estimate
+\texttt{nav.est.x\_hat} $= [\hat{\quat{q}}\ (4,\ \text{scalar-first}),\
+\hat{\vv{v}}\ (3),\ \hat{\vv{p}}\ (3),\ \hat{\vv{b}}_g\ (3),\
+\hat{\vv{b}}_a\ (3)]$ (16 values) and the error covariance
+\texttt{nav.est.P} as the row-major packed upper triangle of the
+$15 \times 15$ matrix (120 values), and, per update, the innovation
+pair \texttt{nav.innov.y}, \texttt{nav.innov.S} (packed upper triangle)
+tagged by sensor --- all inside the FR-16 reserved groups, by these
+names.
+
+\texttt{star consistency} reconstructs the true estimation error from
+the \texttt{truth} channels and the logged sensor-bias diagnostics
+(Chapter~\ref{ch:sensors-imu}), using the same error conventions:
+$\delta\vv{\theta}_k$ by the extraction~\eqref{eq:optical:extract}
+applied to $\hat{\quat{q}}_k^{-1} \quatmul \quat{q}_{\mathrm{true},k}$,
+additive differences elsewhere. The statistics
+(Bar-Shalom, Li, and Kirubarajan~\cite{barshalom2001}) are the
+normalized estimation error squared and the normalized innovation
+squared,
+\begin{equation}
+  \epsilon_k = \delta\vv{x}_k^{\mathsf T}\, \mat{P}_k^{-1}\,
+    \delta\vv{x}_k
+  \quad (n = 15),
+  \label{eq:ekf:nees}
+\end{equation}
+\begin{equation}
+  \nu_k = \vv{y}_k^{\mathsf T}\, \mat{S}_k^{-1}\, \vv{y}_k
+  \quad (n = m_k, \text{ the update dimension}),
+  \label{eq:ekf:nis}
+\end{equation}
+each distributed $\chi^2_n$ at every epoch for a consistent filter.
+Two aggregations are computed:
+\begin{itemize}
+  \item \textbf{Per-run time average} $\bar\epsilon = \tfrac1K
+    \sum_k \epsilon_k$ (and likewise per sensor for $\nu$): reported as
+    a \emph{diagnostic} with indicative bounds, because successive
+    errors of one run are serially correlated and the independence
+    assumption behind chi-square bounds does not hold across time
+    within a run~\cite{barshalom2001}.
+  \item \textbf{$N$-run ensemble average} at each epoch (and averaged
+    over epochs for the headline number): for $N$ independent seeded
+    runs, $N\bar\epsilon_N = \sum_{i=1}^{N}\epsilon^{(i)} \sim
+    \chi^2_{Nn}$ exactly under consistency, giving the two-sided
+    95\,\% acceptance gate
+    \begin{equation}
+      \boxed{\;
+      \frac{\chi^2_{0.025}(Nn)}{N}
+        \;\le\; \bar\epsilon_N \;\le\;
+      \frac{\chi^2_{0.975}(Nn)}{N},
+      \;}
+      \label{eq:ekf:ensemble}
+    \end{equation}
+    the acceptance form for both NEES ($n = 15$) and NIS ($n = m$ per
+    sensor). For the exit-criterion-3 ensemble, $N = 100$: NEES bounds
+    $[13.95,\; 16.09]$; NIS bounds $[5.34,\; 6.70]$ for the nav fix
+    ($n = 6$), $[2.54,\; 3.50]$ for the star tracker ($n = 3$), and
+    $[0.74,\; 1.30]$ for the altimeter ($n = 1$).
+\end{itemize}
+Chi-square quantiles are evaluated without external dependencies
+(D-12) by the Wilson--Hilferty transformation~\cite{wilson1931},
+\begin{equation}
+  \boxed{\;
+  \chi^2_p(k) \approx k \left( 1 - \frac{2}{9k}
+    + z_p \sqrt{\frac{2}{9k}} \right)^{\!3},
+  \;}
+  \qquad
+  z_{0.975} = -z_{0.025} = 1.959963984540054,
+  \label{eq:ekf:wh}
+\end{equation}
+whose relative error against the exact quantiles is below
+$5 \times 10^{-5}$ for $k \ge 300$ (verified numerically during
+drafting) --- four orders below the gate widths. The ensemble driver
+initializes each run's estimate by perturbing the known true initial
+state with a seeded draw from $\mathcal{N}(\vv{0}, \mat{P}_0)$
+(attitude via equation~\eqref{eq:ekf:qerr}), so the initial error is
+distributed exactly as the filter believes --- the precondition for
+NEES consistency from the first cycle.
+
+\section{Discretization and implementation}
+\label{sec:ekf:implementation}
+
+Binding implementation notes for the Phase~6 module:
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The filter is a built-in
+    C++ \texttt{IGncComponent} (navigation role) in the FR-25
+    registry; \texttt{star consistency} is Python-side, reading only
+    logs. Source comments echo \texttt{eq:ekf:qerr},
+    \texttt{eq:ekf:mech}, \texttt{eq:ekf:errdyn}, \texttt{eq:ekf:F},
+    \texttt{eq:ekf:disc}, \texttt{eq:ekf:joseph},
+    \texttt{eq:ekf:stinnov}, \texttt{eq:ekf:altH},
+    \texttt{eq:ekf:reset}, and the consistency evaluator echoes
+    \texttt{eq:ekf:nees}, \texttt{eq:ekf:nis},
+    \texttt{eq:ekf:ensemble}, \texttt{eq:ekf:wh}.
+  \item \textbf{Cycle order, normative.} (1) mechanize the nominal
+    state, equation~\eqref{eq:ekf:mech}; (2) propagate the covariance,
+    equation~\eqref{eq:ekf:disc}, with $\mat{F}$ evaluated at the
+    pre-cycle nominal and the cycle-average $\hat{\vv{\omega}}$,
+    $\hat{\vv{f}}$; (3) process valid updates in the fixed order nav
+    fix, star tracker, altimeter, each as
+    equations~\eqref{eq:ekf:joseph}--\eqref{eq:ekf:reset} with an
+    immediate reset; (4) log estimate, covariance, and innovations.
+  \item \textbf{Linear algebra.} Fixed-size Eigen operations only; the
+    $\mat{S}$ solves use \texttt{Eigen::LDLT} on the (at most
+    $6 \times 6$) innovation covariance --- deterministic, no pivoting
+    hazards at these sizes; no heap allocation in the cycle path
+    (D-10). Every Eigen product is bound to a named concrete type,
+    never \texttt{auto} (the Phase~4 dangling-expression lesson).
+  \item \textbf{No truth access.} The filter sees only
+    \texttt{GncInput}; the consistency evaluator, not the filter,
+    consumes \texttt{truth} channels offline. The \texttt{oracle}
+    flag exists for debugging other components and is never read by
+    the reference filter.
+  \item \textbf{Determinism.} Same seed, same binary: identical
+    \texttt{nav.*} channels byte-for-byte; the exit-criterion-3
+    ensemble rerun is bit-identical because every run's draws come
+    from named streams keyed by the manifest seed schedule.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:ekf:validation}
+
+This chapter precedes its module; the validation-evidence table with
+machine-checked test identifiers is added by the implementing change.
+The planned gates, mirroring Phase~6 exit criterion~3 (with criteria
+5 and~6 adjacent):
+\begin{itemize}
+  \item \textbf{Ensemble NEES/NIS (exit criterion 3).} On the reference
+    consistency scenario (point-mass truth environment, turn-on biases
+    off, all three aiding sensors active), a committed pytest driver
+    executes a 100-run seeded ensemble and gates
+    equation~\eqref{eq:ekf:ensemble}: NEES within $[13.95, 16.09]$ and
+    per-sensor NIS within their stated bounds; rerunning the driver
+    reproduces every statistic bit-for-bit.
+  \item \textbf{Mechanization against dead reckoning.} With aiding
+    disabled and zero sensor errors, the filter's attitude equals the
+    Chapter~\ref{ch:gnc-builtin} dead reckoner exactly (shared code
+    path), and velocity/position follow the truth propagator within
+    the documented mechanization residuals on a short arc.
+  \item \textbf{Update algebra.} Single-update unit tests against an
+    independent NumPy implementation of
+    equations~\eqref{eq:ekf:joseph}--\eqref{eq:ekf:reset} for each
+    sensor at committed states: gain, posterior covariance
+    (Joseph form), and reset all match to tight tolerances; the
+    star-tracker innovation of equation~\eqref{eq:ekf:stinnov}
+    reproduces an injected $\delta\vv{\theta}$ exactly in the
+    noise-free case, including the aberration prediction.
+  \item \textbf{Covariance hygiene.} Long-run propagation preserves
+    symmetry to rounding and positive semi-definiteness (smallest
+    eigenvalue bounded) under alternating updates and outages.
+  \item \textbf{Quantile evaluator.} The Wilson--Hilferty values of
+    equation~\eqref{eq:ekf:wh} match tabulated exact quantiles to the
+    stated $5\times10^{-5}$ relative bound across the used $(p, k)$
+    set.
+  \item \textbf{Innovation logging (FR-26).} Logged \texttt{nav.innov}
+    channels round-trip through the loader and reproduce the
+    filter-internal values exactly; \texttt{star consistency} on a
+    single run reports the per-run diagnostics and exits nonzero when
+    fed an inconsistent (deliberately mistuned) run --- the gate is
+    shown able to fail.
+\end{itemize}
+
+\section{References}
+\label{sec:ekf:references}
+
+The error-state (multiplicative) EKF formulation follows
+Sol\`a~\cite{sola2017} and the MEKF heritage in Markley and
+Crassidis~\cite{markley2014}, transcribed to the D-7 conventions of
+Chapter~\ref{ch:notation}; strapdown mechanization terms follow
+Titterton and Weston~\cite{titterton2004} and
+Savage~\cite{savage1998b}; Gauss--Markov process algebra follows
+Maybeck~\cite{maybeck1979}; NEES/NIS consistency testing and its
+chi-square acceptance bounds follow Bar-Shalom, Li, and
+Kirubarajan~\cite{barshalom2001}; the quantile approximation is
+Wilson and Hilferty~\cite{wilson1931}; the rejected higher-order
+discretization is Van Loan~\cite{vanloan1978}. Full bibliographic
+details appear in the bibliography.

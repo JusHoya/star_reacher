@@ -1,0 +1,547 @@
+% Chapter — IMU measurement model (FR-23). Follows the mandatory FR-29
+% six-section template: purpose; assumptions and domain of validity;
+% derivation; discretization and implementation; validation evidence;
+% references. Written ahead of the implementation (Phase 6 chapters land
+% before their modules, per the FR-29 accretion rule): this chapter is the
+% binding specification for the IMU sensor module. The implementing change
+% adds the chapter-manifest entry and replaces the prose validation plan
+% with a \testid{} evidence table. The equation labels eq:imu:dtheta,
+% eq:imu:gyro, eq:imu:accel, eq:imu:gm, eq:imu:arw, eq:imu:quant,
+% eq:imu:oadev, eq:imu:gmadev, eq:imu:presetmap, and eq:imu:recovery are
+% intended to be echoed verbatim in the module source (FR-29 traceability).
+\chapter{Sensors: Inertial Measurement Unit}
+\label{ch:sensors-imu}
+
+\section{Purpose}
+\label{sec:imu:purpose}
+
+This chapter specifies the FR-23 IMU sensor model: a triad of rate gyros
+and a triad of accelerometers that emit \emph{accumulated increments} ---
+an angular increment $\Delta\vv{\theta}$ and a velocity increment
+$\Delta\vv{v}$ per sample interval --- corrupted by a deterministic,
+seeded error chain comprising turn-on bias, first-order Gauss--Markov
+in-run bias, scale factor, small-angle misalignment, angular/velocity
+random walk, and quantization. Increments rather than point-sampled rates
+are the industry-standard strapdown interface (Titterton and
+Weston~\cite{titterton2004}; Savage~\cite{savage1998a}): the sensor
+integrates the true angular rate and specific force across the interval,
+so intra-interval motion (coning, sculling) is preserved in the signal
+handed to the navigation algorithms of Chapters~\ref{ch:gnc-builtin}
+and~\ref{ch:ekf} instead of being aliased away. The chapter also derives
+the Allan-variance identification machinery --- the overlapping Allan
+deviation, the white-noise and bias-instability signatures, and the
+recovery procedure --- that Phase~6 exit criterion~1 gates: a
+\qty{e4}{\second} static record must return the configured ARW and
+bias-instability coefficients to within $\pm 10\,\%$.
+
+\section{Assumptions and domain of validity}
+\label{sec:imu:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Sample schedule.} The IMU emits one increment pair per GNC
+    major cycle (decision D-5): the sample interval is exactly the control
+    period, $\Delta t_s = T_c$, and sample boundaries coincide with cycle
+    boundaries, on which the integrator is already forced to terminate.
+    Faster-than-cycle IMU output is deliberately out of scope for v1.
+  \item \textbf{Rigid mount at the center of mass.} The sensor triads sit
+    at the composite center of mass with a fixed body-frame orientation.
+    The size effect (lever-arm acceleration
+    $\vv{\omega}\times(\vv{\omega}\times\vv{r})
+    + \dot{\vv{\omega}}\times\vv{r}$ at an off-CG station $\vv{r}$) is
+    excluded; its magnitude is bounded by
+    $\norm{\vv{\omega}}^2 r + \norm{\dot{\vv{\omega}}} r$, e.g.\
+    $\le \qty{2e-2}{\metre\per\second\squared}$ for
+    $r = \qty{0.5}{\metre}$ at $\norm{\vv{\omega}} =
+    \qty{0.2}{\radian\per\second}$, and a configuration placing the IMU
+    far off-CG on a tumbling vehicle is outside this model's domain.
+  \item \textbf{Static error coefficients.} Scale factor, misalignment,
+    and the noise coefficients are constant over a run: no temperature,
+    g-sensitivity, or vibration rectification dependence. These belong to
+    a higher-fidelity sensor tier, not v1 (PRD Non-Goals discipline).
+  \item \textbf{Gauss--Markov in-run bias.} The in-run bias is a
+    first-order Gauss--Markov (exponentially correlated) process, held
+    constant across each sample interval (zero-order hold). The hold is
+    valid for $\Delta t_s \ll \tau_c$; the per-interval error it commits
+    relative to the continuous process is $O(\Delta t_s/\tau_c)$ of the
+    bias increment and is negligible for the supported regime
+    $\Delta t_s \le \qty{1}{\second}$, $\tau_c \ge \qty{10}{\second}$.
+  \item \textbf{No rate random walk.} FR-23 names ARW/VRW, bias states,
+    scale factor, misalignment, and quantization; a rate-random-walk term
+    is deliberately absent. Consequently the model's Allan deviation has
+    no rising right-hand branch and no interior minimum; the
+    bias-instability identification of
+    Section~\ref{sec:imu:allanderivation} therefore evaluates the Allan
+    deviation at the analytically known Gauss--Markov peak abscissa
+    rather than searching for a global minimum.
+\end{enumerate}
+
+Domain of validity: any trajectory the core can propagate, with
+$\Delta t_s \ll \tau_c$ (both gyro and accelerometer correlation times)
+and quadrature fidelity per the bound of
+equation~\eqref{eq:imu:quaderr}. Out-of-domain configurations
+(non-positive $\Delta t_s$, $\tau_c \le 0$, negative noise densities or
+quanta) are rejected by the FR-15 configuration validator before the run
+starts; inside the deterministic loop the model is a total function that
+never throws. All quantities are SI (\unit{\radian},
+\unit{\metre\per\second}); customary data-sheet units enter only through
+the documented conversions after
+equation~\eqref{eq:imu:arw}.
+
+\section{Derivation}
+\label{sec:imu:derivation}
+
+\subsection{Truth increments}
+\label{sec:imu:truth}
+
+Over the sample interval $[t_{k-1}, t_k]$, $t_k - t_{k-1} = \Delta t_s$,
+the ideal sensor accumulates
+\begin{equation}
+  \Delta\vv{\theta}_k = \int_{t_{k-1}}^{t_k} \vv{\omega}^{B}(\tau)\,
+    \mathrm{d}\tau,
+  \qquad
+  \Delta\vv{v}_k = \int_{t_{k-1}}^{t_k} \vv{f}^{B}(\tau)\,\mathrm{d}\tau,
+  \label{eq:imu:dtheta}
+\end{equation}
+where $\vv{\omega}^{B}$ is the true body rate and $\vv{f}^{B}$ is the
+true specific force: the total non-gravitational acceleration of the
+center of mass, resolved in body axes,
+\begin{equation}
+  \vv{f}^{B} = \dcm{I}{B}(\quat{q}_{i2b})\,
+    \bigl(\vv{a}^{I} - \vv{g}^{I}(\vv{r})\bigr),
+  \label{eq:imu:specificforce}
+\end{equation}
+with $\vv{a}^{I}$ the total inertial acceleration and $\vv{g}^{I}$ the
+gravitational acceleration (central body plus configured third bodies,
+Chapters~\ref{ch:gravity} and~\ref{ch:thirdbody}). Thrust, aerodynamic,
+and solar-radiation-pressure accelerations are non-gravitational and are
+sensed; gravitation is not --- an accelerometer in free fall reads zero.
+
+The integrals in equation~\eqref{eq:imu:dtheta} are what distinguishes an
+increment interface from a point-sampled rate: a sample
+$\vv{\omega}(t_k)\,\Delta t_s$ discards all intra-interval motion,
+whereas the integral carries it. Within the simulation, "truth" is the
+numerical trajectory of Chapter~\ref{ch:integrators}, whose accepted
+steps tile each sample interval exactly (D-5 forces step termination on
+cycle boundaries). The model therefore evaluates
+equation~\eqref{eq:imu:dtheta} by trapezoidal accumulation over the
+accepted steps: for steps $t_{k-1} = \tau_0 < \tau_1 < \dots < \tau_J =
+t_k$ with $h_j = \tau_{j+1} - \tau_j$,
+\begin{equation}
+  \Delta\vv{\theta}_k \approx \sum_{j=0}^{J-1} \frac{h_j}{2}
+    \bigl(\vv{\omega}^{B}(\tau_j) + \vv{\omega}^{B}(\tau_{j+1})\bigr),
+  \label{eq:imu:quadrature}
+\end{equation}
+and identically for $\Delta\vv{v}_k$ with $\vv{f}^{B}$. The trapezoidal
+rule's local error gives the per-interval quadrature bound
+\begin{equation}
+  \norm{\vv{e}_{\mathrm{quad}}}
+    \le \frac{\Delta t_s\, h_{\max}^2}{12}\,
+      \max_{\tau}\norm{\ddot{\vv{\omega}}^{B}(\tau)},
+  \label{eq:imu:quaderr}
+\end{equation}
+e.g.\ $\le \qty{8.3e-9}{\radian}$ per \qty{0.01}{\second} interval at
+$h_{\max} = \qty{0.01}{\second}$ and $\norm{\ddot{\vv{\omega}}} \le
+\qty{1}{\radian\per\second\cubed}$ --- far below the noise floor of any
+configured sensor grade. In the open-loop attitude modes of
+Chapter~\ref{ch:vehicle6dof} the rate is constant across each cycle and
+equation~\eqref{eq:imu:quadrature} is exact.
+
+\subsection{Error chain}
+\label{sec:imu:errorchain}
+
+The measured gyro increment is, per axis triad and in this order,
+\begin{equation}
+  \boxed{\;
+  \Delta\tilde{\vv{\theta}}_k
+    = \mathcal{Q}_{q_\theta}\Bigl[
+      (\mat{I}_3 + \mat{M}_g)\,\Delta\vv{\theta}_k
+      + \bigl(\vv{b}_{g0} + \vv{b}_{g,k}\bigr)\,\Delta t_s
+      + \vv{\eta}_{g,k} \Bigr],
+  \;}
+  \label{eq:imu:gyro}
+\end{equation}
+and the measured accelerometer increment is
+\begin{equation}
+  \Delta\tilde{\vv{v}}_k
+    = \mathcal{Q}_{q_v}\Bigl[
+      (\mat{I}_3 + \mat{M}_a)\,\Delta\vv{v}_k
+      + \bigl(\vv{b}_{a0} + \vv{b}_{a,k}\bigr)\,\Delta t_s
+      + \vv{\eta}_{a,k} \Bigr],
+  \label{eq:imu:accel}
+\end{equation}
+with $\mathcal{Q}$ the carry-preserving quantizer of
+equation~\eqref{eq:imu:quant}. The terms, in the order they apply:
+
+\paragraph{Scale factor and misalignment.} The combined linear distortion
+is
+\begin{equation}
+  \mat{M} = \mat{S} + \mat{\Gamma},
+  \qquad
+  \mat{S} = \mathrm{diag}(s_x, s_y, s_z),
+  \qquad
+  \Gamma_{ii} = 0,\; \Gamma_{ij} = \gamma_{ij}\ (i \ne j),
+  \label{eq:imu:mis}
+\end{equation}
+with dimensionless scale-factor errors $s_i$ and six independent
+small-angle misalignment entries $\gamma_{ij}$ (\unit{\radian}). The
+general off-diagonal form covers both a rigid rotation of an orthogonal
+triad ($\gamma_{ij} = -\gamma_{ji}$, three parameters) and
+non-orthogonality of the sensing axes (symmetric part); configurations
+supply whichever subset they mean and zero the rest. All entries are
+fixed configuration constants, not random draws.
+
+\paragraph{Turn-on bias.} One draw per run, per instrument, per axis, at
+initialization:
+\begin{equation}
+  \vv{b}_{g0} \sim \mathcal{N}\bigl(\vv{0},\,
+    \sigma_{g0}^2\,\mat{I}_3\bigr),
+  \label{eq:imu:turnon}
+\end{equation}
+constant for the whole run (units \unit{\radian\per\second}; accelerometer
+analog $\sigma_{a0}$ in \unit{\metre\per\second\squared}).
+
+\paragraph{In-run bias (first-order Gauss--Markov).} The continuous
+process $\dot{\vv{b}} = -\vv{b}/\tau_c + \vv{w}$ with correlation time
+$\tau_c$ and stationary standard deviation $\sigma_{\mathrm{GM}}$ is
+discretized \emph{exactly} at the sample interval:
+\begin{equation}
+  \boxed{\;
+  \vv{b}_{g,k} = \varphi\, \vv{b}_{g,k-1} + \vv{w}_k,
+  \qquad
+  \varphi = e^{-\Delta t_s/\tau_{c,g}},
+  \qquad
+  \vv{w}_k \sim \mathcal{N}\bigl(\vv{0},\,
+    \sigma_{g,\mathrm{GM}}^2 (1 - \varphi^2)\, \mat{I}_3\bigr),
+  \;}
+  \label{eq:imu:gm}
+\end{equation}
+initialized from the stationary distribution,
+$\vv{b}_{g,0} \sim \mathcal{N}(\vv{0},
+\sigma_{g,\mathrm{GM}}^2 \mat{I}_3)$ (one draw per run per axis). This
+recursion is the exact solution of the Ornstein--Uhlenbeck stochastic
+differential equation sampled at $\Delta t_s$ (Maybeck~\cite{maybeck1979},
+ch.~4), so the discrete sequence has exactly the stationary variance
+$\sigma_{\mathrm{GM}}^2$ and autocorrelation
+$\sigma_{\mathrm{GM}}^2 e^{-|m|\Delta t_s/\tau_c}$ at every
+$\Delta t_s$ --- no first-order-hold approximation error. The state
+$\vv{b}_{g,k}$ is advanced once per sample, \emph{before} the increment
+is formed, and is held across the interval; the bias contribution to the
+increment is $(\vv{b}_{g0} + \vv{b}_{g,k})\,\Delta t_s$. The
+accelerometer bias follows the same recursion with
+$(\sigma_{a,\mathrm{GM}}, \tau_{c,a})$.
+
+\paragraph{Angular and velocity random walk.} The white measurement
+noise on each increment is
+\begin{equation}
+  \boxed{\;
+  \vv{\eta}_{g,k} \sim \mathcal{N}\bigl(\vv{0},\,
+    \sigma_{\Delta\theta}^2\, \mat{I}_3\bigr),
+  \qquad
+  \sigma_{\Delta\theta} = N_g \sqrt{\Delta t_s},
+  \qquad
+  \sigma_{\Delta v} = N_a \sqrt{\Delta t_s},
+  \;}
+  \label{eq:imu:arw}
+\end{equation}
+where $N_g$ is the angular-random-walk coefficient in
+$\unit{\radian}/\sqrt{\unit{\second}}$ (equivalently
+$(\unit{\radian\per\second})/\sqrt{\unit{\hertz}}$, the square root of
+the one-sided rate-noise power spectral density) and $N_a$ the
+velocity-random-walk coefficient in
+$(\unit{\metre\per\second})/\sqrt{\unit{\second}}$. The $\sqrt{\Delta
+t_s}$ mapping is the defining property of integrated white noise: the
+variance of $\int \eta\,\mathrm{d}t$ grows linearly with the integration
+time, so the increment noise standard deviation scales with
+$\sqrt{\Delta t_s}$ and the reconstructed-rate noise
+$\vv{\eta}/\Delta t_s$ scales with $1/\sqrt{\Delta t_s}$. Data-sheet
+conversions, exact by definition:
+$1\ \mathrm{deg}/\sqrt{\mathrm{h}} = (\pi/180)/60\
+\unit{\radian}/\sqrt{\unit{\second}} \approx 2.9089 \times 10^{-4}\
+\unit{\radian}/\sqrt{\unit{\second}}$, and
+$1\ \mathrm{deg/h} = (\pi/180)/3600\ \unit{\radian\per\second} \approx
+4.8481\times 10^{-6}\ \unit{\radian\per\second}$.
+
+\paragraph{Quantization with residual carry.} The output is rounded to
+the quantum $q$ ($q_\theta$ in \unit{\radian}, $q_v$ in
+\unit{\metre\per\second}) with the sub-quantum residual carried into the
+next sample, componentwise:
+\begin{equation}
+  \boxed{\;
+  s_k = u_k + \rho_{k-1},
+  \qquad
+  y_k = q \left\lfloor \frac{s_k}{q} + \frac{1}{2} \right\rfloor,
+  \qquad
+  \rho_k = s_k - y_k,
+  \qquad
+  \rho_0 = 0,
+  \;}
+  \label{eq:imu:quant}
+\end{equation}
+where $u_k$ is the bracketed pre-quantization value in
+equation~\eqref{eq:imu:gyro} and $y_k$ the emitted increment. The
+rounding rule is round-half-up via the floor function --- a single,
+branch-free, deterministic IEEE-754 expression; ties ($s_k/q + 1/2$
+integral) round toward $+\infty$ by construction. The residual satisfies
+$\rho_k \in (-q/2,\, q/2]$, and the carry makes quantization lossless in
+accumulation: $\sum_{k \le K} y_k = \sum_{k \le K} u_k - \rho_K$, so the
+accumulated output never drifts from the accumulated input by more than
+half a quantum --- exactly how a real rate-integrating output register
+behaves. Setting $q = 0$ disables the stage ($y_k = u_k$, no carry
+state).
+
+\subsection{Allan variance: definitions and model signatures}
+\label{sec:imu:allanderivation}
+
+Exit criterion~1 re-identifies the configured noise coefficients from the
+model's own output, so the identification chain is derived here in full.
+Let $\theta_n = \sum_{k \le n} \Delta\tilde{\theta}_k$ (one axis) be the
+accumulated angle --- the "phase" record, $N_\theta$ points at spacing
+$\Delta t_s$, with $\theta_0 = 0$ prepended. For cluster time
+$\tau = m\,\Delta t_s$ the \emph{overlapping} Allan variance estimator is
+(IEEE Std 952~\cite{ieee952}; Riley~\cite{riley2008})
+\begin{equation}
+  \hat{\sigma}^2(\tau) = \frac{1}{2\tau^2\,(N_\theta - 2m)}
+    \sum_{n=0}^{N_\theta - 2m - 1}
+    \bigl(\theta_{n+2m} - 2\,\theta_{n+m} + \theta_n\bigr)^2 ,
+  \label{eq:imu:oadev}
+\end{equation}
+the maximally overlapped form, which reuses every stride-$m$ second
+difference and has the smallest estimator variance of the standard
+family. Its square root $\hat{\sigma}(\tau)$ is the Allan deviation
+(ADEV), with the units of the underlying rate
+(\unit{\radian\per\second} here).
+
+\paragraph{White rate noise (ARW).} For white rate noise of coefficient
+$N$, the Allan variance is $\sigma^2(\tau) = N^2/\tau$
+(IEEE Std 952~\cite{ieee952}), a $-1/2$ log--log ADEV slope, so
+\begin{equation}
+  \sigma(\tau) = \frac{N}{\sqrt{\tau}},
+  \qquad\text{and in particular}\qquad
+  N = \sigma(\qty{1}{\second})
+  \label{eq:imu:whiteslope}
+\end{equation}
+when $N$ is expressed in $\unit{\radian}/\sqrt{\unit{\second}}$ --- the
+standard read-the-curve-at-one-second identification.
+
+\paragraph{Gauss--Markov bias.} The Allan variance of the first-order
+Gauss--Markov rate process is derived directly from its autocorrelation
+$R(s) = \sigma_{\mathrm{GM}}^2 e^{-|s|/\tau_c}$. Writing $I_1 =
+\int_0^\tau b\,\mathrm{d}t$ and $I_2 = \int_\tau^{2\tau}
+b\,\mathrm{d}t$, the Allan variance is $\sigma^2(\tau) =
+\mathbb{E}[(I_2 - I_1)^2]/(2\tau^2) = (V - C)/\tau^2$ with $V =
+\mathrm{Var}(I_1) = \mathrm{Var}(I_2)$ and $C = \mathrm{Cov}(I_1, I_2)$.
+Direct integration of the exponential kernel gives
+\begin{equation}
+  V = 2\sigma_{\mathrm{GM}}^2\bigl[\tau\,\tau_c
+      - \tau_c^2\,(1 - e^{-x})\bigr],
+  \qquad
+  C = \sigma_{\mathrm{GM}}^2\,\tau_c^2\,(1 - e^{-x})^2,
+  \qquad
+  x = \tau/\tau_c ,
+  \label{eq:imu:gmvc}
+\end{equation}
+and hence, using $2(1-e^{-x}) + (1-e^{-x})^2 = 3 - 4e^{-x} + e^{-2x}$,
+\begin{equation}
+  \boxed{\;
+  \sigma_{\mathrm{GM}}^2(\tau)
+    = \frac{2\,\sigma_{\mathrm{GM}}^2\,\tau_c}{\tau}
+      \left[ 1 - \frac{\tau_c}{2\tau}
+        \bigl( 3 - 4e^{-\tau/\tau_c} + e^{-2\tau/\tau_c} \bigr)
+      \right].
+  \;}
+  \label{eq:imu:gmadev}
+\end{equation}
+Asymptotically, $\sigma(\tau) \to \sigma_{\mathrm{GM}}
+\sqrt{2\tau/(3\tau_c)}$ for $\tau \ll \tau_c$ (slope $+1/2$) and
+$\sigma(\tau) \to \sigma_{\mathrm{GM}} \sqrt{2\tau_c/\tau}$ for $\tau \gg
+\tau_c$ (slope $-1/2$). Numerical maximization of
+equation~\eqref{eq:imu:gmadev} (verified against a direct simulation of
+the recursion~\eqref{eq:imu:gm} during drafting) locates the single
+interior peak at
+\begin{equation}
+  \tau^{*} = 1.8926\,\tau_c,
+  \qquad
+  \sigma_{\mathrm{GM}}(\tau^{*}) = 0.6174\,\sigma_{\mathrm{GM}} .
+  \label{eq:imu:gmpeak}
+\end{equation}
+
+\paragraph{Bias instability and the preset mapping.} The data-sheet
+bias-instability coefficient $B$ (\unit{\radian\per\second}) is defined
+through the classical flicker-noise flat-region relation
+(IEEE Std 952~\cite{ieee952})
+\begin{equation}
+  \sigma_{\min} \approx \sqrt{\frac{2\ln 2}{\pi}}\; B = 0.664\,B ,
+  \label{eq:imu:bi}
+\end{equation}
+the value read at the flat bottom of a measured ADEV curve. This model
+realizes in-run bias with a Gauss--Markov process, not flicker noise, so
+the convention is anchored at the Gauss--Markov peak: a preset specified
+by $(B, \tau_c)$ sets the process strength
+\begin{equation}
+  \boxed{\;
+  \sigma_{\mathrm{GM}} = \frac{0.664282}{0.617364}\, B = 1.0760\, B ,
+  \;}
+  \label{eq:imu:presetmap}
+\end{equation}
+so that $\max_\tau \sigma_{\mathrm{GM}}(\tau) = 0.664\,B$ exactly and the
+conventional read-out returns the configured coefficient. Because the
+model contains no rate random walk
+(Section~\ref{sec:imu:domain}), the total ADEV keeps falling beyond
+$\tau^{*}$ and has no interior minimum; the flat region exists locally at
+$\tau^{*}$, where equation~\eqref{eq:imu:gmadev} is stationary.
+
+\paragraph{Quantization.} With the carry of
+equation~\eqref{eq:imu:quant}, the accumulated angle equals the true
+accumulated angle plus a bounded residual of variance $q_\theta^2/12$
+(uniform over a quantum when dithered by the noise terms), which is white
+phase noise; its Allan variance is $\sigma^2(\tau) = 3\,(q_\theta^2/12)/
+\tau^2$ (IEEE Std 952~\cite{ieee952}), i.e.
+\begin{equation}
+  \sigma_{Q}(\tau) = \frac{q_\theta}{2\tau},
+  \label{eq:imu:quantadev}
+\end{equation}
+a $-1$ slope that dominates only at the shortest cluster times.
+
+\subsection{Recovery procedure (exit criterion 1)}
+\label{sec:imu:recovery}
+
+The identification test propagates a static truth trajectory
+($\vv{\omega}^{B} \equiv \vv{0}$, $\vv{f}^{B} \equiv \vv{0}$) for $T =
+\qty{e4}{\second}$ at a sample interval $\Delta t_s$ chosen so that
+$m\,\Delta t_s = \qty{1}{\second}$ is representable with integer $m$
+(e.g.\ $\Delta t_s = \qty{0.01}{\second}$, $m = 100$), with a fixed seed.
+Per axis and per instrument:
+\begin{enumerate}
+  \item Compute $\hat{\sigma}(\tau)$ from
+    equation~\eqref{eq:imu:oadev} on an octave grid $\tau = 2^j
+    \Delta t_s$ restricted to $\tau \le T/10$, plus the two anchor
+    points $\tau = \qty{1}{\second}$ and $\tau = \tau^{*} =
+    1.8926\,\tau_c$ (the configured $\tau_c$ is an input to the
+    recovery, which re-identifies the noise \emph{magnitudes}).
+  \item Recover the random-walk coefficient at the one-second anchor by
+    subtracting the two known model contributions in quadrature:
+    \begin{equation}
+      \hat{N} = \sqrt{ \hat{\sigma}^2(\qty{1}{\second})
+        - \sigma_{\mathrm{GM}}^2(\qty{1}{\second})
+        - \sigma_{Q}^2(\qty{1}{\second}) } ,
+      \label{eq:imu:recovery}
+    \end{equation}
+    with $\sigma_{\mathrm{GM}}^2(\cdot)$ from
+    equation~\eqref{eq:imu:gmadev} at the configured
+    $(\sigma_{\mathrm{GM}}, \tau_c)$ and $\sigma_Q^2(\cdot)$ from
+    equation~\eqref{eq:imu:quantadev}.
+  \item Recover the bias instability at the peak anchor by subtracting
+    the recovered white-noise term and inverting
+    equation~\eqref{eq:imu:bi}:
+    \begin{equation}
+      \hat{B} = \frac{1}{0.664282}
+        \sqrt{ \hat{\sigma}^2(\tau^{*}) - \hat{N}^2/\tau^{*}
+          - \sigma_{Q}^2(\tau^{*}) } .
+      \label{eq:imu:recoverybi}
+    \end{equation}
+  \item Gate $|\hat{N}/N - 1| \le 0.10$ and $|\hat{B}/B - 1| \le 0.10$.
+\end{enumerate}
+The estimator dispersion supports the $\pm 10\,\%$ gate: at $\tau =
+\qty{1}{\second}$ the record holds $\sim T/(2\tau) = 5000$ independent
+second differences (relative ADEV scatter well under $2\,\%$), and at
+$\tau^{*}$ with the reference preset $\tau_c = \qty{20}{\second}$
+($\tau^{*} = \qty{37.9}{\second}$) about $T/(2\tau^{*}) \approx 132$
+(scatter $\approx 6\,\%$). Correlation times much beyond
+$\qty{50}{\second}$ push $\tau^{*}$ into the poorly estimated tail of a
+\qty{e4}{\second} record and are excluded from the gate scenario (not
+from the model). The committed test is seeded and deterministic, so the
+gate is bit-stable across reruns (D-10).
+
+\section{Discretization and implementation}
+\label{sec:imu:implementation}
+
+Binding implementation notes for the Phase~6 module:
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The model is a core-side
+    \texttt{ISensor} (FR-23) sampled once per major cycle. The
+    implementing source echoes the labels \texttt{eq:imu:dtheta},
+    \texttt{eq:imu:gyro}, \texttt{eq:imu:accel}, \texttt{eq:imu:gm},
+    \texttt{eq:imu:arw}, \texttt{eq:imu:quant} verbatim in comments and
+    adds this chapter's manifest entry.
+  \item \textbf{Evaluation order per sample, normative.} (1) advance the
+    gyro and accelerometer Gauss--Markov states by
+    equation~\eqref{eq:imu:gm}; (2) form the bracketed values of
+    equations~\eqref{eq:imu:gyro} and~\eqref{eq:imu:accel} from the
+    accumulated truth increments; (3) apply the quantizer of
+    equation~\eqref{eq:imu:quant}. Truth accumulation
+    (equation~\eqref{eq:imu:quadrature}) runs inside the propagation
+    loop as steps are accepted; the accumulator resets to zero at each
+    sample boundary.
+  \item \textbf{Seeded stream and draw schedule, normative.} All draws
+    come from the named stream \texttt{sensors.imu} (D-9) through the
+    core \texttt{NormalSampler}. Initialization consumes, in order:
+    gyro turn-on bias $(x,y,z)$, gyro Gauss--Markov initial state
+    $(x,y,z)$, accelerometer turn-on bias $(x,y,z)$, accelerometer
+    Gauss--Markov initial state $(x,y,z)$. Each sample consumes, in
+    order: gyro Gauss--Markov drive $(x,y,z)$, gyro ARW $(x,y,z)$,
+    accelerometer Gauss--Markov drive $(x,y,z)$, accelerometer VRW
+    $(x,y,z)$. Draws are unconditional --- a zero coefficient multiplies
+    a drawn normal by zero rather than skipping the draw --- so the
+    stream schedule is independent of which error terms are enabled and
+    every configuration of one consumer leaves all other streams
+    untouched.
+  \item \textbf{Logged channels.} Measured increments land in the
+    reserved \texttt{sensors.*} group (FR-16) with unit-suffixed names;
+    the true Gauss--Markov bias states are logged alongside as
+    truth-side diagnostics so the Chapter~\ref{ch:ekf} consistency
+    evaluation can form full-state estimation errors without access to
+    core internals.
+  \item \textbf{Determinism.} Fixed evaluation order, no allocation in
+    the sample path, one carry state per axis per instrument
+    (equation~\eqref{eq:imu:quant}) --- the only sensor state besides
+    the Gauss--Markov biases; identical seeds reproduce identical
+    increment streams bit-for-bit (D-10, exit criterion~1's
+    bit-identity clause).
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:imu:validation}
+
+This chapter precedes its module; the validation-evidence table with
+machine-checked test identifiers is added by the implementing change.
+The planned gates, mirroring Phase~6 exit criterion~1:
+\begin{itemize}
+  \item \textbf{Golden increments.} Deterministic error chain
+    (all noise coefficients zero; fixed $\mat{M}$, biases, quantum)
+    against hand-computed references at committed states, exercising
+    every term of equations~\eqref{eq:imu:gyro}--\eqref{eq:imu:quant}
+    including the quantizer's carry and tie behavior.
+  \item \textbf{Gauss--Markov statistics.} Sample variance and lag-one
+    autocorrelation of the recursion~\eqref{eq:imu:gm} over a long
+    seeded record against $\sigma_{\mathrm{GM}}^2$ and $\varphi$ within
+    two-sided 95\,\% bounds.
+  \item \textbf{Allan recovery (exit criterion 1).} The
+    Section~\ref{sec:imu:recovery} procedure on a \qty{e4}{\second}
+    static record recovers $N_g$, $N_a$, $B_g$, $B_a$ within
+    $\pm 10\,\%$; the analytic curve
+    $\sqrt{N^2/\tau + \sigma_{\mathrm{GM}}^2(\tau) + \sigma_Q^2(\tau)}$
+    overlays the estimated ADEV within estimator scatter across the
+    octave grid.
+  \item \textbf{Coning preservation.} On a pure coning trajectory
+    (Chapter~\ref{ch:rigidbody}, closed form), accumulated increments
+    match the analytic integral of the body rate to the quadrature
+    bound of equation~\eqref{eq:imu:quaderr}, and are measurably
+    distinct from point-sampled $\vv{\omega}(t_k)\Delta t_s$.
+  \item \textbf{Bit identity.} Two runs of the same seeded scenario
+    produce byte-identical sensor channels (exit criterion~1).
+\end{itemize}
+
+\section{References}
+\label{sec:imu:references}
+
+The increment interface and strapdown error taxonomy follow Titterton and
+Weston~\cite{titterton2004} and Savage~\cite{savage1998a}; the Allan
+variance definitions, noise-signature table (white, quantization,
+bias-instability relation~\eqref{eq:imu:bi}), and test procedure follow
+IEEE Std 952~\cite{ieee952} and Riley~\cite{riley2008}, with the
+underlying statistic due to Allan~\cite{allan1966}. The exact
+Gauss--Markov discretization~\eqref{eq:imu:gm} is standard
+(Maybeck~\cite{maybeck1979}); the Gauss--Markov Allan
+variance~\eqref{eq:imu:gmadev} is derived above from the process
+autocorrelation. Full bibliographic details appear in the bibliography.
