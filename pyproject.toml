@@ -12,7 +12,7 @@ build-backend = "scikit_build_core.build"
 name = "star-reacher"
 # Version is kept in sync with CMakeLists.txt project(VERSION) manually
 # (Phase 1 contract: both files carry this note).
-version = "0.4.0"
+version = "0.5.0"
 description = "Deterministic six-degree-of-freedom space-mission simulator: C++17/Eigen core, Python analysis frontend"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,8 +21,11 @@ authors = [{ name = "Melvin Hoyer III" }]
 # D-12 allowed-list discipline: matplotlib enters with the phase that needs
 # it, never earlier. jplephem (on the D-12 allowed-list, data-prep role only)
 # enters in Phase 2 for the `star data fetch de440s` repack pipeline; the
-# deterministic core never imports it.
-dependencies = ["numpy>=1.26", "jplephem>=2.22"]
+# deterministic core never imports it. matplotlib (allowed-list, plotting
+# role) enters in Phase 5 for `star plot` (FR-18); the 3.8 floor is the
+# first release supporting Python 3.12 and the layout="constrained" figure
+# API the renderer uses.
+dependencies = ["numpy>=1.26", "jplephem>=2.22", "matplotlib>=3.8"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
@@ -39,6 +42,13 @@ star = "star_reacher.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# D-12/D-13 documented extras: pandas backs Run.to_pandas(), pyarrow backs
+# star export --parquet; neither ever enters [project].dependencies. Floors
+# are the first releases built for the NumPy 2 ABI (pandas 2.2.2 and
+# pyarrow 16.1 per their release notes), keeping each extra co-installable
+# with the unbounded numpy>=1.26 requirement above.
+pandas = ["pandas>=2.2.2"]
+parquet = ["pyarrow>=16.1"]
 
 [tool.scikit-build]
 # Pin settings semantics to the declared build requirement so a newer

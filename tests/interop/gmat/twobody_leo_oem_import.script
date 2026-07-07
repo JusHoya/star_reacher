@@ -1,0 +1,34 @@
+%------------------------------------------------------------------------------
+% twobody_leo_oem_import.script -- scripted GMAT ephemeris import (Phase 5
+% exit criterion 3, D-15): the CCSDS-OEM ephemeris exported from the
+% missions/twobody_leo.toml truth log (twobody_leo.oem) is imported through
+% GMAT's CCSDS-OEM ephemeris propagator and the state is reported back on
+% the shared 60 s grid in EarthMJ2000Eq -- the axes GMAT assigns the OEM's
+% EME2000 REF_FRAME label -- so the read-back involves no frame conversion.
+% The consuming comparison, gates, and provenance: run_gmat_oem_import.py
+% and manifest.toml in this directory.
+%
+% Generated as-run by run_gmat_oem_import.py: it contains maintainer-machine
+% absolute paths by design (D-15 runs external tools offline on the
+% maintainer machine only; CI never runs this).
+%------------------------------------------------------------------------------
+
+Create Spacecraft EphSat;
+GMAT EphSat.EphemerisName = 'C:/Users/hoyer/WorkSpace/Projects/star_reacher/.claude/worktrees/agent-a2dfbab1a63b3379f/tests/interop/gmat/twobody_leo.oem';
+
+Create Propagator EphProp;
+GMAT EphProp.Type = 'CCSDS-OEM';
+GMAT EphProp.StepSize = 60;
+
+Create ReportFile rpt;
+GMAT rpt.Filename = 'C:/Users/hoyer/WorkSpace/tools/interop-runs/twobody_leo_oem_import_report.txt';
+GMAT rpt.Precision = 16;
+GMAT rpt.WriteHeaders = true;
+GMAT rpt.LeftJustify = On;
+GMAT rpt.FixedWidth = true;
+GMAT rpt.WriteReport = true;
+GMAT rpt.Add = {EphSat.ElapsedSecs, EphSat.UTCModJulian, EphSat.EarthMJ2000Eq.X, EphSat.EarthMJ2000Eq.Y, EphSat.EarthMJ2000Eq.Z, EphSat.EarthMJ2000Eq.VX, EphSat.EarthMJ2000Eq.VY, EphSat.EarthMJ2000Eq.VZ};
+
+BeginMissionSequence;
+
+Propagate EphProp(EphSat) {EphSat.ElapsedSecs = 5400.0};

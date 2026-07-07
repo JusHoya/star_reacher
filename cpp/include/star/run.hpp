@@ -27,7 +27,7 @@ struct RunConfig {
   double duration_s = 0.0;          // > 0; integer multiple of dt_s for rk4
   double dt_s = 0.0;                // > 0; fixed RK4 step (rk4 only)
   std::string integrator = "rk4";   // "rk4" | "rkf78"
-  std::string central_body = "earth";  // "earth" | "moon" | "mars"
+  std::string central_body = "earth";  // "earth" | "moon" | "mars" | "sun"
   std::array<double, 3> r0_m{{0.0, 0.0, 0.0}};     // GCRF position [m]
   std::array<double, 3> v0_mps{{0.0, 0.0, 0.0}};   // GCRF velocity [m/s]
   double mass_kg = 1.0;             // > 0; constant through Phase 3
@@ -105,11 +105,11 @@ struct RunSummary {
 };
 
 // Gravitational parameter GM [m^3/s^2] for a named central body ("earth",
-// "moon", "mars"); unknown names throw std::invalid_argument. This is the
-// single home of the constant (star/constants.hpp) - Python calls it through
-// the binding for Keplerian conversions instead of duplicating the value.
-// Earth is the IERS TN36 value; Moon and Mars are the DE440 header values
-// (see the constants.hpp note on the deliberate split).
+// "moon", "mars", "sun"); unknown names throw std::invalid_argument. This is
+// the single home of the constant (star/constants.hpp) - Python calls it
+// through the binding for Keplerian conversions instead of duplicating the
+// value. Earth is the IERS TN36 value; Moon, Mars, and the Sun are the DE440
+// header values (see the constants.hpp note on the deliberate split).
 double gm(const std::string& body);
 
 // Propagate the two-body case defined by `cfg` and write the SRLOG v1.0 file

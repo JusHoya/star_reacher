@@ -3,6 +3,7 @@
 // the COMPOSITION: summation order and wiring, the frame/time plumbing, the
 // FR-8 co-rotating v_rel definition, whole-run bit determinism through
 // run_env, and the constructor's error paths.
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -20,11 +21,15 @@
 #include "star/models/gravity.hpp"
 #include "star/models/srp.hpp"
 #include "star/models/thirdbody.hpp"
+#include "star/models/twobody.hpp"
 #include "star/run.hpp"
 #include "star/time.hpp"
 #include "vendor/doctest.h"
 
 using star::RunConfig;
+using star::constants::GM_EARTH_DE440_M3_PER_S2;
+using star::constants::GM_JUPITER_SYS_DE440_M3_PER_S2;
+using star::constants::GM_MARS_SYS_DE440_M3_PER_S2;
 using star::constants::GM_MOON_DE440_M3_PER_S2;
 using star::constants::GM_SUN_DE440_M3_PER_S2;
 using star::constants::OMEGA_EARTH_RAD_PER_S;
@@ -43,6 +48,8 @@ const std::string kGoldenDir = STAR_GOLDEN_DIR;
 const std::string kEarthN20 = kGoldenDir + "/gravity/earth_egm2008_n20.srgrav";
 const std::string kEphCrosstool =
     kGoldenDir + "/ephemeris/excerpt_de440s_crosstool.sreph";
+const std::string kEphMarsCruise =
+    kGoldenDir + "/ephemeris/excerpt_de440s_mars_cruise.sreph";
 
 // 2026-01-01T00:00:00 UTC on the TAI scale: 9497 whole TAI days since
 // 2000-01-01T00:00:00.0 TAI (six leap days 2000..2024, 26*365 + 7 = 9497)
@@ -310,5 +317,164 @@ TEST_CASE("env_error_paths") {
   bad.v0_mps = {0.0, 7700.0, 0.0};
   // h_init/h_max/tolerances left at zero: rejected before any file I/O.
   CHECK_THROWS_AS(star::run_env(bad, "env_test_bad.srlog"),
+                  std::invalid_argument);
+}
+
+// 2026-12-05T00:00:00 UTC on the TAI scale: 9497 days to 2026-01-01 (see
+// kEpochTaiDay) plus 338 calendar days to Dec 5 (2026 is not a leap year),
+// TAI-UTC = 37 s. Matches core.utc_to_tai(2026, 12, 5, 0, 0, 0.0). Inside
+// the committed mars-cruise excerpt's span (missions/mars_cruise.toml epoch).
+constexpr std::int64_t kSunEpochTaiDay = 9835;
+constexpr double kSunEpochTaiSec = 37.0;
+
+TEST_CASE("env_sun_central_composition_matches_terms") {
+  // Phase 5 heliocentric wiring: point-mass Sun gravity, Battin third bodies
+  // taken relative to the Sun (planet SSB state minus the Sun's own SSB
+  // state), and SRP with the Sun at the frame origin (spacecraft-Sun vector
+  // exactly -r) and an empty occulter set (nu = 1, deep cruise). The model
+  // total must equal the independently recomposed sum - a wiring error
+  // (wrong central GM, wrong ephemeris center, dropped term) shows as O(1)
+  // against the 1e-12 gate.
+  EnvironmentSpec spec;
+  spec.central_body = star::models::CentralBody::kSun;
+  spec.epoch_tai = {kSunEpochTaiDay, kSunEpochTaiSec};
+  spec.gravity_model = "pointmass";
+  // The missions/mars_cruise.toml perturber set, exercising every
+  // heliocentric ephemeris composition path (emb+earth, emb+moon, and the
+  // three planetary barycenters).
+  spec.third_bodies = {"earth", "moon", "venus", "mars", "jupiter"};
+  spec.srp_enabled = true;
+  spec.cr_a_over_m_m2pkg = 0.013;
+  spec.srp_occulters = {};
+  spec.ephemeris_path = kEphMarsCruise;
+  EnvironmentModel model(spec);
+
+  // A heliocentric state ~1 au from the Sun, away from every perturber, one
+  // day into the run (exercises the epoch-shift plumbing).
+  const Eigen::Vector3d r(1.35e11, 5.5e10, 2.4e10);
+  const Eigen::Vector3d v(-11000.0, 27000.0, 11500.0);
+  const double t_s = 86400.0;
+  const Eigen::Vector3d a = model.acceleration(t_s, r, v);
+
+  // --- independent recomposition -----------------------------------------
+  const star::time::TaiEpoch tai =
+      star::time::tai_add_seconds({kSunEpochTaiDay, kSunEpochTaiSec}, t_s);
+  const double tdb_s = tdb_s_since_j2000(tai);
+  const star::Ephemeris eph = star::Ephemeris::load_file(kEphMarsCruise);
+  const Eigen::Vector3d r_sun_ssb = eph.state("sun", tdb_s).r_m;
+  const Eigen::Vector3d r_earth =
+      eph.state("emb", tdb_s).r_m + eph.state("earth", tdb_s).r_m - r_sun_ssb;
+  const Eigen::Vector3d r_moon =
+      eph.state("emb", tdb_s).r_m + eph.state("moon", tdb_s).r_m - r_sun_ssb;
+  const Eigen::Vector3d r_venus =
+      eph.state("venus_bary", tdb_s).r_m - r_sun_ssb;
+  const Eigen::Vector3d r_mars = eph.state("mars_bary", tdb_s).r_m - r_sun_ssb;
+  const Eigen::Vector3d r_jup =
+      eph.state("jupiter_bary", tdb_s).r_m - r_sun_ssb;
+
+  const Eigen::Vector3d a_grav =
+      star::models::twobody_accel(GM_SUN_DE440_M3_PER_S2, r);
+  // Canonical summation order (D-10): earth, moon, venus, mars, jupiter.
+  const Eigen::Vector3d a_tb =
+      star::models::thirdbody_accel(GM_EARTH_DE440_M3_PER_S2, r, r_earth) +
+      star::models::thirdbody_accel(GM_MOON_DE440_M3_PER_S2, r, r_moon) +
+      star::models::thirdbody_accel(star::constants::GM_VENUS_DE440_M3_PER_S2,
+                                    r, r_venus) +
+      star::models::thirdbody_accel(GM_MARS_SYS_DE440_M3_PER_S2, r, r_mars) +
+      star::models::thirdbody_accel(GM_JUPITER_SYS_DE440_M3_PER_S2, r, r_jup);
+  // Sun at the origin: nu = 1 (no occulters), spacecraft-Sun vector is -r.
+  const Eigen::Vector3d a_srp =
+      star::models::srp_accel(0.013, 1.0, r, Eigen::Vector3d::Zero());
+
+  const Eigen::Vector3d a_sum = a_grav + a_tb + a_srp;
+  CAPTURE(a.transpose());
+  CAPTURE(a_sum.transpose());
+  CHECK((a - a_sum).norm() <= 1e-12 * a.norm());
+
+  // Term-strength guards: every configured perturbation must be nonzero and
+  // SRP must point anti-sunward (away from the origin) at this geometry.
+  CHECK(a_grav.norm() > 1e-3);
+  CHECK(a_tb.norm() > 0.0);
+  CHECK(a_srp.dot(r) > 0.0);
+
+  // Spot-check the Battin earth term against the naive direct-minus-indirect
+  // difference: at this benign separation (|r - r_earth| ~ 0.4 au, mild
+  // cancellation) the two algebraically identical forms must agree in double
+  // precision; 1e-9 is ~1e4x the expected naive rounding error and catches a
+  // heliocentric wiring error (wrong center, wrong GM) as O(1).
+  const Eigen::Vector3d d = r_earth - r;
+  const Eigen::Vector3d naive =
+      GM_EARTH_DE440_M3_PER_S2 *
+      (d / std::pow(d.norm(), 3) - r_earth / std::pow(r_earth.norm(), 3));
+  const Eigen::Vector3d battin =
+      star::models::thirdbody_accel(GM_EARTH_DE440_M3_PER_S2, r, r_earth);
+  CHECK((battin - naive).norm() <= 1e-9 * naive.norm());
+}
+
+TEST_CASE("env_sun_central_error_paths_and_gm") {
+  // gm() single-home wiring for the Sun central body: the DE440 header value
+  // shared with the third-body model (constants.hpp cites the provenance).
+  CHECK(star::gm("sun") == GM_SUN_DE440_M3_PER_S2);
+
+  EnvironmentSpec good;
+  good.central_body = star::models::CentralBody::kSun;
+  good.epoch_tai = {kSunEpochTaiDay, kSunEpochTaiSec};
+  good.third_bodies = {"earth"};
+  good.ephemeris_path = kEphMarsCruise;
+
+  // The accepted heliocentric shape constructs (SRP, empty occulters).
+  {
+    EnvironmentSpec s = good;
+    s.srp_enabled = true;
+    s.cr_a_over_m_m2pkg = 0.013;
+    s.srp_occulters = {};
+    EnvironmentModel model(s);
+    CHECK(model.uses_ephemeris());
+  }
+  // FR-5 defines no Sun harmonic field: the field tiers are refused.
+  {
+    EnvironmentSpec s = good;
+    s.gravity_model = "j2";
+    s.gravity_field_path = kEarthN20;
+    CHECK_THROWS_AS(EnvironmentModel{s}, std::invalid_argument);
+  }
+  // No atmosphere exists about the Sun (both families are refused by the
+  // existing central-body guards).
+  {
+    EnvironmentSpec s = good;
+    s.atmosphere = star::models::AtmosphereModel::kUssa76;
+    s.cd_a_over_m_m2pkg = 0.001;
+    CHECK_THROWS_AS(EnvironmentModel{s}, std::invalid_argument);
+  }
+  {
+    EnvironmentSpec s = good;
+    s.atmosphere = star::models::AtmosphereModel::kMarsExponential;
+    s.cd_a_over_m_m2pkg = 0.001;
+    CHECK_THROWS_AS(EnvironmentModel{s}, std::invalid_argument);
+  }
+  // The Sun cannot perturb itself.
+  {
+    EnvironmentSpec s = good;
+    s.third_bodies = {"sun"};
+    CHECK_THROWS_AS(EnvironmentModel{s}, std::invalid_argument);
+  }
+  // The planetary regimes keep the FR-7 occulter requirement (regression
+  // guard on the sun-only relaxation).
+  {
+    EnvironmentSpec s;
+    s.central_body = star::models::CentralBody::kEarth;
+    s.epoch_tai = {kSunEpochTaiDay, kSunEpochTaiSec};
+    s.srp_enabled = true;
+    s.cr_a_over_m_m2pkg = 0.013;
+    s.srp_occulters = {};
+    s.ephemeris_path = kEphMarsCruise;
+    CHECK_THROWS_AS(EnvironmentModel{s}, std::invalid_argument);
+  }
+
+  // The vehicle path refuses the heliocentric regime before any file I/O
+  // (its altitude events, pad geometry, and aero assume a planetary body).
+  RunConfig veh;
+  veh.central_body = "sun";
+  CHECK_THROWS_AS(star::run_vehicle(veh, "env_test_sun_vehicle.srlog"),
                   std::invalid_argument);
 }

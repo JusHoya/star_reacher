@@ -1,0 +1,5 @@
+# The as-run MATLAB transcript (committed by the maintainer per README.md)
+# is an evidence record whose SHA-256 gets pinned in manifest.toml; exempt
+# it from line-ending normalization so the hashed bytes survive commit and
+# checkout unchanged, exactly as in ../gmat/.gitattributes.
+transcript.txt -text

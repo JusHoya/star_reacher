@@ -203,14 +203,14 @@ def test_verify_output_contract(tmp_path):
     proc = _run_cli("verify", "--quick", cwd=str(tmp_path))
     lines = proc.stdout.strip().splitlines()
     # One line per check, each starting with its ID and PASS/FAIL.
-    for n in range(1, 19):
+    for n in range(1, 22):
         check_id = f"V{n:03d}"
         assert any(re.match(rf"{check_id} (PASS|FAIL) ", ln) for ln in lines), (
             f"missing line for {check_id}:\n{proc.stdout}"
         )
     final = lines[-1]
     assert re.fullmatch(
-        r"VERIFY: PASS \(18/18\)|VERIFY: FAIL \((\d|1[0-7])/18\) failing: V\d{3}(, V\d{3})*",
+        r"VERIFY: PASS \(21/21\)|VERIFY: FAIL \((\d|1[0-9]|20)/21\) failing: V\d{3}(, V\d{3})*",
         final,
     ), final
     # Exit code agrees with the verdict line.

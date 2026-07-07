@@ -14,7 +14,14 @@ V009-V013 cover the Phase 2 math kernel (time, rotations, frames,
 ephemeris evaluator, integrators/events); V014-V018 cover the Phase 3
 environment models (gravity tiers, third body, shadow/SRP, atmospheres)
 and the composed perturbed-run path, as quick variants of the full golden
-suites in ``tests/``.
+suites in ``tests/``; V019 covers the Phase 5 exporters (NPZ bit-exact
+round trip always, Parquet read-back when the optional pyarrow extra is
+installed), V020 the Phase 5 viewer generator (self-containment, exact
+scrub-extreme epochs, the decimation bound, and byte-identical
+regeneration), and V021 the Phase 5 plot pipeline (element array
+preparation against a closed-form circular orbit, a headless Agg PNG
+render, and byte-identical re-rendering), as a quick variant of the full
+golden suite in ``tests/python/test_plot_golden.py``.
 """
 
 from __future__ import annotations
@@ -1023,6 +1030,259 @@ def _check_v018(ctx: dict) -> None:
                 )
 
 
+# --------------------------------------------------------------------------
+# Phase 5 check (V019): exporter fidelity. Pure Python on a synthesized log,
+# so it passes on a core-less install like the other format checks; the
+# Parquet half runs only when the optional pyarrow extra is importable,
+# because verify must hold on a bare wheel where extras are absent.
+# --------------------------------------------------------------------------
+
+
+def _check_v019(ctx: dict) -> None:
+    from star_reacher.export import export_npz, export_parquet, load_npz
+
+    header = _fixtures.contract_header()
+    f = _TRICKY_FLOATS
+    m = len(f)
+    records = []
+    # The same tricky-float rotation as V005: the NPZ round trip must
+    # preserve subnormals, negative zero, and full-precision reprs.
+    for i in range(m):
+        records.append(
+            (
+                0,
+                (
+                    float(i),
+                    (f[(i + 1) % m], f[(i + 2) % m], f[(i + 3) % m]),
+                    (f[(i + 4) % m], f[(i + 5) % m], f[(i + 6) % m]),
+                    (1.0, -0.0, 0.0, 0.0),
+                    (f[(i + 7) % m], f[(i + 8) % m], f[i]),
+                    f[(i + 4) % m],
+                ),
+            )
+        )
+    records.append(_fixtures.event_record(0.0, 1, "run_start"))
+    records.append(_fixtures.event_record(1.0, 7, 'comma, "quote", newline\n'))
+    records.append(_fixtures.event_record(600.0, 2, "run_end"))
+    data = _fixtures.build_srlog(header, records)
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        path = _write_temp_srlog(tdp, "v019.srlog", data)
+        run = load(path)
+
+        npz_path = export_npz(path, tdp)
+        back = load_npz(npz_path)
+        if back.header != run.header:
+            raise CheckFailure("NPZ round trip changed the header dict")
+        if set(back.groups) != set(run.groups):
+            raise CheckFailure(
+                f"NPZ round trip changed the group set: {sorted(back.groups)} "
+                f"!= {sorted(run.groups)}"
+            )
+        for gname, arr in run.groups.items():
+            got = back.groups[gname]
+            if got.dtype != arr.dtype or len(got) != len(arr):
+                raise CheckFailure(f"NPZ group '{gname}': dtype or length changed")
+            for fname in arr.dtype.names:
+                if arr.dtype[fname].base.kind == "O":
+                    if list(got[fname]) != list(arr[fname]):
+                        raise CheckFailure(
+                            f"NPZ group '{gname}' channel '{fname}': string "
+                            f"values changed"
+                        )
+                elif got[fname].tobytes() != arr[fname].tobytes():
+                    # Bit-exactness, not closeness (Phase 5 exit criterion 3).
+                    raise CheckFailure(
+                        f"NPZ group '{gname}' channel '{fname}': bytes changed"
+                    )
+
+        try:
+            import pyarrow.parquet as pq  # noqa: F401 - availability probe
+        except ImportError:
+            return  # bare-wheel path: the pyarrow extra is not installed
+        written = export_parquet(path, tdp)
+        for parquet_path in written:
+            gname = parquet_path.stem
+            arr = run.groups[gname]
+            table = pq.read_table(parquet_path)
+            expected_columns = []
+            for fname in arr.dtype.names:
+                shape = arr.dtype[fname].shape
+                if shape:
+                    expected_columns.extend(f"{fname}_{i}" for i in range(shape[0]))
+                else:
+                    expected_columns.append(fname)
+            if table.num_rows != len(arr):
+                raise CheckFailure(
+                    f"{gname}.parquet: {table.num_rows} rows != {len(arr)}"
+                )
+            if table.column_names != expected_columns:
+                raise CheckFailure(
+                    f"{gname}.parquet: columns {table.column_names} != "
+                    f"{expected_columns}"
+                )
+
+
+# --------------------------------------------------------------------------
+# Phase 5 check (V020): the FR-19 viewer generator, as a quick variant of
+# the full suite in tests/python/test_viewer.py.
+# --------------------------------------------------------------------------
+
+
+def _check_v020(ctx: dict) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from star_reacher.viewer import (
+        extract_view_data,
+        generate_view,
+        scan_external_references,
+    )
+
+    if "v001_srlog_bytes" not in ctx:
+        raise CheckFailure(
+            "requires the run.srlog produced by V001, which did not complete (see the V001 result)"
+        )
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        srlog = _write_temp_srlog(tdp, "v019.srlog", ctx["v001_srlog_bytes"])
+        result = generate_view(srlog, tdp / "view.html")
+        html = (tdp / "view.html").read_text(encoding="utf-8")
+
+        findings = scan_external_references(html)
+        if findings:
+            raise CheckFailure(f"external references in the emitted HTML: {findings}")
+
+        # The decimation claim: the measured error is a direct measurement
+        # over every dropped truth sample, and must sit within the bound.
+        if result.measured_max_error_m > result.bound_m:
+            raise CheckFailure(
+                f"measured decimation error {result.measured_max_error_m!r} m "
+                f"exceeds the bound {result.bound_m!r} m"
+            )
+
+        run = load(srlog)
+        data = extract_view_data(html)
+        if data["epoch"]["utc_first"] != run.header["epoch_utc"]:
+            raise CheckFailure(
+                f"embedded first epoch {data['epoch']['utc_first']!r} != header "
+                f"epoch_utc {run.header['epoch_utc']!r}"
+            )
+        epoch = datetime.fromisoformat(
+            run.header["epoch_utc"].replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
+        t_last = float(run.groups["truth"]["t_s"][-1])
+        last = epoch + timedelta(seconds=t_last)
+        expected_last = last.strftime("%Y-%m-%dT%H:%M:%S")
+        if last.microsecond:
+            expected_last += ("." + f"{last.microsecond:06d}").rstrip("0")
+        expected_last += "Z"
+        if data["epoch"]["utc_last"] != expected_last:
+            raise CheckFailure(
+                f"embedded last epoch {data['epoch']['utc_last']!r} != header-"
+                f"derived {expected_last!r} (epoch_utc + final truth t_s)"
+            )
+
+        # Byte-identical regeneration: the viewer is a derived artifact and
+        # must be a pure function of the log bytes (FR-21 discipline).
+        generate_view(srlog, tdp / "view2.html")
+        if (tdp / "view.html").read_bytes() != (tdp / "view2.html").read_bytes():
+            raise CheckFailure("regenerating the viewer produced different bytes")
+
+
+# --------------------------------------------------------------------------
+# Phase 5 check (V021): the FR-18 plot pipeline, as a quick variant of the
+# golden suite in tests/python/test_plot_golden.py. Pure Python on a
+# synthesized log (no compiled core, no source tree): the element
+# preparation is checked against the closed-form elements of a circular
+# orbit, then one PNG is rendered headless through the forced Agg backend.
+# --------------------------------------------------------------------------
+
+# Circular-orbit design for V021: r0 = 7,000 km on +X, v = sqrt(mu/r0) on
+# +Y, mu per IERS Conventions (2010), TN No. 36, Table 1.1 (the loader GM,
+# star_reacher.derived.GM_M3_PER_S2["earth"]). For this geometry the
+# osculating elements are closed-form: a = r0 (to the rounding of v0^2),
+# e ~ 0, i = 0 exactly (h along +Z), and with the derived-elements
+# circular-equatorial convention RAAN = argp = 0 exactly and the true-
+# longitude slot advances from 0.
+_V021_MU = 3.986004418e14
+_V021_R0_M = 7.0e6
+
+
+def _check_v021(ctx: dict) -> None:
+    from star_reacher.plotting import PLOT_NAMES, prep_elements, render_plots
+
+    header = _fixtures.contract_header()
+    v0 = math.sqrt(_V021_MU / _V021_R0_M)
+    n_samples = 32
+    records = []
+    for k in range(n_samples):
+        # Uniform sweep of true longitude; sin/cos parameterization keeps
+        # every sample exactly on the circular orbit.
+        ang = 2.0 * math.pi * k / n_samples * 0.9
+        records.append(
+            _fixtures.truth_record(
+                60.0 * k,
+                r_m=(_V021_R0_M * math.cos(ang), _V021_R0_M * math.sin(ang), 0.0),
+                v_mps=(-v0 * math.sin(ang), v0 * math.cos(ang), 0.0),
+                mass_kg=150.0,
+            )
+        )
+    records.append(_fixtures.event_record(0.0, 1, "run_start"))
+    records.append(_fixtures.event_record(60.0 * (n_samples - 1), 2, "run_end"))
+    data = _fixtures.build_srlog(header, records)
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        run = load(_write_temp_srlog(tdp, "v021.srlog", data))
+
+        prep = prep_elements(run)
+        if prep.arrays is None:
+            raise CheckFailure(f"element preparation produced no arrays: {prep.note}")
+        a_km = prep.arrays["a_km"]
+        e = prep.arrays["e"]
+        i_deg = prep.arrays["i_deg"]
+        raan_deg = prep.arrays["raan_deg"]
+        if len(a_km) != n_samples:
+            raise CheckFailure(f"expected {n_samples} element samples, got {len(a_km)}")
+        # v0 = sqrt(mu/r0) rounds once in binary64, so a and e sit within a
+        # few ulp of the closed form; 1e-6 relative (a) and 1e-9 absolute
+        # (e) give ~9 orders of margin while failing on any element-chain
+        # defect (wrong GM, wrong units, wrong convention).
+        worst_a = float(np.max(np.abs(a_km * 1000.0 - _V021_R0_M)))
+        if worst_a > 1e-6 * _V021_R0_M:
+            raise CheckFailure(
+                f"circular-orbit semi-major axis off by {worst_a:.3e} m "
+                f"(gate {1e-6 * _V021_R0_M:.1e} m)"
+            )
+        if float(np.max(e)) > 1e-9:
+            raise CheckFailure(f"circular-orbit eccentricity {float(np.max(e)):.3e} > 1e-9")
+        # Equatorial geometry: i and the RAAN convention value are EXACT
+        # zeros per docs/formats/derived_elements.md section 4.
+        if float(np.max(np.abs(i_deg))) != 0.0 or float(np.max(np.abs(raan_deg))) != 0.0:
+            raise CheckFailure(
+                f"equatorial convention violated: max|i| = "
+                f"{float(np.max(np.abs(i_deg)))!r} deg, max|RAAN| = "
+                f"{float(np.max(np.abs(raan_deg)))!r} deg (both must be exactly 0)"
+            )
+
+        if "elements" not in PLOT_NAMES:
+            raise CheckFailure(f"'elements' missing from PLOT_NAMES: {PLOT_NAMES}")
+        report = render_plots([run], tdp / "plots", plots=["elements"])
+        png = tdp / "plots" / "elements.png"
+        if [Path(p) for p in report.written] != [png]:
+            raise CheckFailure(f"expected [{png}], wrote {report.written}")
+        head = png.read_bytes()
+        if head[:8] != b"\x89PNG\r\n\x1a\n":
+            raise CheckFailure(f"{png.name} does not start with the PNG signature")
+        if len(head) < 1024:
+            raise CheckFailure(f"{png.name} is implausibly small ({len(head)} bytes)")
+        # Deterministic rendering: a second render of the same log must be
+        # byte-identical (fixed figure geometry, fixed metadata, no
+        # timestamps) - the FR-21 discipline applied to a derived artifact.
+        render_plots([run], tdp / "plots2", plots=["elements"])
+        if (tdp / "plots2" / "elements.png").read_bytes() != head:
+            raise CheckFailure("re-rendering the same log produced different PNG bytes")
+
+
 _CHECKS = [
     ("V001", "two-body double-run SHA-256 bit-identity", _check_v001),
     ("V002", "minor-version-forward read (v1.999 file with one added channel)", _check_v002),
@@ -1042,6 +1302,9 @@ _CHECKS = [
     ("V016", "conical shadow exact 0/1, penumbra value, umbra SRP zero", _check_v016),
     ("V017", "USSA76/Harris-Priester/Mars density spot values", _check_v017),
     ("V018", "perturbed-run double-run SHA-256 bit-identity (rkf78 + rk4)", _check_v018),
+    ("V019", "NPZ export round-trips bit-exactly (+ Parquet when available)", _check_v019),
+    ("V020", "viewer HTML self-contained, epochs exact, decimation bound held", _check_v020),
+    ("V021", "plot arrays match closed-form elements; headless PNG render", _check_v021),
 ]
 
 

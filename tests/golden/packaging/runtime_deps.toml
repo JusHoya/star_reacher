@@ -1,0 +1,53 @@
+# Committed runtime dependency closure (FR-32; Phase 5 exit criterion 6).
+#
+# This file is the single source of truth for the dep-minimality CI gate
+# (scripts/check_min_deps.py): after `pip install <star-reacher wheel>` with
+# no extras into a fresh venv, the installed distribution set (excluding the
+# venv bootstrap set pip/setuptools/wheel) must exactly equal
+# `distributions` below, both directions.
+#
+# Provenance. D-12 fixes the runtime allowed-list as numpy, matplotlib, and
+# jplephem (`roots` below); `distributions` is that list's full transitive
+# closure plus star-reacher itself, derived empirically - not transcribed
+# from documentation - with:
+#
+#   python -m venv depvenv
+#   depvenv/bin/pip install numpy jplephem matplotlib
+#   depvenv/bin/python -c "import importlib.metadata as md; \
+#       print(sorted(d.metadata['Name'] for d in md.distributions()))"
+#
+# Measured 2026-07-04 on CPython 3.14/Windows (pip 25.2); the closure is
+# platform- and version-uniform on CPython >= 3.11 because none of these
+# distributions declares platform- or Python-version-conditional runtime
+# requirements, which is what lets one committed file gate all four CI legs.
+# The chain: matplotlib -> contourpy, cycler, fonttools, kiwisolver, numpy,
+# packaging, pillow, pyparsing, python-dateutil; python-dateutil -> six;
+# jplephem -> numpy.
+#
+# Re-derive (same commands) and update this file whenever
+# [project].dependencies changes; tests/python/test_perf_harness.py carries
+# a consistency test that fails or self-explains when the two drift.
+
+schema = 1
+
+# The D-12 runtime allowed-list: the direct [project].dependencies roots the
+# closure below was derived from.
+roots = ["numpy", "matplotlib", "jplephem"]
+
+distributions = [
+  "star-reacher",
+  # roots (D-12)
+  "jplephem",
+  "matplotlib",
+  "numpy",
+  # transitive closure of matplotlib (measured; see header)
+  "contourpy",
+  "cycler",
+  "fonttools",
+  "kiwisolver",
+  "packaging",
+  "pillow",
+  "pyparsing",
+  "python-dateutil",
+  "six",
+]

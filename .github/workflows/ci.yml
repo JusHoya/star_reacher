@@ -1,5 +1,5 @@
-# CI (PRD section 7 matrix; Phase 1 exit criteria 1, 5, 6, 7 and Phase 2
-# exit criterion 8).
+# CI (PRD section 7 matrix; Phase 1 exit criteria 1, 5, 6, 7; Phase 2
+# exit criterion 8; Phase 5 exit criteria 3 and 6).
 # Honesty rule: no continue-on-error anywhere — a red gate is a red build.
 name: ci
 
@@ -33,6 +33,14 @@ jobs:
           python-version: '3.12'
       - name: Install package (builds the native core)
         run: pip install .
+      - name: Install the pandas/parquet extras (one leg only)
+        # Phase 5 exit criterion 3 is "CI-gated": the Parquet/pandas suites
+        # are importorskip-gated and would otherwise never execute, so
+        # exactly one leg installs the documented extras to run them; the
+        # other three legs stay extras-free so the bare-install path (loader
+        # and CSV/NPZ export with no optional dependencies) keeps coverage.
+        if: matrix.os == 'ubuntu-24.04'
+        run: pip install '.[pandas,parquet]'
       - name: Install test dependencies
         run: pip install pytest
       - name: Run Python test suite
@@ -215,3 +223,76 @@ jobs:
         run: cffconvert --validate
       - name: Check README BibTeX consistency
         run: python scripts/check_citation.py
+
+  # Phase 5 exit criterion 6, size half (FR-32): every platform wheel stays
+  # under the 20 MB budget. Built with --no-deps because the budget measures
+  # this project's artifact, not its dependency tree, and measured on all
+  # four legs because the compiled core's size is platform-specific.
+  wheel-budget:
+    strategy:
+      # All legs report even when one fails, so a platform-specific size
+      # blowout is visible in a single CI round-trip.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the wheel
+        run: pip wheel . --no-deps -w dist
+      - name: Assert the wheel is under the 20 MB budget
+        # Inline Python instead of shell arithmetic so the same step runs
+        # identically on POSIX and Windows runners. Decimal megabytes (1 MB
+        # = 1e6 B): the SI reading of FR-32's "20 MB", and the stricter one.
+        shell: python
+        run: |
+          import pathlib
+          import sys
+
+          wheels = sorted(pathlib.Path("dist").glob("*.whl"))
+          if len(wheels) != 1:
+              sys.exit(f"expected exactly one wheel in dist/, found: {wheels}")
+          size = wheels[0].stat().st_size
+          budget = 20 * 1000 * 1000
+          print(f"{wheels[0].name}: {size} bytes = {size / 1e6:.2f} MB (budget: 20 MB)")
+          if size >= budget:
+              sys.exit(f"wheel exceeds the FR-32 budget: {size} >= {budget} bytes")
+
+  # Phase 5 exit criterion 6, dependency half (FR-32): in a fresh venv, the
+  # installed distribution set after installing the built wheel with NO
+  # extras exactly equals the committed D-12 closure
+  # (tests/golden/packaging/runtime_deps.toml), both directions. The wheel —
+  # not an editable install — is what a user's pip resolves, so that is what
+  # the gate audits. Run on all four legs (it is cheap) because the equality
+  # gate would also catch a platform-conditional dependency sneaking into
+  # the closure on one platform only.
+  dep-minimality:
+    strategy:
+      # All legs report even when one fails, so a platform-specific
+      # dependency drift is visible in a single CI round-trip.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the wheel
+        run: pip wheel . --no-deps -w dist
+      - name: Install the wheel into a fresh venv and audit the closure
+        # bash on every leg so one script handles the bin/ (POSIX) versus
+        # Scripts/ (Windows) venv layout split. check_min_deps.py runs WITH
+        # the fresh venv's interpreter so importlib.metadata enumerates
+        # exactly the environment under audit; the script is stdlib-only, so
+        # the fresh venv needs no tooling beyond the wheel it is auditing.
+        shell: bash
+        run: |
+          python -m venv fresh
+          if [ -x fresh/bin/python ]; then VPY=fresh/bin/python; else VPY=fresh/Scripts/python; fi
+          "$VPY" -m pip install --quiet dist/*.whl
+          "$VPY" scripts/check_min_deps.py --expected tests/golden/packaging/runtime_deps.toml
