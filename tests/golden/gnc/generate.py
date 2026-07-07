@@ -6,10 +6,15 @@ bit-identical inputs), then the reference outputs are evaluated with mpmath
 at 60 significant digits from those snapped inputs and rounded once to
 binary64 for recording. The laws mirror gnc/builtin.hpp exactly:
 
-  pd_attitude:
+  pd_attitude (ch:gnc-builtin, eq:gnc:deltaq / eq:gnc:werr / eq:gnc:pd /
+  eq:gnc:sat, no renormalization of dq):
     dq    = conj(q_cmd) (x) q_est          (Hamilton, scalar-first)
     s     = +1 if dq_0 >= 0 else -1        (sign(0) = +1)
-    tau_i = -kp_i * s * dq_vec_i - kd_i * (w_est_i - w_cmd_i)
+    w_err = w_est - C(dq) * w_cmd          (C: quaternion-to-DCM,
+                                           eq:notation:quat2dcm, resolving
+                                           the commanded rate into the
+                                           estimated body frame)
+    tau_i = -kp_i * s * dq_vec_i - kd_i * w_err_i
     tau_i = clamp(tau_i, -tau_max_i, +tau_max_i)
 
   dead_reckoning attitude update, per IMU increment dtheta:
@@ -69,14 +74,33 @@ def hexlist(values):
     return [float(v).hex() for v in values]
 
 
+def q_to_dcm(q):
+    """Quaternion (a-to-b, scalar-first) to DCM C_a2b, mirroring the
+    project's rotation::dcm_from_quat elementwise (eq:notation:quat2dcm)."""
+    w, x, y, z = q
+    ww, xx, yy, zz = w * w, x * x, y * y, z * z
+    return [
+        [ww + xx - yy - zz, 2 * (x * y + w * z), 2 * (x * z - w * y)],
+        [2 * (x * y - w * z), ww - xx + yy - zz, 2 * (y * z + w * x)],
+        [2 * (x * z + w * y), 2 * (y * z - w * x), ww - xx - yy + zz],
+    ]
+
+
 def pd_reference(q_cmd, q_est, w_est, w_cmd, kp, kd, tau_max):
     """Extended-precision evaluation of the pd_attitude law on snapped inputs."""
     dq = q_mul(q_conj(to_mp(q_cmd)), to_mp(q_est))
     s = mp.mpf(1) if dq[0] >= 0 else mp.mpf(-1)
+    # eq:gnc:werr: resolve the commanded rate (commanded frame) into the
+    # estimated body frame through the error DCM (dq is cmd-to-body).
+    c = q_to_dcm(dq)
+    wc = to_mp(w_cmd)
+    w_cmd_b = [
+        c[i][0] * wc[0] + c[i][1] * wc[1] + c[i][2] * wc[2] for i in range(3)
+    ]
     tau = []
     for i in range(3):
         t = -mp.mpf(kp[i]) * s * dq[i + 1] - mp.mpf(kd[i]) * (
-            mp.mpf(w_est[i]) - mp.mpf(w_cmd[i])
+            mp.mpf(w_est[i]) - w_cmd_b[i]
         )
         limit = mp.mpf(tau_max[i])
         if t > limit:

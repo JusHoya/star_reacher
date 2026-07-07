@@ -95,8 +95,15 @@ TEST_CASE("gnc_registry_resolution_and_rejection") {
   CHECK_THROWS_AS(star::gnc::make_component(pd), std::invalid_argument);
   GncComponentCfg dr;
   dr.component = "dead_reckoning";
+  dr.vectors["q0"] = {1.0, 0.0, 0.0, 0.0};
   dr.scalars["mystery_knob"] = 1.0;  // unknown parameter
   CHECK_THROWS_AS(star::gnc::make_component(dr), std::invalid_argument);
+  // The initial estimate is configuration, stated explicitly - a missing q0
+  // is rejected rather than silently defaulted from truth (ch:gnc-builtin:
+  // no implicit truth access).
+  GncComponentCfg dr_no_q0;
+  dr_no_q0.component = "dead_reckoning";
+  CHECK_THROWS_AS(star::gnc::make_component(dr_no_q0), std::invalid_argument);
 }
 
 TEST_CASE("gnc_pd_attitude_golden") {
@@ -160,16 +167,17 @@ TEST_CASE("gnc_dead_reckoning_golden") {
 
   GncComponentCfg cfg;
   cfg.component = "dead_reckoning";
+  // The initial estimate is a configured parameter (no implicit truth
+  // access, ch:gnc-builtin); the golden's q0 rides in through the config.
+  cfg.vectors["q0"] = golden_vec(c, "q0");
   std::unique_ptr<star::gnc::IGncComponent> nav =
       star::gnc::make_component(cfg);
   REQUIRE(nav->state_dim() == 7);
+  CHECK(nav->cov_dim() == 7);  // covariance dimension defaults to the state
   CHECK(nav->innov_max_dim() == 0);
   CHECK(nav->innovations().empty());
 
-  GncInitContext ictx;
-  ictx.q0_i2b = quat_of(golden_vec(c, "q0"));
-  ictx.omega0_b_radps = Eigen::Vector3d::Zero();
-  nav->init(ictx);
+  nav->init(GncInitContext{});
 
   const double dt = 0.1;
   for (int k = 0; k < 5; ++k) {

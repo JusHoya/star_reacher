@@ -52,6 +52,7 @@ oracle = true
 
 [gnc.nav]
 component = "dead_reckoning"
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
 
 [gnc.guidance]
 component = "attitude_hold"
@@ -88,7 +89,10 @@ def test_gnc_mission_validates_and_resolves(tmp_path, monkeypatch):
     assert gnc["control_rate_hz"] == 10
     assert gnc["latency_cycles"] == 2
     assert gnc["oracle"] is True
-    assert gnc["nav"] == {"component": "dead_reckoning"}
+    assert gnc["nav"] == {
+        "component": "dead_reckoning",
+        "q0": [0.0, 0.7071067811865476, 0.7071067811865476, 0.0],
+    }
     assert gnc["guidance"]["component"] == "attitude_hold"
     assert len(gnc["guidance"]["q_cmd"]) == 4
     assert gnc["control"]["component"] == "pd_attitude"
@@ -123,8 +127,20 @@ def test_committed_golden_gnc_mission_validates(monkeypatch):
         # Missing required keys name the exact key (DX-2).
         (lambda t: t.replace("control_rate_hz = 10\n", ""), "control_rate_hz"),
         (
-            lambda t: t.replace('[gnc.nav]\ncomponent = "dead_reckoning"\n', ""),
+            lambda t: t.replace(
+                '[gnc.nav]\ncomponent = "dead_reckoning"\n'
+                "q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]\n",
+                "",
+            ),
             "[gnc] nav",
+        ),
+        # The dead reckoner's initial estimate is explicit configuration
+        # (no implicit truth access): a missing q0 is an error.
+        (
+            lambda t: t.replace(
+                "q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]\n", ""
+            ),
+            "q0",
         ),
         # The control cycle is the integrator step: rate must equal 1/dt_s.
         (
@@ -160,10 +176,11 @@ def test_committed_golden_gnc_mission_validates(monkeypatch):
             ),
             "tau_max_nm",
         ),
-        # The IMU sample rate must divide the control rate.
+        # The v1 IMU emits one increment pair per control cycle: its rate
+        # must EQUAL the control rate - even an exact divisor is rejected.
         (
-            lambda t: t.replace("sample_rate_hz = 10", "sample_rate_hz = 3"),
-            "exact divisor",
+            lambda t: t.replace("sample_rate_hz = 10", "sample_rate_hz = 5"),
+            "must equal",
         ),
         # Unknown sensor kinds are rejected by name.
         (

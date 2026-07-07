@@ -1,20 +1,22 @@
-// Ideal IMU (FR-23 reference implementation): accumulated angle and
-// velocity increments with zero errors.
+// Ideal IMU (FR-23 reference implementation, ch:sensors-imu): accumulated
+// angle and velocity increments with zero errors,
 //
-//   dtheta = integral of the true body rate over the sample interval
-//   dv     = integral of the true specific force (body frame) over the
-//            sample interval
+//   dtheta_k = integral over the sample interval of the true body rate
+//   dv_k     = integral over the sample interval of the true specific
+//              force in body axes                       (eq:imu:dtheta)
 //
-// The loop's kinematics are zero-order-held per control cycle (D-5), so the
-// integrals reduce to exact sums of held values:
-//   dtheta = sum_cycles omega_b * dt,   dv = sum_cycles sf_b * dt
-// - "exact" meaning the increments are the exact integrals of the loop's
-// piecewise-constant rate and specific-force histories (one rounding per
-// product and sum; no quadrature error). In the torque-driven attitude mode
-// the body rate additionally varies inside a cycle; the sensor layer
-// samples the cycle-start hold, so the within-cycle variation is not
-// resolved (bounded by |omega_dot| dt^2 / 2 per cycle - the documented
-// v1.2 sensor-truth scheme, format doc section 3.2).
+// evaluated by TRAPEZOIDAL accumulation over the accepted integrator steps
+// tiling the interval (eq:imu:quadrature): for steps of size h_j with
+// endpoint values x_j, x_j+1,
+//
+//   increment += sum_j (h_j / 2) (x_j + x_j+1),
+//
+// which carries intra-interval motion (an increment interface, distinct
+// from a point-sampled rate times dt) with local error bounded by
+// eq:imu:quaderr. The loop supplies the endpoint values per cycle through
+// SensorCycleTruth (one accepted rk4 step per cycle in this phase, D-5).
+// The v1 IMU samples exactly once per major cycle: sample_rate_hz must
+// equal the control rate (ch:sensors-imu assumption 1).
 //
 // The full FR-23 IMU error model (turn-on bias, Gauss-Markov in-run bias,
 // scale factor, misalignment, ARW/VRW, quantization, coning/sculling

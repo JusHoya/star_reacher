@@ -22,11 +22,11 @@ leaving at least one axis unclamped.
 
 [[file]]
 name = "pd_attitude.toml"
-source = "generate.py (this directory), mpmath 60-digit evaluation of the pd_attitude law from cpp/include/star/gnc/builtin.hpp"
-citation = "Quaternion-feedback attitude regulation with the shortest-rotation sign term: B. Wie, H. Weiss, and A. Arapostathis, 'Quaternion Feedback Regulator for Spacecraft Eigenaxis Rotations', Journal of Guidance, Control, and Dynamics 12(3), 1989, pp. 375-380 (the -k sign(dq0) dq_vec unwinding form); per-axis symmetric saturation is a project definition (PRD FR-25, Phase 6 exit criterion 2)"
+source = "generate.py (this directory), mpmath 60-digit evaluation of the pd_attitude law from cpp/include/star/gnc/builtin.hpp (ch:gnc-builtin eq:gnc:deltaq/werr/pd/sat, including the commanded-rate resolution through the error DCM)"
+citation = "Quaternion-feedback attitude regulation with the shortest-rotation sign term: B. Wie, H. Weiss, and A. Arapostathis, 'Quaternion Feedback Regulator for Spacecraft Eigenaxis Rotations', Journal of Guidance, Control, and Dynamics 12(3), 1989, pp. 375-380 (the -k sign(dq0) dq_vec unwinding form); the rate-error resolution of the commanded rate into body axes via the error DCM and the sign convention follow the project chapter ch:gnc-builtin (eq:gnc:werr); per-axis symmetric saturation is a project definition (PRD FR-25, Phase 6 exit criterion 2)"
 generation = "python tests/golden/gnc/generate.py (write_pd_cases)"
 date = "2026-07-07"
-tolerance = "per component |got - expected| <= max(5e-15 * |expected|, 1e-18). The C++ path performs at most a few binary64 roundings beyond the once-rounded 60-digit reference (Hamilton product, two multiplies, one subtraction, clamp), so agreement to a few ulp (~2.2e-16 relative each) is guaranteed; 5e-15 relative leaves >20x margin. Saturated components equal the tau_max config constant exactly and zero components are exact, covered by the absolute floor."
+tolerance = "per component |got - expected| <= max(5e-15 * |expected|, 1e-18). The C++ path performs at most a few tens of binary64 roundings beyond the once-rounded 60-digit reference (Hamilton product, quaternion-to-DCM per eq:notation:quat2dcm, one 3x3 matvec, two multiplies, one subtraction, clamp), each contributing ~2.2e-16 relative, so 5e-15 relative retains an order-of-magnitude margin. Saturated components equal the tau_max config constant exactly and zero components are exact, covered by the absolute floor."
 
 [[file]]
 name = "dead_reckoning.toml"

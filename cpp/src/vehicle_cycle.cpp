@@ -417,8 +417,18 @@ void check_config_vehicle(const RunConfig& cfg) {
           "control cycle per integrator step, D-5)");
     }
     for (const gnc::GncSensorCfg& s : cfg.gnc.sensors) {
-      if (s.sample_rate_hz < 1 ||
-          cfg.gnc.control_rate_hz % s.sample_rate_hz != 0) {
+      if (s.kind == "imu") {
+        // The v1 IMU emits exactly one increment pair per major cycle
+        // (ch:sensors-imu assumption 1): its sample interval IS the
+        // control period.
+        if (s.sample_rate_hz != cfg.gnc.control_rate_hz) {
+          throw std::invalid_argument(
+              "run_vehicle: [sensors.imu] sample_rate_hz must equal "
+              "control_rate_hz (the v1 IMU emits one increment pair per "
+              "control cycle, D-5)");
+        }
+      } else if (s.sample_rate_hz < 1 ||
+                 cfg.gnc.control_rate_hz % s.sample_rate_hz != 0) {
         throw std::invalid_argument(
             "run_vehicle: [sensors." + s.kind + "] sample_rate_hz must be "
             "a positive integer divisor of control_rate_hz (sensors sample "
@@ -440,6 +450,7 @@ void check_config_vehicle(const RunConfig& cfg) {
 // pure function of the config plus the nav component's declared dimensions.
 log::SrlogHeaderFields build_header_fields(const RunConfig& cfg,
                                            int nav_state_dim,
+                                           int nav_cov_dim,
                                            int nav_innov_max_dim) {
   // Enabled force sources in canonical order; the forces group is declared
   // only when its rate is nonzero (unchanged Phase 4 logic).
@@ -479,6 +490,12 @@ log::SrlogHeaderFields build_header_fields(const RunConfig& cfg,
       // nav.est's dimension by the writer's construction.
       fields.nav_est_rate_hz = cfg.gnc.control_rate_hz;
       fields.nav_state_dim = static_cast<std::uint32_t>(nav_state_dim);
+      if (nav_cov_dim != nav_state_dim) {
+        // Error-state estimators declare an independent covariance
+        // dimension (srlog_writer.hpp contract); equal dims use the
+        // writer's default.
+        fields.nav_cov_dim = static_cast<std::uint32_t>(nav_cov_dim);
+      }
       fields.nav_err_enabled = true;
     }
     if (nav_innov_max_dim > 0) {
@@ -585,6 +602,12 @@ struct VehicleCycle::Impl {
   StackProps sp;
   BodyLoads bl;
 
+  // Cycle-start endpoint values for the trapezoidal sensor truth, captured
+  // at the top of advance_cycle before the in-place state update.
+  Eigen::Vector3d r_start_ = Eigen::Vector3d::Zero();
+  Eigen::Vector3d v_start_ = Eigen::Vector3d::Zero();
+  Eigen::Vector3d sf_start_ = Eigen::Vector3d::Zero();
+
   // --- GNC runtime ---------------------------------------------------------
   bool gnc_active = false;
   std::int64_t act_cycle = 0;
@@ -611,6 +634,7 @@ struct VehicleCycle::Impl {
         control(c.gnc.enabled ? gnc::make_component(c.gnc.control) : nullptr),
         writer(out_path,
                build_header_fields(c, nav ? nav->state_dim() : 0,
+                                   nav ? nav->cov_dim() : 0,
                                    nav ? nav->innov_max_dim() : 0)) {
     central = central_body_from_name(cfg.central_body);
     mu = models::central_body_gm(central);
@@ -713,9 +737,8 @@ struct VehicleCycle::Impl {
       nav_n = nav->state_dim();
       innov_mm = nav->innov_max_dim();
       x_hat_buf.assign(static_cast<std::size_t>(nav_n), 0.0);
-      p_buf.assign(static_cast<std::size_t>(nav_n) *
-                       (static_cast<std::size_t>(nav_n) + 1) / 2,
-                   0.0);
+      const std::size_t nav_m = static_cast<std::size_t>(nav->cov_dim());
+      p_buf.assign(nav_m * (nav_m + 1) / 2, 0.0);
       e_buf.assign(static_cast<std::size_t>(nav_n), 0.0);
       innov_y_buf.assign(static_cast<std::size_t>(innov_mm), 0.0);
       innov_s_buf.assign(static_cast<std::size_t>(innov_mm) *
@@ -1106,6 +1129,14 @@ struct VehicleCycle::Impl {
   // attitude integration in the GNC mode).
   void advance_cycle(std::int64_t k) {
     const double t = t_of(k);
+    if (gnc_active) {
+      // Cycle-start endpoint values for the trapezoidal sensor truth
+      // (eq:imu:quadrature), captured before the in-place translational
+      // step overwrites the state; consumed after the attitude step below.
+      r_start_ = r_m;
+      v_start_ = v_mps;
+      sf_start_ = specific_force(t, r_start_, v_start_);
+    }
     if (released) {
       auto rhs = [this](double tt, const double* yin, double* ydot) {
         const Eigen::Map<const Eigen::Vector3d> r(yin);
@@ -1162,22 +1193,6 @@ struct VehicleCycle::Impl {
       q_hold = rotation::quat_normalize(rotation::quat_multiply(q_hold, dq));
     }
     if (gnc_active) {
-      // Sensor accumulation of this cycle's held kinematics (D-5 ZOH; the
-      // ideal IMU's integrals are exact sums of these held values,
-      // sensors/imu_ideal.hpp). Specific force is the body surface-force
-      // acceleration; the cannonball SRP/drag environment terms are not
-      // part of the v1.2 IMU truth (format doc section 3.2 domain bound).
-      sensors::SensorCycleTruth st;
-      st.t_s = t;
-      st.dt_s = dt;
-      st.r_i_m = r_m;
-      st.v_i_mps = v_mps;
-      st.q_i2b = q;
-      st.omega_b_radps = omega_b;
-      st.sf_b_mps2 = (bl.f_thrust + bl.f_aero) / ctx.mass_kg;
-      for (auto& s : sensor_list) {
-        s->accumulate(st);
-      }
       // Torque-driven attitude dynamics (Phase 6): integrate Euler's
       // equations and the quaternion kinematics over the cycle under the
       // applied command torque, with the composite inertia held constant
@@ -1186,6 +1201,8 @@ struct VehicleCycle::Impl {
       // composition of a later phase; format doc section 3.2 authority
       // scoping). One RK4 step per control cycle on the packed 7-state
       // attitude slice, then the FR-1 post-step renormalization.
+      const Eigen::Quaterniond q_start = q;
+      const Eigen::Vector3d omega_start = omega_b;
       double y_att[models::kAttitudeStateDim] = {
           q.w(), q.x(), q.y(), q.z(), omega_b[0], omega_b[1], omega_b[2]};
       const Eigen::Matrix3d inertia = sp.composite.inertia_kgm2;
@@ -1200,7 +1217,40 @@ struct VehicleCycle::Impl {
       models::rigidbody_renormalize(y_att);
       q = Eigen::Quaterniond(y_att[0], y_att[1], y_att[2], y_att[3]);
       omega_b = Eigen::Vector3d(y_att[4], y_att[5], y_att[6]);
+
+      // Sensor accumulation with the cycle's accepted-step ENDPOINT values
+      // (eq:imu:quadrature trapezoid; sensors/sensor.hpp contract): rates
+      // from the attitude integration endpoints, specific forces per
+      // eq:imu:specificforce at the translational endpoints under the
+      // cycle's frozen attitude/actuator context.
+      sensors::SensorCycleTruth st;
+      st.t_s = t;
+      st.dt_s = dt;
+      st.r_i_m = r_start_;
+      st.v_i_mps = v_start_;
+      st.q_i2b = q_start;
+      st.omega_b_start_radps = omega_start;
+      st.omega_b_end_radps = omega_b;
+      st.sf_b_start_mps2 = sf_start_;
+      st.sf_b_end_mps2 = specific_force(t + dt, r_m, v_mps);
+      for (auto& s : sensor_list) {
+        s->accumulate(st);
+      }
     }
+  }
+
+  // True specific force in body axes at (tt, r, v) under this cycle's
+  // frozen attitude and actuator context (eq:imu:specificforce): the total
+  // non-gravitational acceleration. Thrust, aero, SRP, and drag are sensed;
+  // gravitation (central body + third bodies) is not - the environment's
+  // gravitational subset cancels term-exactly against acceleration().
+  Eigen::Vector3d specific_force(double tt, const Eigen::Vector3d& r,
+                                 const Eigen::Vector3d& v) {
+    const Eigen::Vector3d a_env = env.acceleration(tt, r, v);
+    const Eigen::Vector3d a_grav = env.gravitational_acceleration(tt, r);
+    const BodyLoads loads = eval_body_loads(ctx, r, v);
+    return ctx.c_i2b * (a_env - a_grav) +
+           (loads.f_thrust + loads.f_aero) / ctx.mass_kg;
   }
 
   void finish() {
@@ -1259,6 +1309,7 @@ const RunSummary& VehicleCycle::summary() const { return impl_->run_summary; }
 log::SrlogHeaderFields VehicleCycle::make_header_fields(const RunConfig& cfg) {
   check_config_vehicle(cfg);
   int nav_n = 0;
+  int nav_m = 0;
   int innov_mm = 0;
   if (cfg.gnc.enabled) {
     // A component instance is the source of truth for its declared
@@ -1266,9 +1317,10 @@ log::SrlogHeaderFields VehicleCycle::make_header_fields(const RunConfig& cfg) {
     const std::unique_ptr<gnc::IGncComponent> tmp =
         gnc::make_component(cfg.gnc.nav);
     nav_n = tmp->state_dim();
+    nav_m = tmp->cov_dim();
     innov_mm = tmp->innov_max_dim();
   }
-  return build_header_fields(cfg, nav_n, innov_mm);
+  return build_header_fields(cfg, nav_n, nav_m, innov_mm);
 }
 
 }  // namespace star

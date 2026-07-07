@@ -137,6 +137,12 @@ class IGncComponent {
 
   // Estimator state dimension n for nav.est logging; 0 = not an estimator.
   virtual int state_dim() const { return 0; }
+  // Covariance dimension m for nav.est's packed P (m(m+1)/2 doubles);
+  // defaults to the state dimension. An error-state estimator whose
+  // covariance lives in a different parameterization overrides it (the
+  // reference EKF of a later workstream declares n = 16 - q scalar-first,
+  // v, p, b_g, b_a - with m = 15, a 3-component attitude error).
+  virtual int cov_dim() const { return state_dim(); }
   // Maximum innovation dimension across this estimator's aiding sensors;
   // 0 = no aiding, and nav.innov is then not declared in the log. An
   // aiding estimator (the reference EKF of a later workstream) overrides
@@ -149,7 +155,8 @@ class IGncComponent {
   virtual const std::vector<InnovationSample>& innovations() const;
   // State vector into x_hat[0..n). Called only when state_dim() > 0.
   virtual void state(double* x_hat) const;
-  // Covariance packed row-major upper triangle into p[0..n(n+1)/2).
+  // Covariance packed row-major upper triangle into p[0..m(m+1)/2),
+  // m = cov_dim(). Called only when state_dim() > 0.
   virtual void covariance_upper(double* p) const;
   // Truth-minus-estimate error in the estimator's own state convention,
   // into e[0..n) (nav.err contract: same dimension as the state). The

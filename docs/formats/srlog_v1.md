@@ -238,16 +238,20 @@ so none is logged). Within each group `t_s` is strictly increasing
 | `dtheta_b_rad` | `f64[3]` | `rad` | `body` | integral of the true body rate over the sample interval |
 | `dv_b_mps` | `f64[3]` | `m/s` | `body` | integral of the true specific force (body frame) over the sample interval |
 
-The v1.2 reference implementation is the **ideal IMU**: zero errors, exact
-accumulation of the loop's per-cycle zero-order-held kinematics
-(`dtheta = sum omega_b dt`, `dv = sum f_b dt` over the cycles in the
-interval — exact integrals because the held values are piecewise constant).
-Specific force is the body-frame surface-force acceleration
-(thrust + vehicle aerodynamics) / mass; the point-mass cannonball SRP/drag
-environment terms are not part of the v1.2 IMU truth (domain bound recorded
-in the sensor chapter). The full FR-23 error model (bias, scale factor,
-misalignment, ARW/VRW, quantization) lands in a later minor revision of the
-producing core without changing this record layout.
+The v1 IMU emits **one increment pair per control cycle**: its declared
+rate equals the header's `cycle_rate_hz` (faster- or slower-than-cycle IMU
+output is out of scope for v1; the sensor chapter's assumption 1). The
+v1.2 reference implementation is the **ideal IMU**: zero errors, with the
+truth integrals evaluated by **trapezoidal accumulation over the accepted
+integrator steps** tiling each sample interval (the steps terminate on
+cycle boundaries by construction, so the endpoint pairs are well defined;
+eq:imu:quadrature in the sensor chapter). Specific force is the total
+**non-gravitational** acceleration of the center of mass resolved in body
+axes — thrust, vehicle aerodynamics, SRP, and drag are sensed; gravitation
+(central body plus configured third bodies) is not (eq:imu:specificforce:
+an accelerometer in free fall reads zero). The full FR-23 error model
+(bias, scale factor, misalignment, ARW/VRW, quantization) lands in a later
+minor revision of the producing core without changing this record layout.
 
 #### `sensors.startracker`, `sensors.sunsensor`, `sensors.navfix`, `sensors.altimeter`
 
@@ -282,14 +286,21 @@ rendering.
 |---|---|---|---|---|
 | `t_s` | `f64` | `s` | | control-cycle time |
 | `x_hat` | `f64[n]` | | | estimator state vector |
-| `P` | `f64[n(n+1)/2]` | | | state covariance, packed **row-major upper triangle** (the same packing as the `mass` group's inertia tensor) |
+| `P` | `f64[m(m+1)/2]` | | | covariance, packed **row-major upper triangle** (the same packing as the `mass` group's inertia tensor) |
 
-The state dimension n is declared at header-write time and is
-estimator-defined; the estimator's math-library chapter is normative for
-the meaning and units of the components. The reference dead-reckoning
-navigator logs n = 7: `x_hat = [q_w, q_x, q_y, q_z, w_x, w_y, w_z]`
-(attitude quaternion, Hamilton scalar-first, then body rate in rad/s) with
-P identically zero (dead reckoning carries no covariance).
+The state dimension n and the covariance dimension m are declared at
+header-write time and are estimator-defined; the estimator's math-library
+chapter is normative for the meaning and units of the components. m
+defaults to n and differs only for estimators whose covariance lives in a
+different parameterization than the state: the reference error-state EKF
+(a later workstream) declares n = 16 (`x_hat` = attitude quaternion,
+Hamilton scalar-first, then velocity, position, gyro bias, accelerometer
+bias) with m = 15 (the 3-component attitude error replaces the
+4-component quaternion), so its `P` carries 120 doubles. The reference
+dead-reckoning navigator logs n = m = 7:
+`x_hat = [q_w, q_x, q_y, q_z, w_x, w_y, w_z]` (attitude quaternion,
+Hamilton scalar-first, then body rate in rad/s) with P identically zero
+(dead reckoning carries no covariance).
 
 #### `nav.err` - truth-minus-estimate error state
 
@@ -299,11 +310,15 @@ P identically zero (dead reckoning carries no covariance).
 | `e` | `f64[n]` | | | truth minus estimate, in the estimator's own state convention |
 
 `nav.err` exists only alongside `nav.est`, **at the same rate and with the
-same dimension n** — record counts match by construction. This is a
+state dimension n** — record counts match by construction. This is a
 contract with the `star consistency` tooling, which computes NEES from
-`nav.err.e` and `nav.est.P` directly (per-epoch NEES ~ chi-square(n);
-ensemble mean over R runs gated against two-sided 95 % chi-square(Rn)/R
-bounds); no state-to-truth mapping is defined in the file. The error is
+`nav.err.e` and `nav.est.P` directly when m = n (per-epoch NEES ~
+chi-square(n); ensemble mean over R runs gated against two-sided 95 %
+chi-square(Rn)/R bounds); when the declared covariance dimension m differs
+from n, the estimator's chapter defines the m-dimensional error the NEES
+uses (for the error-state EKF, the attitude components of `e` map to the
+3-component attitude error). No state-to-truth mapping is defined in the
+file. The error is
 computed in-core from truth for analysis only; truth never enters the GNC
 components' inputs unless the scenario sets the `oracle` flag (FR-25).
 For quaternion-bearing states the producing estimator aligns the truth

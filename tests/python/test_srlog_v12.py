@@ -40,13 +40,17 @@ _IMU_GROUP = {
         {"name": "dv_b_mps", "dtype": "f64[3]", "units": "m/s", "frame": "body"},
     ],
 }
+# nav.est with the error-state EKF layout reservation: state dimension 16
+# with an independently declared covariance dimension 15, so P is f64[120]
+# (the format doc's m(m+1)/2 packing) - proving the reader carries
+# header-declared dimensions where n and m differ.
 _NAV_EST_GROUP = {
     "name": "nav.est",
     "rate_hz": 100,
     "channels": [
         {"name": "t_s", "dtype": "f64", "units": "s", "frame": ""},
-        {"name": "x_hat", "dtype": "f64[7]", "units": "", "frame": ""},
-        {"name": "P", "dtype": "f64[28]", "units": "", "frame": ""},
+        {"name": "x_hat", "dtype": "f64[16]", "units": "", "frame": ""},
+        {"name": "P", "dtype": "f64[120]", "units": "", "frame": ""},
     ],
 }
 _NAV_INNOV_GROUP = {
@@ -71,8 +75,8 @@ def test_synthetic_v12_groups_load_dict_driven():
     imu_i = _fixtures.group_index(header, "sensors.imu")
     est_i = _fixtures.group_index(header, "nav.est")
     innov_i = _fixtures.group_index(header, "nav.innov")
-    x_hat = tuple(float(i) for i in range(7))
-    p = tuple(0.5 * i for i in range(28))
+    x_hat = tuple(float(i) for i in range(16))
+    p = tuple(0.5 * i for i in range(120))
     records = [
         _fixtures.event_record(0.0, 1, "run_start"),
         (imu_i, (0.01, (1e-4, -2e-4, 3e-4), (0.05, 0.0, -0.01))),
@@ -94,9 +98,9 @@ def test_synthetic_v12_groups_load_dict_driven():
     assert imu["dtheta_b_rad"].shape == (1, 3)
     assert imu["dtheta_b_rad"][0, 2] == 3e-4
     est = run.groups["nav.est"]
-    assert est["x_hat"].shape == (1, 7)
-    assert est["P"].shape == (1, 28)
-    assert est["P"][0, 27] == 13.5
+    assert est["x_hat"].shape == (1, 16)
+    assert est["P"].shape == (1, 120)
+    assert est["P"][0, 119] == 59.5
     innov = run.groups["nav.innov"]
     assert innov.shape == (2,)
     assert list(innov["sensor_id"]) == [0, 1]

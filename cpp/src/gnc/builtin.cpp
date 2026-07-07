@@ -82,18 +82,27 @@ double deg2rad_g(double d) { return d * (constants::TWO_PI / 360.0); }
 class DeadReckoningNav final : public IGncComponent {
  public:
   explicit DeadReckoningNav(const GncComponentCfg& cfg) {
-    check_param_keys(cfg, {}, {});
+    check_param_keys(cfg, {}, {"q0"});
+    // The initial estimate comes from configuration, stated explicitly in
+    // the mission file - no implicit truth access (ch:gnc-builtin,
+    // sec:gnc:deadreckoning). The reference scenarios set it to the true
+    // initial attitude and document the derivation.
+    const std::vector<double> q0 = require_vector(cfg, "q0", 4);
+    q_hat_ = rotation::quat_normalize(
+        Eigen::Quaterniond(q0[0], q0[1], q0[2], q0[3]));
   }
 
-  void init(const GncInitContext& ctx) override {
-    q_hat_ = ctx.q0_i2b;
-    omega_hat_ = ctx.omega0_b_radps;
+  void init(const GncInitContext&) override {
+    // Attitude comes from the configured q0 (constructor); the rate
+    // estimate starts at zero and is defined by eq:gnc:drprop from the
+    // first IMU sample on.
+    omega_hat_ = Eigen::Vector3d::Zero();
   }
 
   GncOutput update(const GncInput& input) override {
     if (input.imu_fresh && input.imu.valid) {
       // Compose the accumulated increment as one exact rotation
-      // (gnc/builtin.hpp): angle = |dtheta|, axis = dtheta/|dtheta|,
+      // (eq:gnc:exactrot): angle = |dtheta|, axis = dtheta/|dtheta|,
       // identity when the increment is exactly zero.
       const Eigen::Vector3d dtheta = input.imu.dtheta_b_rad;
       const double angle = dtheta.norm();
@@ -104,10 +113,10 @@ class DeadReckoningNav final : public IGncComponent {
         dq = Eigen::Quaterniond(std::cos(0.5 * angle), s * axis.x(),
                                 s * axis.y(), s * axis.z());
       }
+      // Propagation and rate estimate, eq:gnc:drprop: body-side
+      // composition, normalized every cycle; interval-mean rate.
       q_hat_ = rotation::quat_normalize(rotation::quat_multiply(q_hat_, dq));
       if (input.imu.dt_s > 0.0) {
-        // Interval-mean rate: for the loop's per-cycle held rates this is
-        // the held value up to one rounding per component.
         omega_hat_ = input.imu.dtheta_b_rad / input.imu.dt_s;
       }
     }
@@ -204,7 +213,9 @@ class PitchProgramGuidance final : public IGncComponent {
     // Same machinery, same call sequence, same absolute-time table lookups
     // as the Phase 4 open-loop kPitchProgram mode, so the commanded
     // attitude equals the open-loop command bit-for-bit at equal cycle
-    // times (gnc/builtin.hpp contract).
+    // times (gnc/builtin.hpp contract): clamped interpolation per
+    // eq:gnc:interp, commanded rate per eq:gnc:cmdrate
+    // (models::omega_from_quaternions, resolved in the commanded frame).
     const double p0 = deg2rad_g(
         models::pwl_interp_clamped(pitch_t_s_, pitch_deg_, input.t_s));
     const double p1 = deg2rad_g(models::pwl_interp_clamped(
@@ -297,19 +308,27 @@ class PdAttitudeControl final : public IGncComponent {
     if (!input.nav_est.valid || !input.att_cmd.valid) {
       return out;  // hold: no estimate or no command to track
     }
-    // Normative arithmetic (gnc/builtin.hpp; Phase 6 exit criterion 2):
-    //   dq    = q_cmd^-1 (x) q_est
-    //   s     = (dq_0 >= 0) ? +1 : -1        (sign(0) = +1)
-    //   tau_i = -kp_i * s * dq_vec_i - kd_i * (w_est_i - w_cmd_i)
-    //   tau_i = clamp(tau_i, -tau_max_i, +tau_max_i)
+    // Normative arithmetic (gnc/builtin.hpp; ch:gnc-builtin sec:gnc:pd;
+    // Phase 6 exit criterion 2). No renormalization of dq - inputs are
+    // used as received.
+    //   dq    = q_cmd^* (x) q_est                       (eq:gnc:deltaq)
+    //   s     = (dq_0 >= 0) ? +1 : -1                   (eq:gnc:sign)
+    //   w_err = w_est - C(dq) * w_cmd                   (eq:gnc:werr)
+    //   tau_i = -kp_i * s * dq_vec_i - kd_i * w_err_i   (eq:gnc:pd)
+    //   tau_i = clamp(tau_i, -tau_max_i, +tau_max_i)    (eq:gnc:sat)
     const Eigen::Quaterniond dq = rotation::quat_multiply(
         rotation::quat_conjugate(input.att_cmd.q_i2b), input.nav_est.q_i2b);
     const double s = (dq.w() >= 0.0) ? 1.0 : -1.0;
     const double dq_vec[3] = {dq.x(), dq.y(), dq.z()};
+    // C(dq) is cmd-to-body for dq = q_cmd2b (eq:notation:quat2dcm), so it
+    // resolves the commanded rate, expressed in the commanded frame, into
+    // the estimated body frame the rate estimate lives in.
+    const Eigen::Vector3d w_cmd_b =
+        rotation::dcm_from_quat(dq) * input.att_cmd.omega_b_radps;
     for (int i = 0; i < 3; ++i) {
-      double tau = -kp_[i] * s * dq_vec[i] -
-                   kd_[i] * (input.nav_est.omega_b_radps[i] -
-                             input.att_cmd.omega_b_radps[i]);
+      double tau =
+          -kp_[i] * s * dq_vec[i] -
+          kd_[i] * (input.nav_est.omega_b_radps[i] - w_cmd_b[i]);
       if (tau > tau_max_[i]) tau = tau_max_[i];
       if (tau < -tau_max_[i]) tau = -tau_max_[i];
       out.torque_b_nm[i] = tau;

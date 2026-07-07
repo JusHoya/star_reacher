@@ -135,16 +135,20 @@ def test_ideal_imu_increments_bit_exact(reference_run):
     _, run = reference_run
     truth = run.groups["truth"]
     imu = run.groups["sensors.imu"]
-    dt = 0.1
-    # truth logs every control cycle here, and the IMU samples every cycle,
-    # so the increment emitted at t_k is exactly the held cycle-start
-    # kinematics of cycle k-1: dtheta = omega_b * dt, one product per
-    # component - bit equality, not tolerance (sensors/imu_ideal.hpp).
-    expected = truth["w_b_radps"][:-1] * dt
+    w = truth["w_b_radps"]
+    # truth logs every control cycle here and the IMU samples every cycle,
+    # so the increment emitted at t_k is the trapezoidal quadrature of
+    # cycle k-1 (eq:imu:quadrature): dtheta_k = (w_(k-1) + w_k) * (0.5 dt),
+    # exactly the two floating-point operations the core performs (the
+    # half-step factor 0.5 * 0.1 is an exact power-of-two scaling) - bit
+    # equality, not tolerance (sensors/imu_ideal.hpp). The logged truth
+    # rate at t_k IS the cycle k-1 attitude-integration endpoint, which is
+    # what makes the reconstruction exact.
+    expected = (w[:-1] + w[1:]) * (0.5 * 0.1)
     assert np.array_equal(imu["dtheta_b_rad"], expected)
-    # No thrust and no aero on this free-flyer: specific force is exactly
-    # zero, so dv is exactly zero (the cannonball environment terms are not
-    # IMU truth by the format doc's domain bound).
+    # No thrust, no aero, no SRP, no drag on this free-flyer, and the
+    # gravitational terms cancel exactly (an accelerometer in free fall
+    # reads zero, eq:imu:specificforce): dv is exactly zero.
     assert np.all(imu["dv_b_mps"] == 0.0)
 
 
@@ -188,7 +192,8 @@ def test_pd_law_python_reimplementation_contract(reference_run):
     w_cmd = cmd["w_cmd_b_radps"]
 
     # Hamilton product conj(q_cmd) (x) q_est, scalar-first (D-7): the
-    # conjugate keeps the scalar and negates the vector part.
+    # conjugate keeps the scalar and negates the vector part
+    # (eq:gnc:deltaq; no renormalization of dq).
     pw = q_cmd[:, 0]
     px = -q_cmd[:, 1]
     py = -q_cmd[:, 2]
@@ -198,10 +203,25 @@ def test_pd_law_python_reimplementation_contract(reference_run):
     dqx = pw * qx + px * qw + py * qz - pz * qy
     dqy = pw * qy - px * qz + py * qw + pz * qx
     dqz = pw * qz + px * qy - py * qx + pz * qw
-    s = np.where(dq0 >= 0.0, 1.0, -1.0)  # sign(0) = +1
+    s = np.where(dq0 >= 0.0, 1.0, -1.0)  # sign(0) = +1 (eq:gnc:sign)
     dq_vec = np.stack([dqx, dqy, dqz], axis=1)
-    tau = -kp * s[:, None] * dq_vec - kd * (w_est - w_cmd)
-    tau = np.clip(tau, -tau_max, tau_max)
+    # eq:gnc:werr: resolve the commanded rate into the estimated body frame
+    # through the error DCM C(dq) (quaternion-to-DCM, eq:notation:quat2dcm;
+    # dq is cmd-to-body). Built row by row from the dq components.
+    ww, xx, yy, zz = dq0 * dq0, dqx * dqx, dqy * dqy, dqz * dqz
+    c = np.empty((len(dq0), 3, 3))
+    c[:, 0, 0] = ww + xx - yy - zz
+    c[:, 0, 1] = 2.0 * (dqx * dqy + dq0 * dqz)
+    c[:, 0, 2] = 2.0 * (dqx * dqz - dq0 * dqy)
+    c[:, 1, 0] = 2.0 * (dqx * dqy - dq0 * dqz)
+    c[:, 1, 1] = ww - xx + yy - zz
+    c[:, 1, 2] = 2.0 * (dqy * dqz + dq0 * dqx)
+    c[:, 2, 0] = 2.0 * (dqx * dqz + dq0 * dqy)
+    c[:, 2, 1] = 2.0 * (dqy * dqz - dq0 * dqx)
+    c[:, 2, 2] = ww - xx - yy + zz
+    w_cmd_b = np.einsum("kij,kj->ki", c, w_cmd)
+    tau = -kp * s[:, None] * dq_vec - kd * (w_est - w_cmd_b)  # eq:gnc:pd
+    tau = np.clip(tau, -tau_max, tau_max)  # eq:gnc:sat
 
     assert np.max(np.abs(tau - cmd["tau_b_nm"])) < 1e-9
 
@@ -281,6 +301,10 @@ def test_pitch_program_guidance_equals_openloop_command(tmp_path):
         "latency_cycles = 0\n"
         "[gnc.nav]\n"
         'component = "dead_reckoning"\n'
+        # An arbitrary (wrong) initial estimate is fine here: the equality
+        # under test concerns the guidance COMMAND, which never reads the
+        # nav estimate.
+        "q0 = [1.0, 0.0, 0.0, 0.0]\n"
         "[gnc.guidance]\n"
         'component = "pitch_program"\n'
         f"azimuth_deg = {pitch['azimuth_deg']}\n"

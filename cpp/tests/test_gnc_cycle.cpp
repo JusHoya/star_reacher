@@ -69,6 +69,11 @@ star::RunConfig gnc_scenario(bool oracle, std::uint32_t latency_cycles) {
   cfg.gnc.control_rate_hz = 10;
   cfg.gnc.latency_cycles = latency_cycles;
   cfg.gnc.nav.component = "dead_reckoning";
+  // The configured initial estimate (ch:gnc-builtin: stated explicitly,
+  // no implicit truth access): the Phase 4 initial-attitude rule for
+  // r = +X, v = +Y gives exactly [0, sqrt(1/2), sqrt(1/2), 0].
+  cfg.gnc.nav.vectors["q0"] = {0.0, 0.7071067811865476, 0.7071067811865476,
+                               0.0};
   cfg.gnc.guidance.component = "attitude_hold";
   cfg.gnc.guidance.vectors["q_cmd"] = {0.996194698091746, 0.0, 0.0,
                                        0.087155742747658};
@@ -218,10 +223,12 @@ TEST_CASE("gnc_cycle_config_rejection") {
     CHECK_THROWS_AS(star::VehicleCycle::make_header_fields(cfg),
                     std::invalid_argument);
   }
-  // Sensor sample rates must divide the control rate.
+  // The v1 IMU emits one increment pair per major cycle: its rate must
+  // EQUAL the control rate (ch:sensors-imu assumption 1) - even an exact
+  // divisor is rejected.
   {
     star::RunConfig cfg = gnc_scenario(false, 0);
-    cfg.gnc.sensors[0].sample_rate_hz = 3;  // 10 % 3 != 0
+    cfg.gnc.sensors[0].sample_rate_hz = 5;  // divides 10, still rejected
     CHECK_THROWS_AS(star::VehicleCycle::make_header_fields(cfg),
                     std::invalid_argument);
   }

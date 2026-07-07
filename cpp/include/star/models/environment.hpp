@@ -103,6 +103,17 @@ class EnvironmentModel {
   Eigen::Vector3d acceleration(double t_s, const Eigen::Vector3d& r_m,
                                const Eigen::Vector3d& v_mps);
 
+  // Gravitational subset of acceleration(): central-body gravity plus the
+  // configured third bodies - no SRP, no drag. Exists for the FR-23 IMU
+  // truth model (eq:imu:specificforce): an accelerometer senses the total
+  // acceleration minus gravitation, so the loop isolates the sensed part as
+  // acceleration() - gravitational_acceleration(). Same term order and
+  // arithmetic as the corresponding terms of acceleration(), so the
+  // difference cancels the gravitational terms exactly (not merely to
+  // rounding).
+  Eigen::Vector3d gravitational_acceleration(double t_s,
+                                             const Eigen::Vector3d& r_m);
+
   // First-order ODE right-hand side for the shared integrators:
   // y = [r, v], ydot = [v, acceleration(t, r, v)].
   void rhs(double t_s, const double* y, double* ydot);

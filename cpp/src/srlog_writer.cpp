@@ -193,9 +193,10 @@ void check_sensor_decls(const std::vector<SensorGroupDecl>& sensors,
 void check_gnc_fields(const SrlogHeaderFields& fields) {
   if (fields.cycle_rate_hz == 0) {
     if (!fields.sensors.empty() || fields.nav_est_rate_hz != 0 ||
-        fields.nav_state_dim != 0 || fields.nav_err_enabled ||
-        fields.nav_innov_enabled || fields.nav_innov_max_dim != 0 ||
-        fields.gnc_cmd_rate_hz != 0 || fields.latency_cycles != 0) {
+        fields.nav_state_dim != 0 || fields.nav_cov_dim != 0 ||
+        fields.nav_err_enabled || fields.nav_innov_enabled ||
+        fields.nav_innov_max_dim != 0 || fields.gnc_cmd_rate_hz != 0 ||
+        fields.latency_cycles != 0) {
       throw std::invalid_argument(
           "SRLOG writer: a v1.2 GNC group (or latency_cycles) is declared "
           "but cycle_rate_hz is 0; the control-cycle rate anchors every "
@@ -208,6 +209,11 @@ void check_gnc_fields(const SrlogHeaderFields& fields) {
     throw std::invalid_argument(
         "SRLOG writer: nav.est needs both a rate and a state dimension "
         "(nav_est_rate_hz and nav_state_dim are declared jointly)");
+  }
+  if (fields.nav_cov_dim != 0 && fields.nav_est_rate_hz == 0) {
+    throw std::invalid_argument(
+        "SRLOG writer: nav_cov_dim is declared without nav.est; the "
+        "covariance dimension qualifies the nav.est declaration");
   }
   check_cycle_rate("nav.est", fields.nav_est_rate_hz, fields.cycle_rate_hz);
   if (fields.nav_err_enabled && fields.nav_est_rate_hz == 0) {
@@ -403,6 +409,11 @@ std::string SrlogWriter::header_json(const SrlogHeaderFields& fields) {
   }
   if (fields.nav_est_rate_hz != 0) {
     const std::size_t n = fields.nav_state_dim;
+    // The covariance may live in a different parameterization than the
+    // state (error-state estimators): m defaults to n and is declared
+    // independently otherwise (header contract in srlog_writer.hpp).
+    const std::size_t m =
+        fields.nav_cov_dim != 0 ? fields.nav_cov_dim : fields.nav_state_dim;
     j += ",{\"name\":\"nav.est\",\"rate_hz\":";
     j += std::to_string(fields.nav_est_rate_hz);
     j += ",\"channels\":[";
@@ -413,7 +424,7 @@ std::string SrlogWriter::header_json(const SrlogHeaderFields& fields) {
     // fixed here.
     append_channel(j, "x_hat", f64_array_dtype(n).c_str(), "", "");
     j += ',';
-    append_channel(j, "P", f64_array_dtype(n * (n + 1) / 2).c_str(), "", "");
+    append_channel(j, "P", f64_array_dtype(m * (m + 1) / 2).c_str(), "", "");
     j += "]}";
   }
   if (fields.nav_err_enabled) {
@@ -497,6 +508,8 @@ SrlogWriter::SrlogWriter(const std::string& path,
   if (fields.nav_est_rate_hz != 0) {
     nav_est_index_ = next_index++;
     nav_state_dim_ = fields.nav_state_dim;
+    nav_cov_dim_ =
+        fields.nav_cov_dim != 0 ? fields.nav_cov_dim : fields.nav_state_dim;
   }
   if (fields.nav_err_enabled) nav_err_index_ = next_index++;
   if (fields.nav_innov_enabled) {
@@ -725,11 +738,12 @@ void SrlogWriter::write_nav_est(double t_s, const double* x_hat,
     throw std::logic_error(
         "SRLOG writer: nav.est group was not declared at header-write time");
   }
-  if (n != nav_state_dim_ || p_len != nav_state_dim_ * (nav_state_dim_ + 1) / 2) {
+  if (n != nav_state_dim_ || p_len != nav_cov_dim_ * (nav_cov_dim_ + 1) / 2) {
     throw std::invalid_argument(
         "SRLOG writer: nav.est record carries x_hat[" + std::to_string(n) +
         "], P[" + std::to_string(p_len) + "], but the declaration fixes n=" +
-        std::to_string(nav_state_dim_) + " (P is n(n+1)/2 packed row-major "
+        std::to_string(nav_state_dim_) + ", m=" +
+        std::to_string(nav_cov_dim_) + " (P is m(m+1)/2 packed row-major "
         "upper triangle)");
   }
   put_u16(static_cast<std::uint16_t>(nav_est_index_));

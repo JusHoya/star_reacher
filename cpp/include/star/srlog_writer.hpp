@@ -81,11 +81,18 @@ struct SrlogHeaderFields {
   // (kSensorKinds), mirroring the force_sources discipline: the header
   // bytes are a pure function of the declared set.
   std::vector<SensorGroupDecl> sensors;
-  // nav.est: t_s, x_hat f64[n], P f64[n(n+1)/2] (packed row-major upper
+  // nav.est: t_s, x_hat f64[n], P f64[m(m+1)/2] (packed row-major upper
   // triangle, the FR-26 convention shared with the mass group's inertia).
-  // Rate and dimension are declared together or not at all.
+  // Rate and state dimension are declared together or not at all. The
+  // covariance dimension m defaults to n (nav_cov_dim == 0) and may be
+  // declared independently for estimators whose covariance lives in a
+  // different parameterization than the state: the reference error-state
+  // EKF (ch:ekf, a later workstream) declares n = 16 (q scalar-first, v,
+  // p, b_g, b_a) with m = 15 (3-component attitude error), so P carries
+  // 120 doubles.
   std::uint32_t nav_est_rate_hz = 0;
   std::uint32_t nav_state_dim = 0;
+  std::uint32_t nav_cov_dim = 0;
   // nav.err: t_s, e f64[n] - the truth-minus-estimate error state in the
   // estimator's own state convention. Its dimension and rate are pinned to
   // nav.est by construction (one enable flag, no independent fields): the
@@ -207,8 +214,10 @@ class SrlogWriter {
                            std::size_t px_count);
 
   // One `nav.est` record: the estimator state x_hat (n doubles) and its
-  // covariance P packed as the row-major upper triangle (n(n+1)/2 doubles,
-  // the FR-26 packing). n must equal the declared nav_state_dim.
+  // covariance P packed as the row-major upper triangle (m(m+1)/2 doubles,
+  // the FR-26 packing). n must equal the declared nav_state_dim and p_len
+  // the declared covariance dimension's triangle size (m = nav_cov_dim,
+  // defaulting to n).
   void write_nav_est(double t_s, const double* x_hat, std::size_t n,
                      const double* p_upper, std::size_t p_len);
 
@@ -264,6 +273,7 @@ class SrlogWriter {
   // Declared dimensions the v1.2 write calls are re-checked against.
   std::size_t camera_px_count_ = 0;
   std::size_t nav_state_dim_ = 0;
+  std::size_t nav_cov_dim_ = 0;
   std::size_t nav_innov_max_dim_ = 0;
 };
 

@@ -107,6 +107,8 @@ authority)::
 
     [gnc.nav]
     component = "dead_reckoning"
+    q0 = [1.0, 0.0, 0.0, 0.0]       # initial attitude estimate, stated
+                                    # explicitly (no implicit truth access)
 
     [gnc.guidance]
     component = "attitude_hold"     # or "pitch_program" (geodetic only)
@@ -119,7 +121,8 @@ authority)::
     tau_max_nm = [0.05, 0.05, 0.05]     # symmetric per-axis saturation
 
     [sensors.imu]
-    sample_rate_hz = 10         # must divide control_rate_hz exactly
+    sample_rate_hz = 10         # must equal control_rate_hz (one increment
+                                # pair per control cycle, D-5)
 
 Component vocabularies are the FR-25 built-ins mirrored in
 ``_GNC_NAV_COMPONENTS`` / ``_GNC_GUIDANCE_COMPONENTS`` /
@@ -236,7 +239,7 @@ _MARS_ATMOSPHERES = ("mars_exponential",)
 # work core-less, so this is a static mirror of the core registry
 # (cpp/src/gnc/builtin.cpp); test_gnc_validation.py asserts the two never
 # drift, and the core re-checks selections against the live registry.
-_GNC_NAV_COMPONENTS = {"dead_reckoning": ()}
+_GNC_NAV_COMPONENTS = {"dead_reckoning": ("q0",)}
 _GNC_GUIDANCE_COMPONENTS = {
     "pitch_program": ("azimuth_deg", "pitch_t_s", "pitch_deg"),
     "attitude_hold": ("q_cmd",),
@@ -1381,7 +1384,37 @@ def _validate_gnc_component(
     resolved: dict = {"component": component}
     ok = True
 
-    if component == "pitch_program":
+    if component == "dead_reckoning":
+        # The initial attitude estimate is configuration, stated explicitly
+        # in the mission file - no implicit truth access (the GNC chapter's
+        # dead-reckoning contract). Required, unlike attitude_hold's q_cmd.
+        if "q0" not in table:
+            errs.add(
+                path, "q0",
+                "missing required key (the initial attitude estimate, "
+                "Hamilton scalar-first [w, x, y, z], D-7)",
+                units="1", typical="unit quaternion",
+            )
+            ok = False
+        else:
+            q = table["q0"]
+            valid = (
+                isinstance(q, list)
+                and len(q) == 4
+                and all(_is_number(x) and math.isfinite(x) for x in q)
+                and math.hypot(*[float(x) for x in q]) > 0.0
+            )
+            if not valid:
+                errs.add(
+                    path, "q0",
+                    f"expected 4 finite numbers with a non-zero norm "
+                    f"(Hamilton scalar-first [w, x, y, z], D-7), got {q!r}",
+                    units="1", typical="unit quaternion",
+                )
+                ok = False
+            else:
+                resolved["q0"] = [float(x) for x in q]
+    elif component == "pitch_program":
         azimuth = _req_num(
             table, path, "azimuth_deg", errs, units="deg",
             typical="0 to 360 (flight azimuth east of north)",
@@ -1714,7 +1747,7 @@ def _validate_gnc(
                 if "sample_rate_hz" not in imu:
                     errs.add(
                         "sensors.imu", "sample_rate_hz", "missing required key",
-                        units="Hz", typical="1 to control_rate_hz",
+                        units="Hz", typical="= control_rate_hz",
                     )
                     ok = False
                 elif not _is_int(imu["sample_rate_hz"]) or imu["sample_rate_hz"] < 1:
@@ -1723,18 +1756,18 @@ def _validate_gnc(
                         "sample_rate_hz",
                         f"expected an integer >= 1, got {imu['sample_rate_hz']!r}",
                         units="Hz",
-                        typical="1 to control_rate_hz",
+                        typical="= control_rate_hz",
                     )
                     ok = False
-                elif rate is not None and rate % imu["sample_rate_hz"] != 0:
+                elif rate is not None and imu["sample_rate_hz"] != rate:
                     errs.add(
                         "sensors.imu",
                         "sample_rate_hz",
-                        f"must be an exact divisor of [gnc] control_rate_hz "
-                        f"({rate}), got {imu['sample_rate_hz']!r}; sensors "
-                        f"sample on the control-cycle grid",
+                        f"must equal [gnc] control_rate_hz ({rate}), got "
+                        f"{imu['sample_rate_hz']!r}; the v1 IMU emits one "
+                        f"increment pair per control cycle (D-5)",
                         units="Hz",
-                        typical="1 to control_rate_hz",
+                        typical="= control_rate_hz",
                     )
                     ok = False
                 else:

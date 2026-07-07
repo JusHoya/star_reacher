@@ -701,6 +701,33 @@ TEST_CASE("srlog_v12_declaration_validation") {
     CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
                     std::invalid_argument);
   }
+  // The covariance dimension qualifies the nav.est declaration and cannot
+  // stand alone.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.nav_est_rate_hz = 0;
+    f.nav_state_dim = 0;
+    f.nav_err_enabled = false;
+    f.nav_cov_dim = 15;
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // An independently declared covariance dimension changes only the P
+  // channel: the error-state EKF layout (a later workstream) declares
+  // n = 16 (q, v, p, b_g, b_a) with m = 15, so P is f64[120] while x_hat
+  // and nav.err.e stay f64[16].
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.nav_state_dim = 16;
+    f.nav_cov_dim = 15;
+    const std::string j = star::log::SrlogWriter::header_json(f);
+    CHECK(j.find("{\"name\":\"x_hat\",\"dtype\":\"f64[16]\"") !=
+          std::string::npos);
+    CHECK(j.find("{\"name\":\"P\",\"dtype\":\"f64[120]\"") !=
+          std::string::npos);
+    CHECK(j.find("{\"name\":\"e\",\"dtype\":\"f64[16]\"") !=
+          std::string::npos);
+  }
   // nav.innov needs the sensor-identity table its records index.
   {
     star::log::SrlogHeaderFields f = v12_fields();
@@ -785,6 +812,25 @@ TEST_CASE("srlog_v12_write_calls_guard_declaration_and_dimensions") {
     CHECK_THROWS_AS(
         writer.write_sensor_camera(0.0, Eigen::Vector3d::Zero(), q, px, 2),
         std::invalid_argument);  // declaration fixes 2 landmarks = 4 values
+    writer.close();
+  }
+  {
+    // Independent covariance dimension (the EKF layout reservation): with
+    // n = 16 and m = 15 declared, x_hat carries 16 doubles and P exactly
+    // 120 - the n-derived 136 is a caller bug.
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.nav_state_dim = 16;
+    f.nav_cov_dim = 15;
+    star::log::SrlogWriter writer(path, f);
+    double x16[16] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    double p136[136] = {0};
+    CHECK_NOTHROW(writer.write_nav_est(0.0, x16, 16, p136, 120));
+    CHECK_THROWS_AS(writer.write_nav_est(0.01, x16, 16, p136, 136),
+                    std::invalid_argument);
+    // nav.err stays at the STATE dimension n = 16.
+    CHECK_NOTHROW(writer.write_nav_err(0.0, x16, 16));
+    CHECK_THROWS_AS(writer.write_nav_err(0.01, x16, 15),
+                    std::invalid_argument);
     writer.close();
   }
   std::remove(path.c_str());

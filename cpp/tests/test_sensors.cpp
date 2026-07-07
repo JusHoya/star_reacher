@@ -36,26 +36,29 @@ star::log::SrlogWriter make_imu_writer(const std::string& path) {
 
 }  // namespace
 
-TEST_CASE("sensors_ideal_imu_exact_accumulation_and_reset") {
+TEST_CASE("sensors_ideal_imu_trapezoidal_accumulation_and_reset") {
   star::sensors::IdealImu imu(10);
   CHECK(std::string(imu.kind()) == "imu");
   CHECK(imu.sample_rate_hz() == 10);
   CHECK_FALSE(imu.last_sample().valid);
 
-  // Held values and dt chosen exactly representable in binary64, so the
-  // accumulated sums are exact and asserted with bit equality: the ideal
-  // IMU's increments are the exact integrals of the loop's zero-order-held
-  // kinematics (sensors/imu_ideal.hpp).
+  // Endpoint values and dt chosen exactly representable in binary64, so
+  // the trapezoidal sums (h/2)(x_start + x_end) are exact and asserted
+  // with bit equality (eq:imu:quadrature; sensors/imu_ideal.hpp).
   const double dt = 0.25;
   star::sensors::SensorCycleTruth c1;
   c1.t_s = 0.0;
   c1.dt_s = dt;
-  c1.omega_b_radps = Eigen::Vector3d(0.25, -0.5, 0.125);
-  c1.sf_b_mps2 = Eigen::Vector3d(8.0, 0.0, -2.0);
+  c1.omega_b_start_radps = Eigen::Vector3d(0.25, -0.5, 0.125);
+  c1.omega_b_end_radps = Eigen::Vector3d(0.75, -0.25, 0.375);
+  c1.sf_b_start_mps2 = Eigen::Vector3d(8.0, 0.0, -2.0);
+  c1.sf_b_end_mps2 = Eigen::Vector3d(4.0, 2.0, -6.0);
   star::sensors::SensorCycleTruth c2 = c1;
   c2.t_s = dt;
-  c2.omega_b_radps = Eigen::Vector3d(-0.125, 0.25, 0.5);
-  c2.sf_b_mps2 = Eigen::Vector3d(0.0, 4.0, 2.0);
+  c2.omega_b_start_radps = Eigen::Vector3d(-0.125, 0.25, 0.5);
+  c2.omega_b_end_radps = Eigen::Vector3d(-0.375, 0.75, 0.25);
+  c2.sf_b_start_mps2 = Eigen::Vector3d(0.0, 4.0, 2.0);
+  c2.sf_b_end_mps2 = Eigen::Vector3d(2.0, 6.0, 4.0);
 
   imu.accumulate(c1);
   imu.accumulate(c2);
@@ -69,14 +72,14 @@ TEST_CASE("sensors_ideal_imu_exact_accumulation_and_reset") {
     CHECK(s.valid);
     CHECK(s.t_s == 0.5);
     CHECK(s.dt_s == 0.5);  // two exact quarter-second cycles
-    // dtheta = 0.25*(0.25, -0.5, 0.125) + 0.25*(-0.125, 0.25, 0.5), exact.
-    CHECK(s.dtheta_b_rad[0] == 0.03125);
-    CHECK(s.dtheta_b_rad[1] == -0.0625);
+    // dtheta = 0.125*(1.0, -0.75, 0.5) + 0.125*(-0.5, 1.0, 0.75), exact.
+    CHECK(s.dtheta_b_rad[0] == 0.0625);
+    CHECK(s.dtheta_b_rad[1] == 0.03125);
     CHECK(s.dtheta_b_rad[2] == 0.15625);
-    // dv = 0.25*(8, 0, -2) + 0.25*(0, 4, 2), exact.
-    CHECK(s.dv_b_mps[0] == 2.0);
-    CHECK(s.dv_b_mps[1] == 1.0);
-    CHECK(s.dv_b_mps[2] == 0.0);
+    // dv = 0.125*(12, 2, -8) + 0.125*(2, 10, 6), exact.
+    CHECK(s.dv_b_mps[0] == 1.75);
+    CHECK(s.dv_b_mps[1] == 1.5);
+    CHECK(s.dv_b_mps[2] == -0.25);
 
     // sample() resets the accumulators: the next interval starts clean.
     star::sensors::SensorCycleTruth c3 = c1;
@@ -85,8 +88,8 @@ TEST_CASE("sensors_ideal_imu_exact_accumulation_and_reset") {
     imu.sample(0.75, writer);
     const star::gnc::ImuSample& s2 = imu.last_sample();
     CHECK(s2.dt_s == 0.25);
-    CHECK(s2.dtheta_b_rad[0] == 0.0625);  // 0.25 * 0.25 only
-    CHECK(s2.dv_b_mps[0] == 2.0);         // 0.25 * 8 only
+    CHECK(s2.dtheta_b_rad[0] == 0.125);  // 0.125 * (0.25 + 0.75) only
+    CHECK(s2.dv_b_mps[0] == 1.5);        // 0.125 * (8 + 4) only
     writer.close();
   }
   std::remove(path.c_str());

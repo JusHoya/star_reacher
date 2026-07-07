@@ -32,7 +32,8 @@ central_body = "earth"
 [logging]
 # truth_rate_hz equal to the control rate logs truth every cycle, which is
 # what lets the test suite reconstruct the ideal IMU increments bit-exactly
-# from the truth channels (dtheta = omega * dt per cycle).
+# from the truth channels (trapezoidal accumulation over each cycle:
+# dtheta_k = (dt/2) (w_(k-1) + w_k), the sensor chapter's quadrature rule).
 truth_rate_hz = 10
 
 [initial_state.cartesian]
@@ -51,6 +52,10 @@ latency_cycles = 0
 
 [gnc.nav]
 component = "dead_reckoning"
+# The initial attitude estimate, stated explicitly per the dead-reckoning
+# contract (no implicit truth access). Set to the true initial attitude:
+# exactly [0, sqrt(1/2), sqrt(1/2), 0] by the derivation above.
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
 
 [gnc.guidance]
 component = "attitude_hold"
