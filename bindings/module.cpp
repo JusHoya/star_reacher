@@ -14,6 +14,7 @@
 
 #include "star/ephemeris.hpp"
 #include "star/frames.hpp"
+#include "star/gnc/component.hpp"
 #include "star/models/atmosphere_hp.hpp"
 #include "star/models/atmosphere_mars.hpp"
 #include "star/models/atmosphere_ussa76.hpp"
@@ -492,6 +493,31 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite("stages", &star::VehicleConfig::stages)
       .def_readwrite("aero", &star::VehicleConfig::aero);
 
+  // -- Phase 6 GNC configuration (D-2 plain data; run_vehicle only) ---------
+  // Component parameters ride as two flat maps so a new built-in (or a
+  // future Python plugin) adds fields with zero binding changes.
+  py::class_<star::gnc::GncComponentCfg>(m, "GncComponentCfg")
+      .def(py::init<>())
+      .def_readwrite("component", &star::gnc::GncComponentCfg::component)
+      .def_readwrite("scalars", &star::gnc::GncComponentCfg::scalars)
+      .def_readwrite("vectors", &star::gnc::GncComponentCfg::vectors);
+
+  py::class_<star::gnc::GncSensorCfg>(m, "GncSensorCfg")
+      .def(py::init<>())
+      .def_readwrite("kind", &star::gnc::GncSensorCfg::kind)
+      .def_readwrite("sample_rate_hz",
+                     &star::gnc::GncSensorCfg::sample_rate_hz);
+
+  py::class_<star::gnc::GncConfig>(m, "GncConfig")
+      .def(py::init<>())
+      .def_readwrite("enabled", &star::gnc::GncConfig::enabled)
+      .def_readwrite("control_rate_hz", &star::gnc::GncConfig::control_rate_hz)
+      .def_readwrite("latency_cycles", &star::gnc::GncConfig::latency_cycles)
+      .def_readwrite("nav", &star::gnc::GncConfig::nav)
+      .def_readwrite("guidance", &star::gnc::GncConfig::guidance)
+      .def_readwrite("control", &star::gnc::GncConfig::control)
+      .def_readwrite("sensors", &star::gnc::GncConfig::sensors);
+
   py::class_<star::SequenceEntry>(m, "SequenceEntry")
       .def(py::init<>())
       .def_readwrite("name", &star::SequenceEntry::name)
@@ -561,7 +587,9 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite("launch_alt_m", &star::RunConfig::launch_alt_m)
       .def_readwrite("forces_rate_hz", &star::RunConfig::forces_rate_hz)
       .def_readwrite("mass_rate_hz", &star::RunConfig::mass_rate_hz)
-      .def_readwrite("env_rate_hz", &star::RunConfig::env_rate_hz);
+      .def_readwrite("env_rate_hz", &star::RunConfig::env_rate_hz)
+      // Phase 6 extension (contract section: run.hpp).
+      .def_readwrite("gnc", &star::RunConfig::gnc);
 
   m.def("run", &run_and_summarize, py::arg("config"), py::arg("out_path"),
         "Propagate the configured two-body case and write an SRLOG v1.0 file "
@@ -642,6 +670,12 @@ PYBIND11_MODULE(_core, m) {
         py::arg("a_m"), py::arg("inv_f"),
         "Geodetic altitude [m] of a body-fixed Cartesian position above the "
         "(a, 1/f) ellipsoid (Bowring's closed form with one refinement).");
+
+  m.def("gnc_component_names", &star::gnc::component_names,
+        "Registered GNC component names (FR-25 registry), sorted. Exposed "
+        "so the test suite can assert the mission validator's core-less "
+        "component vocabulary (mission.py) never drifts from the core "
+        "registry, and so tooling can enumerate the built-ins.");
 
   m.def("core_version", &star::core_version,
         "Semantic version of the compiled core, e.g. \"0.1.0\".");

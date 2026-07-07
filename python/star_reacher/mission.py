@@ -85,6 +85,51 @@ Actions:
 Every action except ``terminate`` requires a vehicle reference. The resolved
 config carries the sequence entries in file order.
 
+Phase 6 additions (FR-23/FR-25): the [gnc] and [sensors] tables
+===============================================================
+
+A ``[gnc]`` table closes the attitude loop: the chain nav -> guidance ->
+control runs once per control cycle, commands are applied through a
+``latency_cycles``-deep FIFO (zero-order hold at application, D-5), and the
+vehicle attitude is integrated dynamically from the applied command torque.
+It requires a ``vehicle`` reference, the rk4 integrator with
+``control_rate_hz == 1/dt_s`` exactly (one control cycle per step), a
+``[sensors.imu]`` table, and a ``[[sequence]]`` free of the open-loop
+attitude actions (``pitch_program``, ``attitude_hold``, ``prograde_hold``,
+``rate_command`` -- propulsion, staging, and terminate keep their sequence
+authority)::
+
+    [gnc]
+    control_rate_hz = 10        # must equal 1/dt_s
+    latency_cycles = 0          # optional FR-25 application delay (default 0)
+    oracle = false              # optional; true injects truth into GncInput
+                                # and is stamped into the log header
+
+    [gnc.nav]
+    component = "dead_reckoning"
+
+    [gnc.guidance]
+    component = "attitude_hold"     # or "pitch_program" (geodetic only)
+    q_cmd = [1.0, 0.0, 0.0, 0.0]    # optional; Hamilton scalar-first (D-7)
+
+    [gnc.control]
+    component = "pd_attitude"
+    kp_nm_per_rad = [0.4, 0.4, 0.4]     # per-axis proportional gains
+    kd_nm_per_radps = [3.6, 3.6, 3.6]   # per-axis rate gains
+    tau_max_nm = [0.05, 0.05, 0.05]     # symmetric per-axis saturation
+
+    [sensors.imu]
+    sample_rate_hz = 10         # must divide control_rate_hz exactly
+
+Component vocabularies are the FR-25 built-ins mirrored in
+``_GNC_NAV_COMPONENTS`` / ``_GNC_GUIDANCE_COMPONENTS`` /
+``_GNC_CONTROL_COMPONENTS`` (the core re-checks against its registry);
+``pitch_program`` takes the same ``azimuth_deg``/``pitch_t_s``/``pitch_deg``
+surface as the Phase 4 sequence action and commands identical attitudes.
+The applied defaults (``latency_cycles``, ``oracle``) are recorded in the
+resolved config, and the ``[gnc]``/``[sensors]`` keys enter it only when
+present, so pre-Phase-6 missions resolve byte-identically.
+
 Phase 5 additions (FR-32 example missions): the heliocentric regime
 ===================================================================
 
@@ -185,6 +230,33 @@ _THIRD_BODY_ORDER = ("sun", "earth", "moon", "venus", "mars", "jupiter")
 _OCCULTER_BODIES = ("earth", "moon", "mars")
 _EARTH_ATMOSPHERES = ("ussa76", "harris_priester")
 _MARS_ATMOSPHERES = ("mars_exponential",)
+
+# Phase 6 [gnc] chain vocabulary (FR-25 built-ins): per chain slot, the
+# accepted component names mapped to their parameter keys. Validation must
+# work core-less, so this is a static mirror of the core registry
+# (cpp/src/gnc/builtin.cpp); test_gnc_validation.py asserts the two never
+# drift, and the core re-checks selections against the live registry.
+_GNC_NAV_COMPONENTS = {"dead_reckoning": ()}
+_GNC_GUIDANCE_COMPONENTS = {
+    "pitch_program": ("azimuth_deg", "pitch_t_s", "pitch_deg"),
+    "attitude_hold": ("q_cmd",),
+}
+_GNC_CONTROL_COMPONENTS = {
+    "pd_attitude": ("kp_nm_per_rad", "kd_nm_per_radps", "tau_max_nm"),
+}
+# Open-loop attitude sequence actions conflict with GNC attitude authority
+# and are rejected when [gnc] is present.
+_GNC_ATTITUDE_ACTIONS = (
+    "pitch_program",
+    "attitude_hold",
+    "prograde_hold",
+    "rate_command",
+)
+# Sensor kinds accepted in [sensors.<kind>] this phase; the remaining FR-23
+# kinds (startracker, sunsensor, navfix, altimeter, camera) land with the
+# sensor error-model workstream.
+_SENSOR_KINDS = ("imu",)
+_GNC_MAX_LATENCY_CYCLES = 10_000
 
 
 class MissionValidationError(Exception):
@@ -1274,17 +1346,428 @@ def _validate_environment(
     return resolved
 
 
+def _validate_gnc_component(
+    table: object, path: str, vocab: dict, errs: _Errors
+) -> dict | None:
+    """One [gnc.nav|guidance|control] slot: component name plus parameters.
+
+    ``vocab`` maps accepted component names to their parameter-key tuples
+    (the FR-25 built-in vocabulary; the core re-checks against its live
+    registry). Returns the resolved slot dict or None after errors.
+    """
+    if not isinstance(table, dict):
+        errs.add(
+            path.rsplit(".", 1)[0],
+            path.rsplit(".", 1)[1],
+            "expected a table",
+            hint=f'e.g. [{path}] with component = "{next(iter(vocab))}"',
+        )
+        return None
+    accepted = ", ".join(sorted(vocab))
+    component = _req_str(
+        table, path, "component", errs, hint=f"accepted components: {accepted}"
+    )
+    if component is not None and component not in vocab:
+        errs.add(
+            path,
+            "component",
+            f"unknown component {component!r}",
+            hint=f"accepted components: {accepted}",
+        )
+        component = None
+    if component is None:
+        return None
+    _reject_unknown(table, path, {"component", *vocab[component]}, errs)
+    resolved: dict = {"component": component}
+    ok = True
+
+    if component == "pitch_program":
+        azimuth = _req_num(
+            table, path, "azimuth_deg", errs, units="deg",
+            typical="0 to 360 (flight azimuth east of north)",
+        )
+        pitch_t = _validate_number_array(
+            table, path, "pitch_t_s", errs, units="s", typical="0 to 600"
+        )
+        pitch_deg = _validate_number_array(
+            table, path, "pitch_deg", errs, units="deg",
+            typical="-30 to 90 (elevation above local horizontal)",
+        )
+        if pitch_t is not None and any(
+            not (a < b) for a, b in zip(pitch_t, pitch_t[1:])
+        ):
+            errs.add(
+                path, "pitch_t_s",
+                f"must be strictly increasing, got {pitch_t!r}",
+                units="s", typical="0 to 600",
+            )
+            pitch_t = None
+        if (
+            pitch_t is not None
+            and pitch_deg is not None
+            and len(pitch_t) != len(pitch_deg)
+        ):
+            errs.add(
+                path, "pitch_deg",
+                f"must have the same length as pitch_t_s "
+                f"({len(pitch_t)}), got {len(pitch_deg)}",
+                units="deg", typical="-30 to 90",
+            )
+            pitch_deg = None
+        if azimuth is None or pitch_t is None or pitch_deg is None:
+            ok = False
+        else:
+            resolved.update(
+                azimuth_deg=azimuth, pitch_t_s=pitch_t, pitch_deg=pitch_deg
+            )
+    elif component == "attitude_hold":
+        if "q_cmd" in table:
+            q = table["q_cmd"]
+            valid = (
+                isinstance(q, list)
+                and len(q) == 4
+                and all(_is_number(x) and math.isfinite(x) for x in q)
+                and math.hypot(*[float(x) for x in q]) > 0.0
+            )
+            if not valid:
+                errs.add(
+                    path, "q_cmd",
+                    f"expected 4 finite numbers with a non-zero norm "
+                    f"(Hamilton scalar-first [w, x, y, z], D-7), got {q!r}",
+                    units="1", typical="unit quaternion",
+                )
+                ok = False
+            else:
+                resolved["q_cmd"] = [float(x) for x in q]
+    elif component == "pd_attitude":
+        specs = (
+            ("kp_nm_per_rad", "N*m/rad", "0.01 to 100", 0.0),
+            ("kd_nm_per_radps", "N*m/(rad/s)", "0.1 to 1000", 0.0),
+            ("tau_max_nm", "N*m", "0.001 to 1000", None),
+        )
+        for key, units, typical, floor in specs:
+            if key not in table:
+                errs.add(path, key, "missing required key", units=units, typical=typical)
+                ok = False
+                continue
+            v = table[key]
+            if not (
+                isinstance(v, list)
+                and len(v) == 3
+                and all(_is_number(x) and math.isfinite(x) for x in v)
+            ):
+                errs.add(
+                    path, key,
+                    f"expected 3 finite numbers (per body axis), got {v!r}",
+                    units=units, typical=typical,
+                )
+                ok = False
+                continue
+            values = [float(x) for x in v]
+            if floor is None and any(x <= 0.0 for x in values):
+                errs.add(
+                    path, key,
+                    f"entries must be > 0 (symmetric per-axis saturation "
+                    f"limit), got {values!r}",
+                    units=units, typical=typical,
+                )
+                ok = False
+                continue
+            if floor is not None and any(x < floor for x in values):
+                errs.add(
+                    path, key,
+                    f"entries must be >= 0, got {values!r}",
+                    units=units, typical=typical,
+                )
+                ok = False
+                continue
+            resolved[key] = values
+
+    return resolved if ok else None
+
+
+def _validate_gnc(
+    doc: dict,
+    errs: _Errors,
+    *,
+    dt_s,
+    integrator_type,
+    vehicle_present: bool,
+    initial_form,
+) -> tuple[dict | None, dict | None]:
+    """The Phase 6 [gnc] + [sensors.*] surface (FR-23/FR-25, D-2).
+
+    Returns ``(gnc_resolved, sensors_resolved)``; both None when the tables
+    are absent or invalid. Cross rules: [gnc] needs a vehicle, the rk4
+    integrator with control_rate_hz == 1/dt_s (one control cycle per step,
+    D-5), an [sensors.imu] entry, and no open-loop attitude actions in the
+    [[sequence]]; [sensors] is meaningless without [gnc] (sensors sample on
+    the control-cycle grid).
+    """
+    gnc_present = "gnc" in doc
+    sensors_present = "sensors" in doc
+    if not gnc_present:
+        if sensors_present:
+            errs.add(
+                "root",
+                "sensors",
+                "a [sensors] table requires a [gnc] table",
+                hint="sensors are sampled on the GNC control-cycle grid; add "
+                "[gnc] or remove [sensors]",
+            )
+        return None, None
+
+    gnc = _get_table(
+        doc, "gnc", errs, required=False,
+        hint="must define control_rate_hz and the nav/guidance/control chain",
+    )
+    if gnc is None:
+        return None, None
+    _reject_unknown(
+        gnc,
+        "gnc",
+        {"control_rate_hz", "latency_cycles", "oracle", "nav", "guidance", "control"},
+        errs,
+    )
+
+    ok = True
+    rate = None
+    if "control_rate_hz" not in gnc:
+        errs.add("gnc", "control_rate_hz", "missing required key", units="Hz", typical="1 to 1000")
+        ok = False
+    elif not _is_int(gnc["control_rate_hz"]) or gnc["control_rate_hz"] < 1:
+        errs.add(
+            "gnc",
+            "control_rate_hz",
+            f"expected an integer >= 1, got {gnc['control_rate_hz']!r}",
+            units="Hz",
+            typical="1 to 1000",
+        )
+        ok = False
+    else:
+        rate = gnc["control_rate_hz"]
+
+    latency = 0
+    if "latency_cycles" in gnc:
+        v = gnc["latency_cycles"]
+        if not _is_int(v) or not (0 <= v <= _GNC_MAX_LATENCY_CYCLES):
+            errs.add(
+                "gnc",
+                "latency_cycles",
+                f"expected an integer in [0, {_GNC_MAX_LATENCY_CYCLES}], got {v!r}",
+                units="control cycles",
+                typical="0 to 10 (FR-25 command-application delay)",
+            )
+            ok = False
+        else:
+            latency = v
+
+    oracle = False
+    if "oracle" in gnc:
+        v = gnc["oracle"]
+        if not isinstance(v, bool):
+            errs.add(
+                "gnc",
+                "oracle",
+                f"expected a boolean, got {v!r}",
+                hint="oracle = true injects truth into GncInput for debug "
+                "runs and is stamped into the log header (FR-25)",
+            )
+            ok = False
+        else:
+            oracle = v
+
+    # The control cycle IS the integrator step (D-5): rk4 only, and the
+    # configured rate must equal 1/dt_s.
+    if integrator_type is not None and integrator_type != "rk4":
+        errs.add(
+            "gnc",
+            "control_rate_hz",
+            'the [gnc] chain requires [integrator] type = "rk4"',
+            hint="the control cycle is the fixed integrator step (D-5); "
+            "rkf78 has no fixed cycle grid",
+        )
+        ok = False
+    elif rate is not None and dt_s is not None:
+        cycles = dt_s * rate
+        if abs(cycles - 1.0) > _REL_TOL:
+            errs.add(
+                "gnc",
+                "control_rate_hz",
+                f"must equal 1/dt_s (one control cycle per integrator step, "
+                f"D-5); got control_rate_hz = {rate!r} with dt_s = {dt_s!r}",
+                units="Hz",
+                typical="1 to 1000",
+            )
+            ok = False
+
+    if not vehicle_present:
+        errs.add(
+            "root",
+            "gnc",
+            "a [gnc] table requires a vehicle reference",
+            hint='the GNC chain commands the 6DOF vehicle path; set '
+            'vehicle = "vehicles/<file>.toml"',
+        )
+        ok = False
+
+    if "sequence" in doc and isinstance(doc["sequence"], list):
+        for entry in doc["sequence"]:
+            if isinstance(entry, dict) and entry.get("action") in _GNC_ATTITUDE_ACTIONS:
+                errs.add(
+                    "sequence",
+                    str(entry.get("name", entry.get("action"))),
+                    f"open-loop attitude action {entry['action']!r} cannot be "
+                    f"combined with [gnc]",
+                    hint="the GNC chain holds attitude authority; move the "
+                    "attitude command into [gnc.guidance] (propulsion and "
+                    "staging actions keep their sequence authority)",
+                )
+                ok = False
+
+    nav = _validate_gnc_component(gnc.get("nav"), "gnc.nav", _GNC_NAV_COMPONENTS, errs) if "nav" in gnc else None
+    if "nav" not in gnc:
+        errs.add("gnc", "nav", "missing required table", hint='e.g. [gnc.nav] component = "dead_reckoning"')
+    guidance = (
+        _validate_gnc_component(gnc.get("guidance"), "gnc.guidance", _GNC_GUIDANCE_COMPONENTS, errs)
+        if "guidance" in gnc
+        else None
+    )
+    if "guidance" not in gnc:
+        errs.add(
+            "gnc", "guidance", "missing required table",
+            hint='e.g. [gnc.guidance] component = "attitude_hold" or "pitch_program"',
+        )
+    control = (
+        _validate_gnc_component(gnc.get("control"), "gnc.control", _GNC_CONTROL_COMPONENTS, errs)
+        if "control" in gnc
+        else None
+    )
+    if "control" not in gnc:
+        errs.add(
+            "gnc", "control", "missing required table",
+            hint='e.g. [gnc.control] component = "pd_attitude" with '
+            "kp_nm_per_rad, kd_nm_per_radps, tau_max_nm",
+        )
+
+    if (
+        guidance is not None
+        and guidance["component"] == "pitch_program"
+        and initial_form is not None
+        and initial_form != "geodetic"
+    ):
+        errs.add(
+            "gnc.guidance",
+            "component",
+            'component "pitch_program" requires the geodetic (launch-site) '
+            "initial-state form",
+            hint="the commanded axis is resolved in the launch-site ENU "
+            "basis (FR-14); free-flying missions use attitude_hold",
+        )
+        ok = False
+
+    # --- [sensors] ----------------------------------------------------------
+    sensors_resolved = None
+    if not sensors_present:
+        errs.add(
+            "root",
+            "sensors",
+            "a [gnc] table requires a [sensors] table with at least "
+            "[sensors.imu]",
+            hint="the navigation chain consumes IMU increments; e.g. "
+            "[sensors.imu] sample_rate_hz = <control_rate_hz>",
+        )
+        ok = False
+    else:
+        sensors = _get_table(
+            doc, "sensors", errs, required=False,
+            hint="sub-tables per sensor instance, e.g. [sensors.imu]",
+        )
+        if sensors is None:
+            ok = False
+        else:
+            for key in sensors:
+                if key not in _SENSOR_KINDS:
+                    errs.add(
+                        "sensors",
+                        key,
+                        f"unknown sensor {key!r}",
+                        hint=f"supported this phase: {', '.join(_SENSOR_KINDS)} "
+                        "(the remaining FR-23 kinds land with the sensor "
+                        "error-model workstream)",
+                    )
+            if "imu" not in sensors:
+                errs.add(
+                    "sensors",
+                    "imu",
+                    "missing required table",
+                    hint="the [gnc] navigation chain consumes IMU increments; "
+                    "e.g. [sensors.imu] sample_rate_hz = <control_rate_hz>",
+                )
+                ok = False
+            elif not isinstance(sensors["imu"], dict):
+                errs.add("sensors", "imu", "expected a table", hint="e.g. [sensors.imu] sample_rate_hz = 100")
+                ok = False
+            else:
+                imu = sensors["imu"]
+                _reject_unknown(imu, "sensors.imu", {"sample_rate_hz"}, errs)
+                if "sample_rate_hz" not in imu:
+                    errs.add(
+                        "sensors.imu", "sample_rate_hz", "missing required key",
+                        units="Hz", typical="1 to control_rate_hz",
+                    )
+                    ok = False
+                elif not _is_int(imu["sample_rate_hz"]) or imu["sample_rate_hz"] < 1:
+                    errs.add(
+                        "sensors.imu",
+                        "sample_rate_hz",
+                        f"expected an integer >= 1, got {imu['sample_rate_hz']!r}",
+                        units="Hz",
+                        typical="1 to control_rate_hz",
+                    )
+                    ok = False
+                elif rate is not None and rate % imu["sample_rate_hz"] != 0:
+                    errs.add(
+                        "sensors.imu",
+                        "sample_rate_hz",
+                        f"must be an exact divisor of [gnc] control_rate_hz "
+                        f"({rate}), got {imu['sample_rate_hz']!r}; sensors "
+                        f"sample on the control-cycle grid",
+                        units="Hz",
+                        typical="1 to control_rate_hz",
+                    )
+                    ok = False
+                else:
+                    sensors_resolved = {"imu": {"sample_rate_hz": imu["sample_rate_hz"]}}
+
+    if not ok or None in (rate, nav, guidance, control) or sensors_resolved is None:
+        return None, None
+    gnc_resolved = {
+        "control_rate_hz": rate,
+        "latency_cycles": latency,
+        "oracle": oracle,
+        "nav": nav,
+        "guidance": guidance,
+        "control": control,
+    }
+    return gnc_resolved, sensors_resolved
+
+
 def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dict | None:
     # Pass 2: schema shape and unknown-key rejection (typos are errors, DX-2).
     for key in doc:
-        if key not in ("schema_version", "vehicle", "sequence") and key not in _TOP_TABLES:
+        if (
+            key not in ("schema_version", "vehicle", "sequence", "gnc", "sensors")
+            and key not in _TOP_TABLES
+        ):
             errs.add(
                 "root",
                 key,
                 "unknown key",
                 hint=(
                     "remove it or fix the spelling; allowed top-level entries are "
-                    "schema_version, vehicle, [[sequence]], and the tables "
+                    "schema_version, vehicle, [[sequence]], [gnc], [sensors], "
+                    "and the tables "
                     + ", ".join(f"[{t}]" for t in _TOP_TABLES)
                 ),
             )
@@ -1615,6 +2098,16 @@ def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dic
             initial_form=initial_form,
         )
 
+    # --- GNC chain and sensors (FR-23/FR-25, Phase 6) -----------------------
+    gnc_resolved, sensors_resolved = _validate_gnc(
+        doc,
+        errs,
+        dt_s=dt_s,
+        integrator_type=integrator_resolved["type"] if integrator_resolved else None,
+        vehicle_present=vehicle_present,
+        initial_form=initial_form,
+    )
+
     # Heliocentric cross rules (Phase 5): the sun-central regime is served by
     # the point-mass composed-environment path only. The 6DOF vehicle path's
     # altitude events, pad geometry, and aerodynamics all assume a planetary
@@ -1814,6 +2307,12 @@ def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dic
         resolved["vehicle"] = vehicle_entry
     if sequence_resolved is not None:
         resolved["sequence"] = sequence_resolved
+    # Phase 6 keys likewise enter only for GNC missions; the recorded
+    # defaults (latency_cycles, oracle) keep the resolved config the sole
+    # source of truth for what actually ran.
+    if gnc_resolved is not None:
+        resolved["gnc"] = gnc_resolved
+        resolved["sensors"] = sensors_resolved
     return resolved
 
 

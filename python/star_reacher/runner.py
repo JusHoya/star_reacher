@@ -196,6 +196,29 @@ def _build_sequence(core, seq: list):
     return out
 
 
+def _build_gnc_component(core, spec: dict):
+    """Translate one resolved [gnc.*] slot into the bound GncComponentCfg.
+
+    Every key besides ``component`` is a parameter: numbers ride in the
+    scalar map, arrays in the vector map (the plain-data composition rule of
+    star/gnc/config.hpp), so new component parameters need no runner change.
+    """
+    cc = core.GncComponentCfg()
+    cc.component = spec["component"]
+    scalars = {}
+    vectors = {}
+    for key, value in spec.items():
+        if key == "component":
+            continue
+        if isinstance(value, list):
+            vectors[key] = [float(x) for x in value]
+        else:
+            scalars[key] = float(value)
+    cc.scalars = scalars
+    cc.vectors = vectors
+    return cc
+
+
 def run_mission(mission_path, outdir=None, force=False, command_line=None, strict=False) -> RunResult:
     """Validate, resolve, hash, propagate, and write the run artifacts.
 
@@ -351,6 +374,28 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None, stric
         cfg.mass_rate_hz = log_cfg.get("mass_rate_hz", 1)
         cfg.env_rate_hz = log_cfg.get("env_rate_hz", 1)
         resolved_vehicle_toml = canonical_vehicle_toml(vres)
+
+        # Phase 6 GNC chain (FR-23/FR-25). The oracle flag comes from [gnc]
+        # and is stamped into the log header by the core; sensors ride in
+        # canonical kind order (only "imu" exists this phase).
+        if "gnc" in resolved:
+            g = resolved["gnc"]
+            gc = core.GncConfig()
+            gc.enabled = True
+            gc.control_rate_hz = g["control_rate_hz"]
+            gc.latency_cycles = g["latency_cycles"]
+            gc.nav = _build_gnc_component(core, g["nav"])
+            gc.guidance = _build_gnc_component(core, g["guidance"])
+            gc.control = _build_gnc_component(core, g["control"])
+            sensor_cfgs = []
+            for kind, spec in resolved["sensors"].items():
+                sc = core.GncSensorCfg()
+                sc.kind = kind
+                sc.sample_rate_hz = spec["sample_rate_hz"]
+                sensor_cfgs.append(sc)
+            gc.sensors = sensor_cfgs
+            cfg.gnc = gc
+            cfg.oracle = g["oracle"]
 
     out.mkdir(parents=True, exist_ok=True)
     # Exactly the hashed bytes, so the file re-hashes to config_sha256.
