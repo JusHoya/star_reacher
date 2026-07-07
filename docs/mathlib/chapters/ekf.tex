@@ -78,7 +78,7 @@ Assumptions:
     $\Delta t / \tau_c \ll 1$, and $\Delta t$ small against the
     orbital dynamics ($n\,\Delta t \ll 1$, $n$ the mean motion) ---
     all satisfied by orders of magnitude at the D-5 cycle rates
-    ($\qty{1}{}$--$\qty{100}{\hertz}$). The Van Loan construction
+    (\qtyrange{1}{100}{\hertz}). The Van Loan construction
     remains the documented upgrade path if a future regime breaks
     these conditions~\cite{vanloan1978}.
 \end{enumerate}
@@ -320,9 +320,13 @@ and must be disabled in consistency-gate scenarios.
 \paragraph{Star tracker} ($m = 3$): the measurement model is
 equation~\eqref{eq:optical:stmodel}. The filter predicts the aberrated
 attitude with its own state, $\quat{q}_{\mathrm{pred}} =
-\quat{q}_{\mathrm{ab}}(\hat{\vv{\beta}}, \hat{\vv{b}}\mathrm{ore})
-\quatmul \hat{\quat{q}}$ --- $\quat{q}_{\mathrm{ab}}$ per
-equation~\eqref{eq:optical:qab} with $\hat{\vv{\beta}}$ assembled from
+\hat{\quat{q}}_{\mathrm{ab}} \quatmul \hat{\quat{q}}$ ---
+$\hat{\quat{q}}_{\mathrm{ab}}$ per equation~\eqref{eq:optical:qab}
+evaluated at the estimated rotation vector $-\hat{\vv{\rho}}$, with
+$\hat{\vv{\rho}} = \hat{\vv{b}}^{I} \times \hat{\vv{\beta}}$, the
+boresight $\hat{\vv{b}}^{I} =
+{\dcm{I}{B}(\hat{\quat{q}})}^{\mathsf T}\hat{\vv{b}}^{B}$, and
+$\hat{\vv{\beta}}$ assembled from
 $\hat{\vv{v}}$ and the same ephemeris chain
 (equation~\eqref{eq:optical:beta}); the velocity-estimate contribution
 to the aberration error is $\norm{\delta\vv{v}}/c \approx
