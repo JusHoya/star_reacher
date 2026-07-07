@@ -1,8 +1,8 @@
 """The ``star`` command-line interface (D-4, FR-20, DX-1).
 
-Seven subcommands (run, verify, export, docs from Phase 1; data from Phase 2;
-view and plot from Phase 5) and no stubs: every command documented here
-works. Exit codes: 0 success, 2 validation errors (accumulated per DX-2), 1
+Eight subcommands (run, verify, export, docs from Phase 1; data from Phase 2;
+view and plot from Phase 5; consistency from Phase 6) and no stubs: every
+command documented here works. Exit codes: 0 success, 2 validation errors (accumulated per DX-2), 1
 runtime errors. ``python -m star_reacher`` and the installed ``star`` console
 script both dispatch through ``main``.
 """
@@ -32,7 +32,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     sub = parser.add_subparsers(
-        dest="command", required=True, metavar="{run,verify,export,view,plot,docs,data}"
+        dest="command",
+        required=True,
+        metavar="{run,verify,export,view,plot,consistency,docs,data}",
     )
 
     p_run = sub.add_parser(
@@ -213,6 +215,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default="data",
         help="destination directory for kernels and the repack (default: data/)",
     )
+
+    # The consistency subparser lives with its handler so the FR-26 gate
+    # tooling stays one self-contained module (the import is local for the
+    # same reason the command handlers import lazily).
+    from star_reacher.consistency_cli import add_consistency_parser
+
+    add_consistency_parser(sub)
     return parser
 
 
@@ -404,6 +413,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_view(args)
     if args.command == "plot":
         return _cmd_plot(args)
+    if args.command == "consistency":
+        from star_reacher.consistency_cli import cmd_consistency
+
+        return cmd_consistency(args)
     if args.command == "docs":
         return _cmd_docs(args)
     if args.command == "data":
