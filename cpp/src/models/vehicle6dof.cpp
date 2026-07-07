@@ -15,6 +15,23 @@
 namespace star {
 namespace models {
 
+double pwl_interp_clamped(const std::vector<double>& xs,
+                          const std::vector<double>& ys, double x) {
+  // Verbatim arithmetic of the original Phase 4 in-loop lambda (run.cpp
+  // pitch-program mode): clamp at the endpoints, then one linear segment.
+  // Changing any operation or its order here would break both the Phase 4
+  // byte-freeze and the Phase 6 open-loop/closed-loop command equality.
+  if (x <= xs.front()) return ys.front();
+  if (x >= xs.back()) return ys.back();
+  for (std::size_t j = 0; j + 1 < xs.size(); ++j) {
+    if (x <= xs[j + 1]) {
+      const double w = (x - xs[j]) / (xs[j + 1] - xs[j]);
+      return ys[j] + w * (ys[j + 1] - ys[j]);
+    }
+  }
+  return ys.back();
+}
+
 PadState geodetic_pad_state(double lat_rad, double lon_rad, double alt_m,
                             const Eigen::Matrix3d& c_gcrf_to_itrf,
                             double omega_earth_radps, double a_m,

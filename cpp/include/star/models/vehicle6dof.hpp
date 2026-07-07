@@ -27,12 +27,24 @@
 #define STAR_MODELS_VEHICLE6DOF_HPP
 
 #include <cstddef>
+#include <vector>
 
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
 namespace star {
 namespace models {
+
+// Piecewise-linear table interpolation with endpoint clamping over a
+// strictly increasing grid (xs, ys parallel, size >= 2 - the caller's
+// invariant, validated at config time). This is the single home of the
+// pitch-table arithmetic: the Phase 4 open-loop pitch-program mode and the
+// Phase 6 pitch-program guidance component both call it, so their commanded
+// attitudes agree bit-for-bit by construction (the Phase 6 closed-loop
+// contract), and the byte-frozen Phase 4 missions see the exact arithmetic
+// the original in-loop lambda performed.
+double pwl_interp_clamped(const std::vector<double>& xs,
+                          const std::vector<double>& ys, double x);
 
 // Dimension of the continuous translational state [r(3), v(3)].
 inline constexpr std::size_t kVehicleTransStateDim = 6;
