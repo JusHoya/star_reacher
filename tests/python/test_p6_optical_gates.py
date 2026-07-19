@@ -491,3 +491,192 @@ def test_camera_pose_channels_are_bit_exact_truth(optical_run):
     rows = _truth_rows(truth, camera["t_s"])
     assert np.array_equal(camera["r_m"], truth["r_m"][rows])
     assert np.array_equal(camera["q_i2b"], truth["q_i2b"][rows])
+
+
+# --- Exit criterion 6 re-gated through the blind references -----------------
+
+# The noise-free mission above isolates the transformations; this variant
+# restores representative sigmas so the per-sample statistics have a
+# distribution to be gated against. The altimeter bias sigma is zeroed
+# deliberately: a per-run bias makes the samples DEPENDENT and invalidates the
+# ensemble-mean gate, as ch:sensors-radio states and tests/refs/sensor_stats.py
+# repeats.
+_STATISTICS_MISSION = _OPTICAL_GATE_MISSION.replace(
+    'name = "p6-optical-gates"', 'name = "p6-optical-statistics"'
+).replace(
+    "sigma_rad = [0.0, 0.0, 0.0]", "sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]"
+).replace(
+    "sigma_rad = 0.0", "sigma_rad = 2.0e-3"
+) + """
+[sensors.navfix]
+sample_rate_hz = 5
+sigma_r_m = [5.0, 5.0, 9.0]
+sigma_v_mps = [0.05, 0.05, 0.09]
+
+[sensors.altimeter]
+sample_rate_hz = 5
+sigma_bias_m = 0.0
+sigma_noise_m = 0.5
+h_min_m = 0.0
+h_max_m = 1.0e6
+"""
+
+# WGS84 defining parameters (NIMA TR8350.2, third edition), the ellipsoid the
+# environment model resolves for an Earth central body.
+_WGS84_A_M = 6378137.0
+_WGS84_INV_F = 298.257223563
+
+
+@pytest.fixture(scope="module")
+def statistics_run(tmp_path_factory):
+    """One run of the noisy variant plus its loaded log."""
+    _core_or_fail()
+    import os
+
+    from star_reacher import load
+    from star_reacher.runner import run_mission
+
+    tmp = tmp_path_factory.mktemp("p6_statistics")
+    mission = tmp / "optical_statistics.toml"
+    mission.write_text(_STATISTICS_MISSION.lstrip(), encoding="utf-8")
+    cwd = os.getcwd()
+    os.chdir(REPO_ROOT)
+    try:
+        result = run_mission(mission, tmp / "run")
+    finally:
+        os.chdir(cwd)
+    return result, load(result.srlog_path), tomllib.loads(mission.read_text("utf-8"))
+
+
+def _assert_gate(result):
+    """Fail with the reference's own one-line report when a gate is rejected."""
+    assert result.passed, result.describe()
+
+
+def test_star_tracker_statistic_passes_the_reference_gate(statistics_run):
+    """Exit criterion 6, star tracker, re-gated against the blind reference.
+
+    The C++ suite closed this criterion with its own statistics. Recomputing
+    the per-sample chi2(3) through ``tests/refs/sensor_stats`` is stronger
+    evidence, because the extraction of the error vector runs the aberration
+    factor of ``eq:optical:qab`` backwards out of the logged quaternion: a
+    wrong ``q_ab`` would appear here as a mean offset, not merely as noise.
+    """
+    import sensor_stats as stats
+    from star_reacher import _core
+
+    _, run, config = statistics_run
+    truth = run.groups["truth"]
+    tracker = run.groups["sensors.startracker"]
+    cfg = config["sensors"]["startracker"]
+    sigmas = np.array(cfg["sigma_rad"])
+    boresight_b = np.array(cfg["boresight_b"])
+
+    ephemeris = _Ephemeris()
+    epoch_tai = _epoch_tai(_core, config)
+    rows = _truth_rows(truth, tracker["t_s"])
+
+    quadratic = np.empty(len(tracker))
+    for j, t_s in enumerate(tracker["t_s"]):
+        row = rows[j]
+        tdb_s = _tdb_s_at(_core, epoch_tai, float(t_s))
+        _, v_earth = ephemeris.earth_ssb(tdb_s)
+        beta = beta_vector(truth["v_mps"][row], v_earth)
+        q_true = truth["q_i2b"][row]
+        c_i2b = np.array(_core.quat_to_dcm(*q_true)).reshape(3, 3)
+        boresight_i = c_i2b.T @ boresight_b
+        q_ab = stats.aberration_quaternion(
+            stats.aberration_rotation_vector(boresight_i, beta)
+        )
+        quadratic[j] = stats.star_tracker_chi2(
+            tracker["q_meas_i2b"][j], q_true, sigmas, q_ab
+        )
+    _assert_gate(stats.evaluate_gate("startracker", quadratic, 3))
+
+
+def test_sun_sensor_statistic_passes_the_reference_gate(statistics_run):
+    """Exit criterion 6, sun sensor, re-gated against the blind reference."""
+    import sensor_stats as stats
+    from star_reacher import _core
+
+    _, run, config = statistics_run
+    truth = run.groups["truth"]
+    sun = run.groups["sensors.sunsensor"]
+    sigma = float(config["sensors"]["sunsensor"]["sigma_rad"])
+
+    ephemeris = _Ephemeris()
+    epoch_tai = _epoch_tai(_core, config)
+    rows = _truth_rows(truth, sun["t_s"])
+
+    quadratic = np.empty(len(sun))
+    for j, t_s in enumerate(sun["t_s"]):
+        row = rows[j]
+        tdb_s = _tdb_s_at(_core, epoch_tai, float(t_s))
+        _, v_earth = ephemeris.earth_ssb(tdb_s)
+        beta = beta_vector(truth["v_mps"][row], v_earth)
+        geometric = ephemeris.sun_rel_earth(tdb_s) - truth["r_m"][row]
+        geometric = geometric / np.linalg.norm(geometric)
+        c_i2b = np.array(_core.quat_to_dcm(*truth["q_i2b"][row])).reshape(3, 3)
+        u_body_true = c_i2b @ aberrate_first_order(geometric, beta)
+        quadratic[j] = stats.sun_sensor_chi2(sun["sun_b"][j], u_body_true, sigma)
+    # chi2(2): the radial component carries no information after the
+    # normalization of eq:optical:sunsensor.
+    _assert_gate(stats.evaluate_gate("sunsensor", quadratic, 2))
+
+
+def test_nav_fix_statistics_pass_the_reference_gate(statistics_run):
+    """Exit criterion 6, external nav fix, position and velocity separately."""
+    import sensor_stats as stats
+
+    _, run, config = statistics_run
+    truth = run.groups["truth"]
+    fix = run.groups["sensors.navfix"]
+    cfg = config["sensors"]["navfix"]
+    sigma_r = np.array(cfg["sigma_r_m"])
+    sigma_v = np.array(cfg["sigma_v_mps"])
+    rows = _truth_rows(truth, fix["t_s"])
+
+    position = np.array([
+        stats.nav_fix_chi2(fix["r_meas_m"][j], truth["r_m"][row], sigma_r)
+        for j, row in enumerate(rows)
+    ])
+    velocity = np.array([
+        stats.nav_fix_chi2(fix["v_meas_mps"][j], truth["v_mps"][row], sigma_v)
+        for j, row in enumerate(rows)
+    ])
+    # Gated separately rather than as one chi2(6): a position fix wired to the
+    # wrong truth row would otherwise be diluted by a healthy velocity fix.
+    _assert_gate(stats.evaluate_gate("navfix.position", position, 3))
+    _assert_gate(stats.evaluate_gate("navfix.velocity", velocity, 3))
+
+
+def test_altimeter_statistic_passes_the_reference_gate(statistics_run):
+    """Exit criterion 6, altimeter, re-gated against the blind reference.
+
+    The truth altitude is recomputed from the logged inertial position through
+    the body-fixed rotation and the WGS84 ellipsoid, so this also checks that
+    the sensor measures geodetic altitude rather than radius.
+    """
+    import sensor_stats as stats
+    from star_reacher import _core
+
+    _, run, config = statistics_run
+    truth = run.groups["truth"]
+    altimeter = run.groups["sensors.altimeter"]
+    cfg = config["sensors"]["altimeter"]
+    assert cfg["sigma_bias_m"] == 0.0  # the gate is invalid with a run bias
+    sigma = float(cfg["sigma_noise_m"])
+
+    epoch_tai = _epoch_tai(_core, config)
+    rows = _truth_rows(truth, altimeter["t_s"])
+
+    quadratic = np.empty(len(altimeter))
+    for j, t_s in enumerate(altimeter["t_s"]):
+        tai = _core.tai_add_seconds(epoch_tai[0], epoch_tai[1], float(t_s))
+        dcm = np.array(_core.gcrf_to_itrf(tai[0], tai[1], 0.0)).reshape(3, 3)
+        r_fixed = dcm @ truth["r_m"][rows[j]]
+        h_true = _core.geodetic_altitude(list(r_fixed), _WGS84_A_M, _WGS84_INV_F)
+        quadratic[j] = stats.altimeter_chi2(
+            float(altimeter["alt_meas_m"][j]), h_true, sigma
+        )
+    _assert_gate(stats.evaluate_gate("altimeter", quadratic, 1))
