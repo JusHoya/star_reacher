@@ -162,3 +162,36 @@ def test_gate_coverage_is_close_to_the_nominal_95_percent():
         accepted += int(chi2.gate(draws, 3)[0])
     coverage = accepted / trials
     assert 0.90 <= coverage <= 0.99, f"empirical coverage {coverage:.3f} is off nominal"
+
+
+def test_reference_and_shipped_chi2_agree():
+    """The deliberate duplicate is load-bearing: two exact paths must agree.
+
+    ``tests/refs/chi2.py`` and ``python/star_reacher/chi2.py`` implement the
+    chi-square quantile independently and neither imports the other. That
+    separation is the point -- a reference that imported the shipped module
+    could not detect an error in it, because the same wrong value would appear
+    on both sides of every gate and cancel. The rationale is written out in the
+    reference module's docstring; this test is what converts it from an
+    intention into a checked property.
+
+    The domain is the one the Phase 6 criteria actually use: the two-sided 95 %
+    probabilities, over degrees of freedom from a single three-axis draw up to
+    the ensemble totals the sensor and NEES/NIS gates accumulate.
+    """
+    from star_reacher import chi2 as shipped
+
+    worst = 0.0
+    for k in (1, 2, 3, 6, 60, 180, 300, 900, 3000, 9000):
+        for p in (chi2.P_LOWER, chi2.P_UPPER):
+            reference = chi2.chi2_ppf(p, k)
+            production = shipped.chi2_ppf(p, k)
+            worst = max(worst, abs(reference - production) / reference)
+    # Both routes are exact rather than approximate, so the residual is
+    # convergence tolerance, not model error; 1e-10 relative leaves room for
+    # the two different root-finding terminations without admitting a real
+    # disagreement.
+    assert worst < 1e-10, (
+        f"the independent and shipped chi-square quantiles disagree by "
+        f"{worst:.3e} relative; one of them is wrong"
+    )

@@ -43,6 +43,32 @@ citation is invented:
   half-domain where it converges rapidly.
 * The quantile is obtained by bracketing bisection on the CDF, which cannot
   diverge on a monotone function and needs no derivative.
+
+Relationship to ``python/star_reacher/chi2.py`` -- a DELIBERATE duplicate
+-----------------------------------------------------------------------
+
+The shipped package carries its own scipy-free exact chi-square module at
+``python/star_reacher/chi2.py``, written for FR-26 (``star consistency``). This
+module duplicates that capability on purpose and must not be collapsed into it.
+
+The reason is circularity. ``python/star_reacher/chi2.py`` computes the bounds
+the shipped NEES/NIS and sensor gates are judged against. A reference used to
+CHECK those gates must not import the module that PRODUCES them: a wrong
+quantile, a mistaken degrees-of-freedom convention, or an off-by-one in the
+ensemble scaling would then appear identically on both sides of the comparison
+and cancel, and the gate would pass on a wrong number while looking green. Two
+implementations derived independently -- one by bracketing bisection on the
+incomplete gamma function, one by the shipped module's own route -- agreeing to
+a tight tolerance is real evidence about the special function; one
+implementation compared against itself is none.
+
+To keep the duplication honest rather than merely tolerated, the two are
+actively cross-checked by
+``test_refs_chi2.py::test_reference_and_shipped_chi2_agree`` across the domain
+the Phase 6 gates use. A future change that makes either module wrong is caught
+there. If that test is ever removed, this module has lost the property that
+justifies its existence and the duplication should be revisited rather than
+left standing.
 """
 
 from __future__ import annotations
