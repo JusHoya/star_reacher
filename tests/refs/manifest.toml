@@ -1,0 +1,336 @@
+# Provenance manifest for the Phase 6 independent-reference set (schema in
+# tests/golden/README.md). This directory holds NumPy reference implementations
+# of the quantities Phase 6 exit criteria 1, 6, 7, and 9 gate, plus their
+# consuming pytests under tests/python/test_refs_*.py. It commits no numeric
+# value files: every reference number is either computed live from a cited
+# formula or generated from a seeded synthetic signal whose coefficients are
+# known by construction. This manifest records the provenance of every formula,
+# the derivation of every tolerance, and the independence discipline the set
+# exists to satisfy.
+
+schema_version = 1
+
+[golden]
+directory = "refs"
+date = "2026-07-19"
+generation = """
+INDEPENDENCE DISCIPLINE. These modules are BLIND references: they were written
+from the Phase 6 math-library chapters (docs/mathlib/chapters/sensors_imu.tex,
+sensors_optical.tex, sensors_radio.tex, camera.tex, notation.tex, ekf.tex) and
+from the published sources those chapters cite, without reading the C++ sensor
+implementations they check. A reference derived by reading the implementation
+reproduces that implementation's defects and makes any agreement circular, so
+the chapters -- the normative specification -- are the only implementation-side
+input. Where a chapter is ambiguous the ambiguity is recorded in the module
+docstring and the reading justified from the cited source, rather than resolved
+by inspecting code.
+
+DEPENDENCIES. NumPy and the Python standard library only. SciPy is deliberately
+NOT imported even where it is installed, so the references remain usable under
+the D-12 runtime allowed-list; chi-square quantiles are obtained by inverting
+the regularized incomplete gamma function in tests/refs/chi2.py rather than by
+importing a statistics package. Nothing here imports star_reacher, so the whole
+set runs on a checkout with no compiled core.
+
+VALIDATION STRATEGY. Each reference is validated against something that is not
+an implementation: a closed form, an analytic limit, a convergence order, a
+synthetic signal with known coefficients, or the reference's own inverse. The
+per-module details are in the [[file]] entries below.
+"""
+
+[[file]]
+name = "chi2.py"
+source = """
+Classical series and continued-fraction expansions of the regularized lower and
+upper incomplete gamma functions, written out in full in the module docstring
+rather than cited by equation number. The chi-square CDF with k degrees of
+freedom is P(k/2, x/2); the quantile is obtained by bracketing bisection.
+"""
+citation = """
+Wilson, E. B. and Hilferty, M. M., "The Distribution of Chi-Square", PNAS 17(12),
+1931 (references.bib key wilson1931), for the approximation of equation
+eq:ekf:wh, which this module reproduces for comparison but does not use to
+compute any bound. The exact path uses only the incomplete gamma definitions.
+"""
+generation = """
+Computed live. Validated in tests/python/test_refs_chi2.py against the two
+closed-form cases the chi-square family admits: k = 2 is exponential, so the
+quantile is exactly -2 ln(1 - p); k = 1 is a squared standard normal, so the
+quantile is Phi^-1((1+p)/2)^2. Both agree to 1e-11 relative or better. The CDF
+and quantile round-trip to 1e-11 over k in [1, 3000], the two incomplete-gamma
+branches are shown to agree across their x = a + 1 crossover, and every
+chi-square bound printed in a Phase 6 chapter is reproduced.
+
+Independently cross-checked against scipy.stats.chi2.ppf during development
+(worst relative deviation 2.4e-14 over p in [0.001, 0.999], k in [1, 3000]).
+SciPy is not a dependency of the committed code or tests; the cross-check was a
+one-off confirmation, not a gate.
+"""
+date = "2026-07-19"
+tolerance = """
+Quantiles: 1e-11 relative against the closed forms, set by the bisection's
+termination at the last representable bit and the conditioning of the CDF near
+the tails. Chapter-bound reproduction: 0.005 absolute, half a unit in the last
+place the chapters print. Wilson-Hilferty error claim: the chapter asserts below
+5e-5 relative for k >= 300; measured worst case is 1.17e-5 at k = 300.
+"""
+
+[[file]]
+name = "aberration.py"
+source = """
+Equation eq:optical:aberration (first-order velocity aberration) and equation
+eq:optical:beta (barycentric beta composition) from Chapter ch:sensors-optical.
+The exact relativistic form is DERIVED in the module docstring from the Lorentz
+transformation of a photon four-momentum, not transcribed, so the chapter's
+first-order truncation can be measured rather than assumed.
+"""
+citation = """
+Kaplan, G. H., "The IAU Resolutions on Astronomical Reference Systems, Time
+Scales, and Earth Rotation Models", USNO Circular 179, 2005 (references.bib key
+kaplan2005), section 7.2.3, the source Chapter ch:sensors-optical cites for the
+aberration treatment. The speed of light is exact by the SI definition of the
+metre.
+"""
+generation = """
+Computed live. Validated in tests/python/test_refs_aberration.py against the
+chapter's own stated magnitudes (20.49 arcsec at 29.78 km/s, 20.64 arcsec at
+30 km/s, both reproduced to better than 0.005 arcsec), the analytic first-order
+law beta sin(theta) over the full theta range, the degenerate endpoints
+theta = 0 and pi, and the sign convention (apparent direction displaced toward
+the velocity, checked for both formulas over a 60-point theta sweep).
+
+The independently derived exact form is shown to converge onto the first-order
+formula at second order in beta: the measured difference over theta = pi/4
+gives error/beta^2 = 0.2496, 0.24996, 0.249996, 0.25008 at beta = 1e-3, 1e-4,
+1e-5, 1e-6, confirming the coefficient 1/4 of the chapter's stated
+(beta^2/4) sin(2 theta) form. The two formulas are therefore the same physical
+law, which is the check that matters.
+"""
+date = "2026-07-19"
+tolerance = """
+Magnitudes: 0.005 arcsec absolute, half a unit in the last place the chapter
+prints. First-order law: residual bounded by beta^2, the next order of the
+expansion. Functional-form residual: 10 beta^3, likewise the next order.
+Unit-norm of returned directions: 1e-15 absolute, at the rounding floor.
+"""
+
+[[file]]
+name = "quaternions.py"
+source = """
+Chapter ch:notation: the Hamilton product of equation
+eq:notation:hamiltonproduct, scalar-first ordering of eq:notation:scalarfirst,
+the frame-transformation DCM of eq:notation:quat2dcm, the left-to-right chaining
+of eq:notation:quatcomp, and the exact exponential and logarithmic maps used by
+equations eq:optical:qab, eq:optical:noiseq, and eq:optical:extract.
+"""
+citation = """
+Markley, F. L. and Crassidis, J. L., "Fundamentals of Spacecraft Attitude
+Determination and Control", Springer, 2014 (references.bib key markley2014), the
+source Chapter ch:notation cites for the attitude-matrix form and for the survey
+of the Hamilton and JPL conventions.
+"""
+generation = """
+Computed live. Validated in tests/python/test_refs_pinhole.py against the
+group properties the algebra must satisfy independently of any convention
+choice: DCM orthonormality and unit determinant over 500 random quaternions
+(worst 1.7e-15), the composition reversal C(p (x) q) = C(q) C(p) of
+eq:notation:quatcomp over 500 random pairs (worst 5.6e-16), identity and inverse
+behaviour, and exp/log inversion over rotation scales from 1e-8 to 0.5 rad.
+
+The composition reversal is the load-bearing check: it is what distinguishes
+this project's frame-transformation convention from the Markley-Crassidis one,
+and it is invisible in any single-rotation test.
+"""
+date = "2026-07-19"
+tolerance = """
+Orthonormality, determinant, composition: 1e-14 absolute, several times the
+rounding floor for a 3x3 product of order-unity entries. Exp/log inversion:
+1e-14 times the rotation magnitude, tracking the input scale because the map is
+exact to rounding.
+"""
+
+[[file]]
+name = "pinhole.py"
+source = """
+Chapter ch:camera: the pose chain of equation eq:camera:pose, the intrinsics of
+eq:camera:K with the pixel-CENTRE origin convention of sec:camera:intrinsics,
+the landmark chain of eq:camera:landmark through eq:camera:proj, and the four
+visibility tests of sec:camera:visibility including eq:camera:nearside and
+eq:camera:occlusion. Direction outputs carry the eq:optical:aberration
+correction through the shared aberration module.
+"""
+citation = """
+Hartley, R. and Zisserman, A., "Multiple View Geometry in Computer Vision",
+2nd ed., Cambridge University Press, 2004 (references.bib key hartley2004), the
+source Chapter ch:camera cites for the pinhole model, intrinsics matrix, and
+image-coordinate conventions.
+"""
+generation = """
+Computed live. Validated in tests/python/test_refs_pinhole.py. The convention
+checks are the substance, because a projection reference is almost entirely a
+statement about conventions:
+
+- A point on the optical axis projects to exactly (c_x, c_y), with no rounding.
+- The pixel-CENTRE origin is pinned analytically: with f = (W/2)/tan(alpha_h)
+  and the principal point at (W-1)/2, a ray at exactly the horizontal half field
+  of view lands at u = W - 1/2, the sensor edge this convention defines. Under
+  the pixel-CORNER reading (principal point at W/2) the same ray would miss by
+  half a pixel -- five orders above the criterion-7 gate of 1e-6 px. Checked at
+  5, 20, and 45 degrees, to 1e-9 px.
+- The intrinsics matrix applied homogeneously agrees with the scalar projection
+  to 1e-9 px, and projection round-trips through unprojection over 2,000 random
+  pixels and ranges spanning 1 m to 1e7 m to better than 1e-9 px.
+- The four visibility tests are driven across each boundary independently: the
+  near-side test flips exactly at the analytic spherical limb angle
+  arccos(R/d) to within 1e-9 rad, and the occlusion test is shown to be a
+  SEGMENT test (a sphere behind the camera or beyond the landmark does not
+  occlude), which is what the clamp in eq:camera:occlusion is for.
+- Aberration is confirmed to rotate the bearing without changing the emitted
+  range (bit-identical range with and without the correction), displacing the
+  image point by up to f |beta| pixels.
+"""
+date = "2026-07-19"
+tolerance = """
+All pixel comparisons: 1e-9 px, three orders inside the criterion-7 gate of
+1e-6 px, chosen so the reference's own numerical noise cannot consume the gate
+budget. Chapter sec:camera:implementation notes the core-versus-NumPy rounding
+difference is about 1e-13 px on kilo-pixel coordinates, so 1e-9 px leaves four
+further orders of margin for the reference itself.
+"""
+
+[[file]]
+name = "allan.py"
+source = """
+Chapter ch:sensors-imu: the overlapping Allan variance of equation eq:imu:oadev,
+the white-noise signature of eq:imu:whiteslope, the Gauss-Markov Allan variance
+of eq:imu:gmadev with the peak of eq:imu:gmpeak, the bias-instability relation
+of eq:imu:bi and the preset mapping of eq:imu:presetmap, the quantization
+signature of eq:imu:quantadev, and the recovery procedure of section
+sec:imu:recovery (equations eq:imu:recovery and eq:imu:recoverybi). The
+synthetic-record generator implements the error chain of eq:imu:gm, eq:imu:arw,
+and eq:imu:quant.
+"""
+citation = """
+IEEE Std 952 (references.bib key ieee952) for the Allan variance definitions,
+noise-signature relations, and test procedure; Riley, W. J., NIST Special
+Publication 1065, 2008 (key riley2008) and Allan, D. W., Proc. IEEE 54(2), 1966
+(key allan1966) for the underlying statistic; Maybeck, P. S., "Stochastic
+Models, Estimation, and Control", 1979 (key maybeck1979) for the exact
+Ornstein-Uhlenbeck discretization; Titterton, D. and Weston, J. (key
+titterton2004) and Savage, P. G. (key savage1998a) for the increment interface
+and strapdown error taxonomy. All are the sources Chapter ch:sensors-imu itself
+cites.
+"""
+generation = """
+Computed live from seeded synthetic records; no value files are committed.
+Validated in tests/python/test_refs_allan.py.
+
+CHAPTER CONSTANTS RECOMPUTED, not transcribed. Golden-section search on the
+closed form returns tau*/tau_c = 1.892618 and adev(tau*)/sigma_GM = 0.617364,
+reproducing eq:imu:gmpeak; sqrt(2 ln2 / pi) = 0.6642825 reproduces eq:imu:bi;
+their ratio 1.075998 reproduces the 1.0760 of eq:imu:presetmap. The mapping's
+defining property -- that the MAXIMUM of the Gauss-Markov Allan deviation equals
+0.664 B exactly -- is confirmed numerically over a 20,001-point geometric tau
+grid to 1e-6 relative.
+
+CLOSED FORM RE-DERIVED. Equation eq:imu:gmadev is reproduced to 1e-5 relative at
+tau/tau_c in {0.25, 1, 1.8926, 4, 10} by direct two-dimensional trapezoidal
+quadrature of the process autocorrelation R(s) = sigma^2 exp(-|s|/tau_c),
+computing V and C from their definitions with no closed form used. Both stated
+asymptotes (+1/2 slope below tau_c, -1/2 above) are confirmed to 1e-3 relative
+at tau/tau_c = 1e-4, 1e-3, 1e3, 1e4.
+
+ESTIMATOR VALIDATED ON KNOWN SIGNALS. Pure integrated white noise returns
+N/sqrt(tau) across an octave grid within the standard estimator scatter
+1/sqrt(2 T/tau), and to 3 % at the one-second anchor. White phase noise of
+standard deviation q/sqrt(12) returns q/(2 tau) to 2 % across six octaves,
+reproducing eq:imu:quantadev. The quantizer's carried residual has variance
+q^2/12 to 2 % across dither levels from 0.02 q to 3 q, and the carry is shown
+lossless in accumulation (|sum y - sum u| <= q/2 exactly). A constant turn-on
+bias is confirmed not to change the Allan deviation at any cluster time
+(1e-9 relative), which is why the synthetic generator may omit it.
+
+END-TO-END RECOVERY. The sec:imu:recovery procedure on a seeded 1e4 s static
+record at dt = 0.01 s recovers the configured ARW and bias instability inside
+the +/- 10 % criterion, for eight independent seeds, at the reference preset
+(0.1 deg/sqrt(h) ARW, 5 deg/h bias instability, tau_c = 20 s, 1e-7 rad quantum).
+"""
+date = "2026-07-19"
+tolerance = """
+Chapter-constant reproduction: 5e-5 absolute on tau*/tau_c and 5e-7 on the peak
+ratio, tighter than the digits the chapter prints. Closed-form re-derivation:
+1e-5 relative, set by the 601 x 601 trapezoidal grid's own truncation error.
+Estimator checks on known signals: the tau-dependent scatter bound
+4/sqrt(2 T/tau) for white noise (the standard relative dispersion of the
+overlapping estimator, gated at four sigma), and 2 % for the white-phase-noise
+and residual-variance checks, which are backed by 4e5 and 2e5 samples
+respectively. Recovery: the literal +/- 10 % of Phase 6 exit criterion 1.
+"""
+
+[[file]]
+name = "sensor_stats.py"
+source = """
+Chapter ch:sensors-optical: the field-rotation vector of equation
+eq:optical:rho, the aberration quaternion of eq:optical:qab, the exact noise
+quaternion of eq:optical:noiseq, the measurement composition of
+eq:optical:stmodel, the exact error extraction of eq:optical:extract, the
+statistic of eq:optical:ststat and its bounds eq:optical:stbounds, the sun
+sensor of eq:optical:sunsensor, and the tangent-plane statistic of
+sec:optical:stats. Chapter ch:sensors-radio: the nav fix of eq:radio:fix and
+eq:radio:white, the altimeter of eq:radio:alt, and the statistics and bounds of
+eq:radio:chi2 and eq:radio:bounds. The common ensemble-mean gate form is shared
+with eq:ekf:ensemble.
+"""
+citation = """
+Markley, F. L. and Crassidis, J. L., 2014 (key markley2014), for the
+attitude-measurement abstraction and quaternion conventions, transcribed to the
+project convention per the note at eq:optical:stmodel; Titterton, D. and
+Weston, J. (key titterton2004) for the fix-level abstraction of a navigation
+service and the additive Gaussian error convention. Both are the sources the
+chapters cite.
+"""
+generation = """
+Computed live from seeded draws; no value files are committed. Validated in
+tests/python/test_refs_sensor_stats.py.
+
+STRUCTURAL CHECKS. Equation eq:optical:rho's own consistency claim
+(rho x b = beta - (b . beta) b) holds to 1e-18 over 200 random boresights. The
+extraction of eq:optical:extract inverts the noise construction of
+eq:optical:noiseq to 3.3e-16 rad over 3,000 draws, which is what makes the
+statistic exactly chi-square. The aberrated boresight is confirmed to point AWAY
+from the velocity, the binding sign check stated after eq:optical:qab. The
+field-rotation magnitude at a perpendicular boresight is 20.49 arcsec.
+
+COMPOSITION-ORDER CHECK. The statistic must be INVARIANT to the deterministic
+aberration factor, because the extraction removes exactly what the measurement
+inserted; measured invariance is 1e-10 relative over 1,000 draws. The check is
+shown to have teeth by evaluating the reversed (Markley-Crassidis) composition
+the chapter flags as a transcription hazard, which the criterion-1 gate rejects
+outright with a statistic more than ten times the correct ensemble mean.
+
+GATE BEHAVIOUR. Every gate is exercised in both directions. Correctly scaled
+draws are accepted, and the empirical coverage over independent ensembles is
+measured (120 star-tracker ensembles and 60 nav-fix ensembles, both consistent
+with the nominal 95 %). Mis-scaled draws are rejected: a 20 % understated star
+tracker sigma, a permutation of the anisotropic nav-fix sigmas (which leaves the
+total error magnitude untouched and so would defeat any isotropic check), and an
+altimeter per-run bias -- the last demonstrating why sec:radio:stats zeroes
+sigma_b in the gate scenario, since a per-run bias makes the per-sample
+statistics dependent and inflates the mean by (b/sigma)^2.
+"""
+date = "2026-07-19"
+tolerance = """
+Extraction exactness: 1e-14 rad absolute, at the rounding floor for a unit
+quaternion logarithm. eq:optical:rho consistency: 1e-18, likewise. Aberration
+invariance of the statistic: 1e-8 relative, six orders below the gate width.
+Gate bounds: reproduced to 0.005 absolute against the values the chapters print.
+Coverage: 88 %-100 % over 120 star-tracker trials and 85 %-100 % over 60 nav-fix
+trials, wide enough that the test is not itself flaky (the binomial standard
+deviation at p = 0.95 is 2.0 and 2.8 percentage points respectively) while still
+catching a systematically miscalibrated interval.
+
+The seeds in the single-ensemble gate tests are pinned deliberately: a two-sided
+95 % interval rejects about one correct ensemble in twenty by construction, so a
+seeded gate is the only form that is both meaningful and reproducible. The
+coverage tests are what establish the rejection rate is the nominal one.
+"""
