@@ -991,7 +991,24 @@ struct VehicleCycle::Impl {
         std::fill(innov_s_buf.begin(), innov_s_buf.end(), 0.0);
         const std::uint32_t m = static_cast<std::uint32_t>(s.y.size());
         std::copy(s.y.begin(), s.y.end(), innov_y_buf.begin());
-        std::copy(s.s_upper.begin(), s.s_upper.end(), innov_s_buf.begin());
+        // S must be padded STRUCTURALLY, not by a flat copy: the packed
+        // upper triangle of an m-by-m block and that of an m_max-by-m_max
+        // matrix have different row strides, so copying the short triangle
+        // into the front of the long buffer would scatter the block across
+        // the first row instead of embedding it in the leading corner. The
+        // format doc's rule - entries whose row or column exceeds m are
+        // zero - is what this loop reproduces, one row at a time.
+        {
+          const std::size_t mm = static_cast<std::size_t>(innov_mm);
+          std::size_t src = 0;
+          std::size_t row0 = 0;  // start of row i in the m_max-wide triangle
+          for (std::size_t i = 0; i < m; ++i) {
+            for (std::size_t j = i; j < m; ++j) {
+              innov_s_buf[row0 + (j - i)] = s.s_upper[src++];
+            }
+            row0 += mm - i;  // row i holds m_max - i entries
+          }
+        }
         writer.write_nav_innov(t, s.sensor_id, m, innov_y_buf.data(),
                                innov_y_buf.size(), innov_s_buf.data(),
                                innov_s_buf.size());

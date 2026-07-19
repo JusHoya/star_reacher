@@ -17,18 +17,37 @@ log must carry the FR-26 navigation channel groups:
   ``nav.err`` one, so when no channel named ``e`` exists the single
   non-``t_s`` vector channel of the group is accepted instead.
 - ``nav.est`` — channel ``P``, the packed row-major upper-triangle
-  estimation covariance (``f64[n(n+1)/2]``), logged at the ``nav.err``
+  estimation covariance (``f64[m(m+1)/2]``), logged at the ``nav.err``
   rate (record counts must match).
-- ``nav.innov`` — channels ``y`` (``f64[m]``) and ``S``
-  (``f64[m(m+1)/2]``), the innovation and its packed covariance.
+- ``nav.innov`` — channels ``y`` (``f64[m_max]``), ``S``
+  (``f64[m_max(m_max+1)/2]``), ``sensor_id`` and ``m``.
 
-Report: one time-averaged NEES and NIS gate per run; with two or more runs,
-the ensemble per-epoch and pooled gates for both statistics (the ensemble
-per-epoch gate is the acceptance instrument). The final line is
-``CONSISTENCY: PASS (N/N gates)`` or ``CONSISTENCY: FAIL (k/N gates)``.
-Exit codes: 0 when every gate passes; 1 on any gate failure, unreadable or
-missing input, or a log without the required groups (the error names the
-missing group); 2 for usage errors (argparse).
+**Error-state estimators (m = n - 1).** An estimator whose covariance lives
+in a different parameterization than its state logs ``P`` at dimension m
+while ``nav.err.e`` stays at the state dimension n. The reference
+error-state EKF is the case in point: n = 16 with a quaternion attitude,
+m = 15 with a three-component attitude error. The documented reduction for
+such a quaternion-led estimator (``docs/formats/srlog_v1.md``, ``nav.err``)
+is applied here: the leading four components of ``e`` are a
+sign-canonicalized error quaternion and collapse to ``dtheta =
+2 sgn(dq_w) dq_v``, the remaining n - 4 pass through unchanged. NEES is then
+formed against the m-dimensional ``P`` the filter actually reported.
+
+**Per-sensor NIS.** ``nav.innov`` records are zero-padded to ``m_max``, so a
+three-dimensional star-tracker update padded into a six-wide record carries
+a singular ``S``. Records are therefore grouped by ``sensor_id`` and each
+group is trimmed to its own valid dimension ``m`` before gating — which is
+also what ch:ekf specifies, since each sensor's NIS has its own chi-square
+dimension. A single-sensor run reports one ``NIS`` gate; a multi-sensor run
+reports one ``NIS[sensor k]`` gate per sensor.
+
+Report: one time-averaged NEES gate and one NIS gate per sensor per run;
+with two or more runs, the ensemble per-epoch and pooled gates for each
+statistic (the ensemble per-epoch gate is the acceptance instrument). The
+final line is ``CONSISTENCY: PASS (N/N gates)`` or ``CONSISTENCY: FAIL
+(k/N gates)``. Exit codes: 0 when every gate passes; 1 on any gate failure,
+unreadable or missing input, or a log without the required groups (the
+error names the missing group); 2 for usage errors (argparse).
 """
 
 from __future__ import annotations
@@ -42,9 +61,12 @@ from star_reacher.consistency import (
     EnsembleGate,
     IntervalGate,
     ensemble_gate,
+    matrix_order,
     nees,
     nis,
+    pack_symmetric,
     time_average_gate,
+    unpack_symmetric,
 )
 from star_reacher.srlog import Run, SrlogError, load
 
@@ -106,6 +128,73 @@ def _vector_channels(arr: np.ndarray) -> list[str]:
     return [name for name in arr.dtype.names if arr.dtype[name].shape]
 
 
+def _reduce_error(e: np.ndarray, m: int, source: str) -> tuple[np.ndarray, str | None]:
+    """Reduce an n-dimensional logged error to the m dimensions P describes.
+
+    Returns ``(reduced, problem)``. ``m == n`` passes straight through. The
+    one sanctioned reduction is the quaternion-led error-state form
+    ``m == n - 1``: the leading four components are an error quaternion and
+    collapse to ``dtheta = 2 sgn(dq_w) dq_v`` (the small-angle extraction
+    the estimator's own covariance is expressed in). Any other pairing is a
+    genuine mismatch and is reported rather than guessed at.
+    """
+    n = e.shape[-1]
+    if n == m:
+        return e, None
+    if n == m + 1 and n >= 4:
+        w = e[..., 0]
+        qv = e[..., 1:4]
+        sign = np.where(w >= 0.0, 1.0, -1.0)[..., np.newaxis]
+        dtheta = 2.0 * sign * qv
+        return np.concatenate([dtheta, e[..., 4:]], axis=-1), None
+    return e, (
+        f"{source}: 'nav.err' has dimension {n} but 'nav.est' reports a "
+        f"{m}-dimensional covariance; the only supported reduction is the "
+        f"quaternion-led error state (n = m + 1), so these channels do not "
+        f"describe one estimator"
+    )
+
+
+def _group_innovations(
+    innov: np.ndarray, source: str
+) -> tuple[dict[int, tuple[np.ndarray, np.ndarray]], list[str]]:
+    """Split zero-padded nav.innov records into per-sensor (y, S) arrays.
+
+    Every record is padded to ``m_max``; entries beyond the record's own
+    valid dimension ``m`` are zero, which would make S singular if gated as
+    written. Each sensor's records are trimmed to its own m, which is also
+    the dimension its chi-square bound is taken at.
+    """
+    problems: list[str] = []
+    groups: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    names = innov.dtype.names or ()
+    if "sensor_id" not in names or "m" not in names:
+        # Pre-Phase-6 or synthetic logs without the tagging channels carry a
+        # single full-width update stream; treat them as one group.
+        return {0: (innov["y"], innov["S"])}, problems
+
+    m_max = innov["y"].shape[-1]
+    for sensor_id in sorted({int(s) for s in innov["sensor_id"]}):
+        sel = innov["sensor_id"] == sensor_id
+        dims = {int(v) for v in innov["m"][sel]}
+        if len(dims) != 1:
+            problems.append(
+                f"{source}: sensor {sensor_id} logged innovations at more "
+                f"than one dimension ({sorted(dims)}); each sensor's NIS is "
+                f"chi-square at a single fixed dimension"
+            )
+            continue
+        m = dims.pop()
+        y = innov["y"][sel][:, :m]
+        # Trim the packed covariance by unpacking at the padded width and
+        # repacking the leading m-by-m block, so the zero padding never
+        # reaches the Cholesky factorization.
+        s_full = unpack_symmetric(innov["S"][sel])
+        s_packed = pack_symmetric(s_full[:, :m, :m]) if m < m_max else innov["S"][sel]
+        groups[sensor_id] = (y, s_packed)
+    return groups, problems
+
+
 def _extract_arrays(run: Run, source: str) -> tuple[dict[str, np.ndarray], list[str]]:
     """Pull the FR-26 arrays out of a loaded run.
 
@@ -159,15 +248,17 @@ def _extract_arrays(run: Run, source: str) -> tuple[dict[str, np.ndarray], list[
             f"FR-26)"
         )
     else:
-        for name in ("y", "S"):
-            if name not in (innov.dtype.names or ()):
-                problems.append(
-                    f"{source}: group 'nav.innov' carries no channel named "
-                    f"{name!r} (FR-26 innovation channels); its channels are "
-                    f"{list(innov.dtype.names)}"
-                )
-            else:
-                arrays[name] = innov[name]
+        missing = [n for n in ("y", "S") if n not in (innov.dtype.names or ())]
+        for name in missing:
+            problems.append(
+                f"{source}: group 'nav.innov' carries no channel named "
+                f"{name!r} (FR-26 innovation channels); its channels are "
+                f"{list(innov.dtype.names)}"
+            )
+        if not missing:
+            groups, group_problems = _group_innovations(innov, source)
+            problems.extend(group_problems)
+            arrays["innov"] = groups
 
     if "e" in arrays and "P" in arrays and len(arrays["e"]) != len(arrays["P"]):
         problems.append(
@@ -175,6 +266,20 @@ def _extract_arrays(run: Run, source: str) -> tuple[dict[str, np.ndarray], list[
             f"'nav.est' has {len(arrays['P'])}; FR-26 logs both per "
             f"estimation cycle, so the counts must match"
         )
+    if "e" in arrays and "P" in arrays:
+        # The covariance dimension is authoritative: it is what NEES is
+        # normalized by, so the error is reduced to it rather than the
+        # other way round.
+        try:
+            m = matrix_order(arrays["P"].shape[-1])
+        except ValueError as exc:
+            problems.append(f"{source}: {exc}")
+        else:
+            reduced, problem = _reduce_error(arrays["e"], m, source)
+            if problem is not None:
+                problems.append(problem)
+            else:
+                arrays["e"] = reduced
     return arrays, problems
 
 
@@ -236,17 +341,31 @@ def cmd_consistency(args) -> int:
             print(f"star consistency: {line}", file=sys.stderr)
         return _EXIT_RUNTIME
 
+    # Every run must expose the same sensor set for the ensemble to stack.
+    sensor_ids = sorted(per_file[0][1]["innov"].keys())
+    for path, arrays in per_file:
+        if sorted(arrays["innov"].keys()) != sensor_ids:
+            print(
+                f"star consistency: {path} logs innovations for sensors "
+                f"{sorted(arrays['innov'].keys())} but the first run logs "
+                f"{sensor_ids}; ensemble statistics need one common sensor "
+                f"set",
+                file=sys.stderr,
+            )
+            return _EXIT_RUNTIME
+    # A single-sensor run keeps the bare "NIS" label, so the common case
+    # reads the same as it always has.
+    def nis_label(sensor_id: int) -> str:
+        return "NIS" if len(sensor_ids) == 1 else f"NIS[sensor {sensor_id}]"
+
     results: list[bool] = []
     nees_runs: list[np.ndarray] = []
-    nis_runs: list[np.ndarray] = []
+    nis_runs: dict[int, list[np.ndarray]] = {sid: [] for sid in sensor_ids}
     try:
         for path, arrays in per_file:
             eps_nees = nees(arrays["e"], arrays["P"])
-            eps_nis = nis(arrays["y"], arrays["S"])
             nees_runs.append(eps_nees)
-            nis_runs.append(eps_nis)
             n = arrays["e"].shape[-1]
-            m = arrays["y"].shape[-1]
             print(f"run: {path}")
             results.append(
                 _print_interval_gate(
@@ -255,19 +374,32 @@ def cmd_consistency(args) -> int:
                     f"T={eps_nees.shape[0]}, n={n}",
                 )
             )
-            results.append(
-                _print_interval_gate(
-                    "NIS time-averaged",
-                    time_average_gate(eps_nis, m),
-                    f"T={eps_nis.shape[0]}, m={m}",
+            for sid in sensor_ids:
+                y, s_packed = arrays["innov"][sid]
+                eps_nis = nis(y, s_packed)
+                nis_runs[sid].append(eps_nis)
+                m = y.shape[-1]
+                results.append(
+                    _print_interval_gate(
+                        f"{nis_label(sid)} time-averaged",
+                        time_average_gate(eps_nis, m),
+                        f"T={eps_nis.shape[0]}, m={m}",
+                    )
                 )
-            )
 
         if len(per_file) >= 2:
-            for label, runs_eps, dim in (
-                ("NEES", nees_runs, per_file[0][1]["e"].shape[-1]),
-                ("NIS", nis_runs, per_file[0][1]["y"].shape[-1]),
-            ):
+            series: list[tuple[str, list[np.ndarray], int]] = [
+                ("NEES", nees_runs, per_file[0][1]["e"].shape[-1])
+            ]
+            for sid in sensor_ids:
+                series.append(
+                    (
+                        nis_label(sid),
+                        nis_runs[sid],
+                        per_file[0][1]["innov"][sid][0].shape[-1],
+                    )
+                )
+            for label, runs_eps, dim in series:
                 epoch_counts = {eps.shape[0] for eps in runs_eps}
                 if len(epoch_counts) != 1:
                     print(

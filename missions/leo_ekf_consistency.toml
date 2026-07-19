@@ -69,21 +69,18 @@ latency_cycles = 0
 
 [gnc.nav]
 component = "error_state_ekf"
-# The filter's INITIAL BELIEF. The committed values offset the estimate from
-# the true initial state by exactly one sigma on one axis of each block, a
-# documented deterministic perturbation that makes this single run a
-# legitimate consistency scenario on its own. The ensemble driver replaces
-# all five with a seeded draw from N(0, P0), which is what makes the
-# ENSEMBLE NEES exactly chi-square from the first cycle (ch:ekf,
-# sec:ekf:consistency).
-#
-# q0 is the true initial attitude rotated by -1e-3 rad about body +Z, i.e.
-# q_true (x) [cos(5e-4), 0, 0, -sin(5e-4)] = [0, a(c-s), a(c+s), 0] with
-# a = sqrt(1/2), c = cos(5e-4), s = sin(5e-4) - one sigma of the attitude
-# block, applied about a single axis.
-q0 = [0.0, 0.70675313942234, 0.7074602461740637, 0.0]
-v0_mps = [0.0, 7546.5, 0.0]
-p0_m = [7.00005e6, 0.0, 0.0]
+# The filter's INITIAL BELIEF. These are exactly run 0 of the
+# exit-criterion-3 ensemble: the true initial state perturbed by a seeded
+# draw from N(0, P0), so the initial error is distributed exactly as the
+# filter believes - the precondition for NEES consistency from the first
+# cycle (ch:ekf, sec:ekf:consistency). The committed mission is therefore a
+# genuine member of the ensemble rather than a separate hand-tuned case, and
+# tests/python/test_ekf_consistency.py regenerates these three values from
+# its draw seed and asserts they match what is committed here, so the file
+# and the driver cannot drift apart.
+q0 = [-0.00044626342559570399, 0.70688223269726402, 0.70733106309014382, -0.00027772946007248347]
+v0_mps = [0.060921416592906778, 7545.8006329551154, -0.41793559576109252]
+p0_m = [6999986.8998344773, -13.811525573585669, -86.675748333963583]
 # The bias estimates start at zero, and P0's bias blocks are set to the
 # instruments' stationary Gauss-Markov sigmas below. The IMU initializes its
 # in-run bias from exactly that stationary distribution (ch:sensors-imu,
