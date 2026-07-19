@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <Eigen/Dense>
 
@@ -353,6 +354,361 @@ TEST_CASE("sensors_imu_zero_error_config_is_the_ideal_special_case") {
     writer.close();
   }
   std::remove(path.c_str());
+}
+
+namespace {
+
+// Overlapping Allan variance of a phase (cumulative-angle) record,
+// eq:imu:oadev:
+//
+//   sigma^2(tau) = 1/(2 tau^2 (N - 2m)) sum (theta_{n+2m} - 2 theta_{n+m}
+//                                            + theta_n)^2
+//
+// the maximally overlapped estimator, which reuses every stride-m second
+// difference and has the smallest variance of the standard family.
+double oadev(const std::vector<double>& theta, std::size_t m, double dt) {
+  const std::size_t n_theta = theta.size();
+  REQUIRE(n_theta > 2 * m);
+  const double tau = static_cast<double>(m) * dt;
+  double acc = 0.0;
+  const std::size_t count = n_theta - 2 * m;
+  for (std::size_t n = 0; n < count; ++n) {
+    const double d = theta[n + 2 * m] - 2.0 * theta[n + m] + theta[n];
+    acc += d * d;
+  }
+  return std::sqrt(acc / (2.0 * tau * tau * static_cast<double>(count)));
+}
+
+// eq:imu:gmadev, the Gauss-Markov contribution at cluster time tau.
+double gm_adev_at(double sigma_gm, double tau_c, double tau) {
+  const double x = tau / tau_c;
+  const double bracket =
+      1.0 - (tau_c / (2.0 * tau)) *
+                (3.0 - 4.0 * std::exp(-x) + std::exp(-2.0 * x));
+  return std::sqrt((2.0 * sigma_gm * sigma_gm * tau_c / tau) * bracket);
+}
+
+}  // namespace
+
+TEST_CASE("sensors_imu_allan_recovers_arw_and_bias_instability") {
+  // Phase 6 exit criterion 1: a 1e4 s static record must return the
+  // configured ARW and bias-instability coefficients within +/- 10 %, by
+  // the ch:sensors-imu section on the recovery procedure.
+  //
+  // GATE PRESET DESIGN, deliberate and load-bearing. eq:imu:recoverybi
+  // subtracts the white-noise term before inverting eq:imu:bi, and that
+  // subtraction amplifies estimator scatter: writing A = adev^2(tau*),
+  // W = N^2/tau*, and G = A - W, the relative error propagates as
+  // delta_B/B = (A/G)(delta_adev/adev). A preset where the Gauss-Markov
+  // term is a MINORITY of the Allan variance at tau* therefore produces a
+  // flaky gate. At N = 0.1 deg/sqrt(h) and tau_c = 20 s the ratio G/W runs
+  // 0.46 at B = 1 deg/h, 1.86 at 2, 4.18 at 3, and 7.42 at 4; the
+  // corresponding B_hat scatter falls from about 12 % (which would fail a
+  // 10 % gate roughly 40 % of the time) to about 4.5 %. This preset takes
+  // B = 4 deg/h, G/W = 7.42, so the gate has better than two sigma of
+  // margin. The design rule is B >= sqrt(ratio) N / (0.664282 sqrt(tau*)).
+  const double deg = star::constants::TWO_PI / 360.0;
+  const double n_gyro = 0.1 * deg / 60.0;      // 0.1 deg/sqrt(h) in rad/sqrt(s)
+  const double b_gyro = 4.0 * deg / 3600.0;    // 4 deg/h in rad/s
+  const double n_accel = 1.0e-4;               // (m/s)/sqrt(s)
+  const double b_accel = 1.0e-4;               // m/s^2
+  const double tau_c = 20.0;
+
+  star::sensors::ImuErrorCfg err;
+  err.gyro.random_walk = n_gyro;
+  err.gyro.bias_instability = b_gyro;
+  err.gyro.bias_tau_s = tau_c;
+  err.accel.random_walk = n_accel;
+  err.accel.bias_instability = b_accel;
+  err.accel.bias_tau_s = tau_c;
+
+  const std::uint32_t rate = 10;
+  const double dt = 1.0 / rate;
+  const std::size_t n_samples = 100000;  // 1e4 s of record
+  star::sensors::Imu imu(rate, err, 20260719);
+
+  // Cumulative-angle ("phase") records with theta_0 = 0 prepended, one axis
+  // per instrument - the recovery is per axis and per instrument, and one
+  // axis of each exercises both chains.
+  std::vector<double> theta_g;
+  std::vector<double> theta_a;
+  theta_g.reserve(n_samples + 1);
+  theta_a.reserve(n_samples + 1);
+  theta_g.push_back(0.0);
+  theta_a.push_back(0.0);
+
+  const std::string path = "test_sensors_imu_allan.srlog";
+  {
+    star::log::SrlogWriter writer = make_imu_writer(path, rate);
+    // Static truth: zero body rate and zero specific force, so every
+    // emitted increment is pure sensor error.
+    const star::sensors::SensorCycleTruth statics = held_cycle(dt, 0.0, 0.0);
+    for (std::size_t k = 0; k < n_samples; ++k) {
+      imu.accumulate(statics);
+      imu.sample(dt * static_cast<double>(k + 1), writer);
+      theta_g.push_back(theta_g.back() + imu.last_sample().dtheta_b_rad[0]);
+      theta_a.push_back(theta_a.back() + imu.last_sample().dv_b_mps[0]);
+    }
+    writer.close();
+  }
+  std::remove(path.c_str());
+
+  const double tau_star = 1.8926 * tau_c;
+  const std::size_t m_one = static_cast<std::size_t>(1.0 / dt);
+  const std::size_t m_star = static_cast<std::size_t>(tau_star / dt + 0.5);
+
+  struct Case {
+    const std::vector<double>* theta;
+    double n_coeff;
+    double b_coeff;
+    const char* name;
+  };
+  const Case cases[] = {{&theta_g, n_gyro, b_gyro, "gyro"},
+                        {&theta_a, n_accel, b_accel, "accel"}};
+
+  for (const Case& c : cases) {
+    CAPTURE(c.name);
+    const double sigma_gm =
+        star::sensors::gm_sigma_from_bias_instability(c.b_coeff);
+
+    // Step 2: recover the random walk at the one-second anchor by
+    // subtracting the known Gauss-Markov contribution in quadrature
+    // (eq:imu:recovery). The quantizer is disabled here, so its term is
+    // exactly zero and is omitted rather than added as a zero.
+    const double a_one = oadev(*c.theta, m_one, dt);
+    const double gm_one = gm_adev_at(sigma_gm, tau_c, 1.0);
+    const double n_hat = std::sqrt(a_one * a_one - gm_one * gm_one);
+    CHECK(std::fabs(n_hat / c.n_coeff - 1.0) <= 0.10);
+
+    // Step 3: recover the bias instability at the peak anchor by removing
+    // the recovered white-noise term and inverting eq:imu:bi
+    // (eq:imu:recoverybi).
+    const double a_star = oadev(*c.theta, m_star, dt);
+    const double white_at_star = n_hat * n_hat / tau_star;
+    const double gm_part = a_star * a_star - white_at_star;
+    // The designed margin: the Gauss-Markov term must dominate at tau*, or
+    // the subtraction above amplifies scatter into the gate.
+    CHECK(gm_part / white_at_star >= 4.0);
+    const double b_hat = std::sqrt(gm_part) / 0.664282;
+    CHECK(std::fabs(b_hat / c.b_coeff - 1.0) <= 0.10);
+
+    // The analytic curve overlays the estimate across the octave grid
+    // (the chapter's second Allan gate). Tolerance widens with cluster
+    // time because the number of independent clusters falls as 1/tau.
+    for (std::size_t m = 1; static_cast<double>(m) * dt <= 1000.0; m *= 2) {
+      const double tau = static_cast<double>(m) * dt;
+      const double model = std::sqrt(c.n_coeff * c.n_coeff / tau +
+                                     std::pow(gm_adev_at(sigma_gm, tau_c, tau),
+                                              2.0));
+      const double est = oadev(*c.theta, m, dt);
+      const double clusters = 1.0e4 / (2.0 * tau);
+      const double tol = 4.0 / std::sqrt(clusters);  // ~4 sigma of scatter
+      CHECK(std::fabs(est / model - 1.0) <= tol);
+    }
+  }
+}
+
+TEST_CASE("sensors_startracker_chi_square_over_1000_draws") {
+  // Exit criterion 1: the eq:optical:ststat statistic over M = 1000 seeded
+  // draws must fall inside the eq:optical:stbounds two-sided 95 % interval
+  // [2.850, 3.154]. The extraction is exact (the log map inverts
+  // eq:optical:noiseq), so the statistic is exactly chi-square with three
+  // degrees of freedom rather than approximately so.
+  const int m_draws = 1000;
+  star::sensors::StarTrackerCfg cfg;
+  cfg.sigma_rad = Eigen::Vector3d(1.0e-5, 1.0e-5, 5.0e-5);
+  star::sensors::StarTracker st(4, cfg, 31337);
+
+  star::sensors::SensorCycleTruth truth;
+  truth.dt_s = 0.25;
+  truth.q_end_i2b = Eigen::Quaterniond(0.5, 0.5, -0.5, 0.5).normalized();
+  truth.v_end_i_mps = Eigen::Vector3d::Zero();  // isolates the noise factor
+
+  const std::string path = "test_sensors_st_chi2.srlog";
+  double q_sum = 0.0;
+  std::vector<double> per_axis_sq(3, 0.0);
+  {
+    star::log::SrlogHeaderFields f;
+    f.core_version = "0.6.0-test";
+    f.git_hash = "unknown";
+    f.config_sha256 = std::string(64, '0');
+    f.master_seed = 31337;
+    f.oracle = false;
+    f.epoch_utc = "2026-01-01T00:00:00Z";
+    f.central_body = "earth";
+    f.truth_rate_hz = 4;
+    f.cycle_rate_hz = 4;
+    f.sensors = {{"startracker", 4, 0}};
+    star::log::SrlogWriter writer(path, f);
+    for (int i = 0; i < m_draws; ++i) {
+      st.accumulate(truth);
+      st.sample(0.25 * (i + 1), writer);
+      // eq:optical:extract with the deterministic factors removed.
+      const Eigen::Quaterniond dq =
+          truth.q_end_i2b.conjugate() * st.last_measurement();
+      const Eigen::Vector3d dqv = dq.vec();
+      const double vn = dqv.norm();
+      const double theta = 2.0 * std::atan2(vn, std::fabs(dq.w()));
+      Eigen::Vector3d axis = Eigen::Vector3d::Zero();
+      if (vn > 0.0) {
+        axis = (dq.w() >= 0.0) ? Eigen::Vector3d(dqv / vn)
+                               : Eigen::Vector3d(-dqv / vn);
+      }
+      const Eigen::Vector3d eps = theta * axis;
+      for (int a = 0; a < 3; ++a) {
+        const double z = eps[a] / cfg.sigma_rad[a];
+        q_sum += z * z;
+        per_axis_sq[static_cast<std::size_t>(a)] += eps[a] * eps[a];
+      }
+    }
+    writer.close();
+  }
+  std::remove(path.c_str());
+
+  const double q_mean = q_sum / m_draws;
+  CHECK(q_mean >= 2.850);
+  CHECK(q_mean <= 3.154);
+
+  // Per-axis sample variances match the configured sigmas within their own
+  // two-sided 95 % bounds: chi^2_{0.025,1000}/1000 = 0.9137 and
+  // chi^2_{0.975,1000}/1000 = 1.0900.
+  for (int a = 0; a < 3; ++a) {
+    const double var = per_axis_sq[static_cast<std::size_t>(a)] / m_draws;
+    const double ratio =
+        var / (cfg.sigma_rad[a] * cfg.sigma_rad[a]);
+    CHECK(ratio >= 0.9137);
+    CHECK(ratio <= 1.0900);
+  }
+}
+
+TEST_CASE("sensors_navfix_altimeter_chi_square_over_1000_draws") {
+  // Exit criterion 6: the eq:radio:chi2 statistics over M = 1000 seeded
+  // draws inside the eq:radio:bounds two-sided 95 % intervals - [2.850,
+  // 3.154] for the three-degree-of-freedom position and velocity fixes and
+  // [0.914, 1.090] for the one-degree-of-freedom altimeter. The gate
+  // scenario holds truth fixed and disables the correlated components, as
+  // the chapter's acceptance section specifies: a per-run bias would make
+  // the per-sample statistics dependent and the mean gate invalid.
+  const int m_draws = 1000;
+  const Eigen::Vector3d r_true(7.0e6, 1.0e6, -2.0e6);
+  const Eigen::Vector3d v_true(1.0e3, 7.4e3, 0.5e3);
+
+  star::sensors::NavFixCfg fix;
+  fix.sigma_r_m = Eigen::Vector3d(5.0, 8.0, 12.0);
+  fix.sigma_v_mps = Eigen::Vector3d(0.05, 0.08, 0.12);
+  star::sensors::NavFix nav(4, fix, 8675309);
+
+  star::sensors::AltimeterCfg alt_cfg;
+  alt_cfg.sigma_bias_m = 0.0;  // gate scenario: white part only
+  alt_cfg.sigma_noise_m = 2.5;
+  star::sensors::Altimeter alt(4, alt_cfg, 8675309);
+
+  star::sensors::SensorCycleTruth truth;
+  truth.dt_s = 0.25;
+  truth.r_end_i_m = r_true;
+  truth.v_end_i_mps = v_true;
+  truth.geom.bodyfixed_valid = true;
+  truth.geom.c_gcrf_to_bodyfixed = Eigen::Matrix3d::Identity();
+  truth.geom.ellipsoid_a_m = 6378137.0;
+  truth.geom.ellipsoid_inv_f = 0.0;  // sphere: h = norm(r) - a exactly
+  const double h_true = r_true.norm() - 6378137.0;
+
+  double qr = 0.0;
+  double qv = 0.0;
+  double qh = 0.0;
+  const std::string path = "test_sensors_radio_chi2.srlog";
+  {
+    star::log::SrlogHeaderFields f;
+    f.core_version = "0.6.0-test";
+    f.git_hash = "unknown";
+    f.config_sha256 = std::string(64, '0');
+    f.master_seed = 8675309;
+    f.oracle = false;
+    f.epoch_utc = "2026-01-01T00:00:00Z";
+    f.central_body = "earth";
+    f.truth_rate_hz = 4;
+    f.cycle_rate_hz = 4;
+    f.sensors = {{"navfix", 4, 0}, {"altimeter", 4, 0}};
+    star::log::SrlogWriter writer(path, f);
+    for (int k = 0; k < m_draws; ++k) {
+      nav.accumulate(truth);
+      nav.sample(0.25 * (k + 1), writer);
+      alt.accumulate(truth);
+      alt.sample(0.25 * (k + 1), writer);
+      for (int a = 0; a < 3; ++a) {
+        const double dr = nav.last_position_m()[a] - r_true[a];
+        const double dv = nav.last_velocity_mps()[a] - v_true[a];
+        qr += (dr * dr) / (fix.sigma_r_m[a] * fix.sigma_r_m[a]);
+        qv += (dv * dv) / (fix.sigma_v_mps[a] * fix.sigma_v_mps[a]);
+      }
+      const double dh = alt.last_measurement_m() - h_true;
+      qh += (dh * dh) / (alt_cfg.sigma_noise_m * alt_cfg.sigma_noise_m);
+    }
+    writer.close();
+  }
+  std::remove(path.c_str());
+
+  CHECK(qr / m_draws >= 2.850);
+  CHECK(qr / m_draws <= 3.154);
+  CHECK(qv / m_draws >= 2.850);
+  CHECK(qv / m_draws <= 3.154);
+  CHECK(qh / m_draws >= 0.914);
+  CHECK(qh / m_draws <= 1.090);
+}
+
+TEST_CASE("sensors_sunsensor_chi_square_over_1000_draws") {
+  // ch:sensors-optical acceptance statistics: the tangent-plane statistic
+  // over M = 1000 draws inside [1.878, 2.126], the two-sided 95 % interval
+  // for a chi-square with two degrees of freedom.
+  const int m_draws = 1000;
+  star::sensors::SunSensorCfg cfg;
+  cfg.sigma_rad = 2.0e-3;
+  star::sensors::SunSensor ss(4, cfg, 112358);
+
+  star::sensors::SensorCycleTruth truth;
+  truth.dt_s = 0.25;
+  truth.q_end_i2b = Eigen::Quaterniond::Identity();
+  truth.v_end_i_mps = Eigen::Vector3d::Zero();
+  truth.geom.ephemeris_valid = true;
+  truth.geom.illumination_nu = 1.0;
+  truth.r_end_i_m = Eigen::Vector3d::Zero();
+  truth.geom.r_sun_m = Eigen::Vector3d(1.5e11, 0.0, 0.0);
+  const Eigen::Vector3d u_true(1.0, 0.0, 0.0);
+
+  // Deterministic tangent-plane basis about the true direction.
+  const Eigen::Vector3d z = Eigen::Vector3d::UnitZ();
+  const Eigen::Vector3d e1 = u_true.cross(z).normalized();
+  const Eigen::Vector3d e2 = u_true.cross(e1);
+
+  double q_sum = 0.0;
+  const std::string path = "test_sensors_sun_chi2.srlog";
+  {
+    star::log::SrlogHeaderFields f;
+    f.core_version = "0.6.0-test";
+    f.git_hash = "unknown";
+    f.config_sha256 = std::string(64, '0');
+    f.master_seed = 112358;
+    f.oracle = false;
+    f.epoch_utc = "2026-01-01T00:00:00Z";
+    f.central_body = "earth";
+    f.truth_rate_hz = 4;
+    f.cycle_rate_hz = 4;
+    f.sensors = {{"sunsensor", 4, 0}};
+    star::log::SrlogWriter writer(path, f);
+    for (int k = 0; k < m_draws; ++k) {
+      ss.accumulate(truth);
+      ss.sample(0.25 * (k + 1), writer);
+      const double a1 = e1.dot(ss.last_measurement());
+      const double a2 = e2.dot(ss.last_measurement());
+      q_sum += (a1 * a1 + a2 * a2) / (cfg.sigma_rad * cfg.sigma_rad);
+    }
+    writer.close();
+  }
+  std::remove(path.c_str());
+
+  const double q_mean = q_sum / m_draws;
+  CHECK(q_mean >= 1.878);
+  CHECK(q_mean <= 2.126);
 }
 
 TEST_CASE("sensors_aberration_magnitude_and_direction") {

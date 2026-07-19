@@ -392,6 +392,21 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None, stric
                 sc = core.GncSensorCfg()
                 sc.kind = kind
                 sc.sample_rate_hz = spec["sample_rate_hz"]
+                # Every other resolved key is a kind-specific model
+                # parameter, forwarded verbatim on the flat scalar/vector
+                # maps; the sensor module owns its own key vocabulary, so a
+                # new FR-23 error term needs no change here.
+                scalars = {}
+                vectors = {}
+                for key, value in spec.items():
+                    if key == "sample_rate_hz":
+                        continue
+                    if isinstance(value, list):
+                        vectors[key] = [float(v) for v in value]
+                    else:
+                        scalars[key] = float(value)
+                sc.scalars = scalars
+                sc.vectors = vectors
                 sensor_cfgs.append(sc)
             gc.sensors = sensor_cfgs
             cfg.gnc = gc

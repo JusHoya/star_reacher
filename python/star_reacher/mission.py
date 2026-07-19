@@ -255,10 +255,201 @@ _GNC_ATTITUDE_ACTIONS = (
     "prograde_hold",
     "rate_command",
 )
-# Sensor kinds accepted in [sensors.<kind>] this phase; the remaining FR-23
-# kinds (startracker, sunsensor, navfix, altimeter, camera) land with the
-# sensor error-model workstream.
-_SENSOR_KINDS = ("imu",)
+# The canonical FR-23 sensor-kind vocabulary, matching kSensorKinds in
+# srlog_writer.hpp and the `sensors.<kind>` log group names.
+_SENSOR_KINDS = (
+    "imu",
+    "startracker",
+    "sunsensor",
+    "navfix",
+    "altimeter",
+    "camera",
+)
+
+# Per-kind model-parameter schema. Each entry maps a TOML key to
+# (units, typical, kind), where kind is "scalar" for a number, an integer for
+# a fixed-length float array, or "flat3" for a flat list whose length must be
+# a multiple of three. Every parameter is optional and defaults, core-side,
+# to the ideal (error-free) instrument; the key names are unit-suffixed per
+# DX-3 and must match the vocabularies the sensor modules parse.
+_SENSOR_PARAMS: dict[str, dict[str, tuple[str, str, object]]] = {
+    "imu": {
+        "gyro_turnon_bias_sigma_radps": ("rad/s", "1e-7 to 1e-5", "scalar"),
+        "gyro_bias_instability_radps": ("rad/s", "5e-9 to 5e-6", "scalar"),
+        "gyro_bias_tau_s": ("s", "10 to 300", "scalar"),
+        "gyro_arw_rad_per_sqrt_s": (
+            "rad/sqrt(s)", "3e-6 to 3e-4 (0.01 to 1 deg/sqrt(h))", "scalar",
+        ),
+        "gyro_quantum_rad": ("rad", "1e-7 to 1e-5", "scalar"),
+        "gyro_scale_factor_ppm": ("ppm", "1 to 1000, per axis", 3),
+        "gyro_misalignment_rad": (
+            "rad", "1e-5 to 1e-3, order xy xz yx yz zx zy", 6,
+        ),
+        "accel_turnon_bias_sigma_mps2": ("m/s^2", "1e-4 to 1e-2", "scalar"),
+        "accel_bias_instability_mps2": ("m/s^2", "1e-6 to 1e-4", "scalar"),
+        "accel_bias_tau_s": ("s", "10 to 300", "scalar"),
+        "accel_vrw_mps_per_sqrt_s": (
+            "(m/s)/sqrt(s)", "1e-5 to 1e-3", "scalar",
+        ),
+        "accel_quantum_mps": ("m/s", "1e-6 to 1e-4", "scalar"),
+        "accel_scale_factor_ppm": ("ppm", "1 to 1000, per axis", 3),
+        "accel_misalignment_rad": (
+            "rad", "1e-5 to 1e-3, order xy xz yx yz zx zy", 6,
+        ),
+    },
+    "startracker": {
+        "sun_exclusion_rad": ("rad", "0.35 to 0.9 (20 to 50 deg)", "scalar"),
+        "central_body_exclusion_rad": (
+            "rad", "0.35 to 0.9 (20 to 50 deg)", "scalar",
+        ),
+        "slew_limit_radps": ("rad/s", "0.005 to 0.05", "scalar"),
+        "boresight_b": ("1", "unit vector in body axes", 3),
+        "sigma_rad": (
+            "rad", "5e-6 to 1e-4, about-boresight typically largest", 3,
+        ),
+    },
+    "sunsensor": {
+        "fov_half_angle_rad": ("rad", "0.5 to 1.2 (30 to 70 deg)", "scalar"),
+        "sigma_rad": ("rad", "1e-3 to 1e-2", "scalar"),
+        "boresight_b": ("1", "unit vector in body axes", 3),
+    },
+    "navfix": {
+        "gm_position_sigma_m": ("m", "0 (off) to 10", "scalar"),
+        "gm_position_tau_s": ("s", "100 to 3600", "scalar"),
+        "gm_velocity_sigma_mps": ("m/s", "0 (off) to 0.1", "scalar"),
+        "gm_velocity_tau_s": ("s", "100 to 3600", "scalar"),
+        "sigma_r_m": ("m", "1 to 20, per GCRF axis", 3),
+        "sigma_v_mps": ("m/s", "0.01 to 0.5, per GCRF axis", 3),
+    },
+    "altimeter": {
+        "sigma_bias_m": ("m", "0 to 10", "scalar"),
+        "sigma_noise_m": ("m", "0.1 to 5", "scalar"),
+        "h_min_m": ("m", "0 to 1e5", "scalar"),
+        "h_max_m": ("m", "1e4 to 1e6; <= h_min_m disables the gate", "scalar"),
+    },
+    "camera": {
+        "fx_px": ("px", "200 to 5000", "scalar"),
+        "fy_px": ("px", "200 to 5000", "scalar"),
+        "cx_px": ("px", "(width - 1)/2 for a centred model", "scalar"),
+        "cy_px": ("px", "(height - 1)/2 for a centred model", "scalar"),
+        "width_px": ("px", "256 to 4096", "scalar"),
+        "height_px": ("px", "256 to 4096", "scalar"),
+        "r_cam_b_m": ("m", "mount offset from the composite CG", 3),
+        "q_b2c": ("1", "Hamilton scalar-first body-to-camera rotation", 4),
+        "landmarks_fixed_m": (
+            "m", "flat list of central-body-fixed x y z triples", "flat3",
+        ),
+    },
+}
+
+# Parameters that must be positive when present (a zero would leave the
+# projection undefined rather than merely disabling a term).
+_SENSOR_POSITIVE = {
+    "camera": ("fx_px", "fy_px", "width_px", "height_px"),
+}
+
+# Parameters that are magnitudes: negative values are refused rather than
+# silently inverting a noise term. Keys not listed here are unconstrained in
+# sign (principal points, band edges, mount offsets, landmark coordinates).
+_SENSOR_SIGNED_OK = {
+    "camera": ("cx_px", "cy_px", "r_cam_b_m", "q_b2c", "landmarks_fixed_m"),
+    "altimeter": ("h_min_m", "h_max_m"),
+    "imu": ("gyro_scale_factor_ppm", "gyro_misalignment_rad",
+            "accel_scale_factor_ppm", "accel_misalignment_rad"),
+    "startracker": ("boresight_b",),
+    "sunsensor": ("boresight_b",),
+}
+
+
+def _validate_sensor_params(
+    kind: str, table: dict, errs: "_Errors"
+) -> tuple[bool, dict]:
+    """Validate one [sensors.<kind>] table's model parameters.
+
+    Returns (ok, resolved) with resolved carrying only the keys the mission
+    actually set, so an unset parameter takes the core-side default rather
+    than being pinned to a value the user never wrote.
+    """
+    schema = _SENSOR_PARAMS[kind]
+    path = f"sensors.{kind}"
+    ok = True
+    resolved: dict = {}
+    signed_ok = _SENSOR_SIGNED_OK.get(kind, ())
+    positive = _SENSOR_POSITIVE.get(kind, ())
+
+    _reject_unknown(table, path, {"sample_rate_hz"} | set(schema), errs)
+    for key, value in table.items():
+        if key == "sample_rate_hz" or key not in schema:
+            continue  # unknown keys already reported above
+        units, typical, shape = schema[key]
+        if shape == "scalar":
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                errs.add(path, key, f"expected a number, got {value!r}",
+                         units=units, typical=typical)
+                ok = False
+                continue
+            if key in positive and not value > 0:
+                errs.add(path, key, f"must be > 0, got {value!r}",
+                         units=units, typical=typical)
+                ok = False
+                continue
+            if key not in signed_ok and value < 0:
+                errs.add(path, key, f"must be >= 0, got {value!r}",
+                         units=units, typical=typical)
+                ok = False
+                continue
+            resolved[key] = float(value)
+            continue
+
+        # Array-valued parameter.
+        if not isinstance(value, list) or not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool)
+            for v in value
+        ):
+            errs.add(path, key, f"expected a list of numbers, got {value!r}",
+                     units=units, typical=typical)
+            ok = False
+            continue
+        if shape == "flat3":
+            if len(value) % 3 != 0:
+                errs.add(path, key,
+                         f"length must be a multiple of 3, got {len(value)}",
+                         units=units, typical=typical)
+                ok = False
+                continue
+        elif len(value) != shape:
+            errs.add(path, key,
+                     f"expected exactly {shape} entries, got {len(value)}",
+                     units=units, typical=typical)
+            ok = False
+            continue
+        if key not in signed_ok and any(v < 0 for v in value):
+            errs.add(path, key, "entries must be >= 0",
+                     units=units, typical=typical)
+            ok = False
+            continue
+        resolved[key] = [float(v) for v in value]
+
+    # Cross-key checks that a per-key rule cannot express.
+    if kind in ("startracker", "sunsensor"):
+        b = resolved.get("boresight_b")
+        if b is not None and not any(v != 0.0 for v in b):
+            errs.add(path, "boresight_b", "must be a nonzero direction",
+                     units="1", typical="unit vector in body axes")
+            ok = False
+    if kind == "camera":
+        q = resolved.get("q_b2c")
+        if q is not None and not any(v != 0.0 for v in q):
+            errs.add(path, "q_b2c", "must be a nonzero quaternion",
+                     units="1",
+                     typical="Hamilton scalar-first, e.g. [1, 0, 0, 0]")
+            ok = False
+        for req in ("fx_px", "fy_px", "width_px", "height_px"):
+            if req not in resolved:
+                errs.add(path, req, "missing required key",
+                         units=schema[req][0], typical=schema[req][1])
+                ok = False
+    return ok, resolved
 _GNC_MAX_LATENCY_CYCLES = 10_000
 
 
@@ -1725,10 +1916,9 @@ def _validate_gnc(
                         "sensors",
                         key,
                         f"unknown sensor {key!r}",
-                        hint=f"supported this phase: {', '.join(_SENSOR_KINDS)} "
-                        "(the remaining FR-23 kinds land with the sensor "
-                        "error-model workstream)",
+                        hint="supported kinds: " + ", ".join(_SENSOR_KINDS),
                     )
+                    ok = False
             if "imu" not in sensors:
                 errs.add(
                     "sensors",
@@ -1742,36 +1932,61 @@ def _validate_gnc(
                 errs.add("sensors", "imu", "expected a table", hint="e.g. [sensors.imu] sample_rate_hz = 100")
                 ok = False
             else:
-                imu = sensors["imu"]
-                _reject_unknown(imu, "sensors.imu", {"sample_rate_hz"}, errs)
-                if "sample_rate_hz" not in imu:
-                    errs.add(
-                        "sensors.imu", "sample_rate_hz", "missing required key",
-                        units="Hz", typical="= control_rate_hz",
-                    )
-                    ok = False
-                elif not _is_int(imu["sample_rate_hz"]) or imu["sample_rate_hz"] < 1:
-                    errs.add(
-                        "sensors.imu",
-                        "sample_rate_hz",
-                        f"expected an integer >= 1, got {imu['sample_rate_hz']!r}",
-                        units="Hz",
-                        typical="= control_rate_hz",
-                    )
-                    ok = False
-                elif rate is not None and imu["sample_rate_hz"] != rate:
-                    errs.add(
-                        "sensors.imu",
-                        "sample_rate_hz",
-                        f"must equal [gnc] control_rate_hz ({rate}), got "
-                        f"{imu['sample_rate_hz']!r}; the v1 IMU emits one "
-                        f"increment pair per control cycle (D-5)",
-                        units="Hz",
-                        typical="= control_rate_hz",
-                    )
-                    ok = False
+                # Resolve every configured kind in the canonical order, so
+                # the log's declared sensor array and the resolved config are
+                # ordered identically regardless of TOML key order.
+                resolved_kinds: dict = {}
+                kinds_ok = True
+                for kind in _SENSOR_KINDS:
+                    if kind not in sensors:
+                        continue
+                    table = sensors[kind]
+                    path = f"sensors.{kind}"
+                    if not isinstance(table, dict):
+                        errs.add("sensors", kind, "expected a table",
+                                 hint=f"e.g. [{path}] sample_rate_hz = {rate}")
+                        kinds_ok = False
+                        continue
+                    srate = table.get("sample_rate_hz")
+                    if srate is None:
+                        errs.add(path, "sample_rate_hz", "missing required key",
+                                 units="Hz",
+                                 typical="= control_rate_hz, or an integer "
+                                 "divisor of it")
+                        kinds_ok = False
+                    elif not _is_int(srate) or srate < 1:
+                        errs.add(path, "sample_rate_hz",
+                                 f"expected an integer >= 1, got {srate!r}",
+                                 units="Hz", typical="= control_rate_hz")
+                        kinds_ok = False
+                    elif kind == "imu" and rate is not None and srate != rate:
+                        # The v1 IMU emits one increment pair per control
+                        # cycle (ch:sensors-imu assumption 1, D-5).
+                        errs.add(path, "sample_rate_hz",
+                                 f"must equal [gnc] control_rate_hz ({rate}), "
+                                 f"got {srate!r}; the v1 IMU emits one "
+                                 f"increment pair per control cycle (D-5)",
+                                 units="Hz", typical="= control_rate_hz")
+                        kinds_ok = False
+                    elif rate is not None and rate % srate != 0:
+                        # Sensors sample on the control-cycle grid: records
+                        # are decimated from it, never interpolated.
+                        errs.add(path, "sample_rate_hz",
+                                 f"must be an integer divisor of [gnc] "
+                                 f"control_rate_hz ({rate}), got {srate!r}",
+                                 units="Hz",
+                                 typical=f"a divisor of {rate}")
+                        kinds_ok = False
+                    params_ok, params = _validate_sensor_params(
+                        kind, table, errs)
+                    kinds_ok = kinds_ok and params_ok
+                    if kinds_ok and srate is not None:
+                        params["sample_rate_hz"] = srate
+                        resolved_kinds[kind] = params
+                if kinds_ok:
+                    sensors_resolved = resolved_kinds
                 else:
-                    sensors_resolved = {"imu": {"sample_rate_hz": imu["sample_rate_hz"]}}
+                    ok = False
 
     if not ok or None in (rate, nav, guidance, control) or sensors_resolved is None:
         return None, None
