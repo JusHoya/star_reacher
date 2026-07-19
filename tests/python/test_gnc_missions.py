@@ -141,7 +141,7 @@ def test_ideal_imu_increments_bit_exact(reference_run):
     # cycle k-1 (eq:imu:quadrature): dtheta_k = (w_(k-1) + w_k) * (0.5 dt),
     # exactly the two floating-point operations the core performs (the
     # half-step factor 0.5 * 0.1 is an exact power-of-two scaling) - bit
-    # equality, not tolerance (sensors/imu_ideal.hpp). The logged truth
+    # equality, not tolerance (sensors/imu.hpp). The logged truth
     # rate at t_k IS the cycle k-1 attitude-integration endpoint, which is
     # what makes the reconstruction exact.
     expected = (w[:-1] + w[1:]) * (0.5 * 0.1)

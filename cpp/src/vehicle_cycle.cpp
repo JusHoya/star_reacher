@@ -39,7 +39,7 @@
 #include "star/models/twobody.hpp"
 #include "star/models/vehicle6dof.hpp"
 #include "star/rotation.hpp"
-#include "star/sensors/imu_ideal.hpp"
+#include "star/sensors/imu.hpp"
 #include "star/sensors/sensor.hpp"
 #include "star/time.hpp"
 #include "star/version.hpp"
@@ -613,7 +613,7 @@ struct VehicleCycle::Impl {
   std::int64_t act_cycle = 0;
   std::vector<std::unique_ptr<sensors::ISensor>> sensor_list;
   std::vector<std::int64_t> sensor_decim;
-  sensors::IdealImu* imu = nullptr;  // non-owning view into sensor_list
+  sensors::Imu* imu = nullptr;  // non-owning view into sensor_list
   std::optional<gnc::LatencyFifo> fifo;
   Eigen::Vector3d tau_applied = Eigen::Vector3d::Zero();
   integrate::Rk4 rk4_att{models::kAttitudeStateDim};
@@ -749,7 +749,7 @@ struct VehicleCycle::Impl {
         sensor_decim.push_back(static_cast<std::int64_t>(
             cfg.gnc.control_rate_hz / s.sample_rate_hz));
         if (s.kind == "imu") {
-          imu = static_cast<sensors::IdealImu*>(sensor_list.back().get());
+          imu = static_cast<sensors::Imu*>(sensor_list.back().get());
         }
       }
       // Free-flying missions close the loop from t = 0; geodetic missions

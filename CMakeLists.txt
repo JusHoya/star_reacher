@@ -125,7 +125,7 @@ add_library(star_core STATIC
   cpp/src/rng.cpp
   cpp/src/rotation.cpp
   cpp/src/run.cpp
-  cpp/src/sensors/imu_ideal.cpp
+  cpp/src/sensors/imu.cpp
   cpp/src/srlog_writer.cpp
   cpp/src/time.cpp
   cpp/src/vehicle_cycle.cpp

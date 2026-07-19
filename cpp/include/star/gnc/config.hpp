@@ -29,12 +29,17 @@ struct GncComponentCfg {
   std::map<std::string, std::vector<double>> vectors;     // e.g. kp_nm_per_rad
 };
 
-// One configured sensor instance. Phase 6 WS1 supports kind == "imu" (the
-// ideal IMU); the remaining FR-23 kinds land against the same struct with
-// kind-specific parameters in later workstreams.
+// One configured sensor instance. Kind-specific parameters ride as the same
+// two flat string-keyed maps the components use, for the same reason: a new
+// FR-23 sensor kind (or a new error term on an existing one) adds config
+// fields without touching this header or the binding layer. Each sensor
+// validates its own parameter set at construction and throws
+// std::invalid_argument on violations.
 struct GncSensorCfg {
   std::string kind;                    // canonical sensor kind (srlog_writer.hpp)
   std::uint32_t sample_rate_hz = 0;    // must divide the control rate
+  std::map<std::string, double> scalars;               // e.g. gyro_quantum_rad
+  std::map<std::string, std::vector<double>> vectors;  // e.g. boresight_b
 };
 
 // The whole [gnc] surface. enabled == false leaves the Phase 4 kinematic

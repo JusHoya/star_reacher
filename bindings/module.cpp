@@ -506,7 +506,9 @@ PYBIND11_MODULE(_core, m) {
       .def(py::init<>())
       .def_readwrite("kind", &star::gnc::GncSensorCfg::kind)
       .def_readwrite("sample_rate_hz",
-                     &star::gnc::GncSensorCfg::sample_rate_hz);
+                     &star::gnc::GncSensorCfg::sample_rate_hz)
+      .def_readwrite("scalars", &star::gnc::GncSensorCfg::scalars)
+      .def_readwrite("vectors", &star::gnc::GncSensorCfg::vectors);
 
   py::class_<star::gnc::GncConfig>(m, "GncConfig")
       .def(py::init<>())
