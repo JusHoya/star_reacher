@@ -239,7 +239,41 @@ _MARS_ATMOSPHERES = ("mars_exponential",)
 # work core-less, so this is a static mirror of the core registry
 # (cpp/src/gnc/builtin.cpp); test_gnc_validation.py asserts the two never
 # drift, and the core re-checks selections against the live registry.
-_GNC_NAV_COMPONENTS = {"dead_reckoning": ("q0",)}
+_GNC_NAV_COMPONENTS = {
+    "dead_reckoning": ("q0",),
+    # The reference error-state EKF (ch:ekf). Every parameter is the filter's
+    # INITIAL BELIEF - the nominal state it starts from and the diagonal of
+    # P0 - stated explicitly so the filter never infers its start from truth.
+    # The measurement and process noise models are deliberately absent: the
+    # core takes them from the run's configured sensors, so they cannot drift
+    # out of sync with the instruments they describe.
+    "error_state_ekf": (
+        "q0",
+        "v0_mps",
+        "p0_m",
+        "bg0_radps",
+        "ba0_mps2",
+        "p0_sigma_att_rad",
+        "p0_sigma_vel_mps",
+        "p0_sigma_pos_m",
+        "p0_sigma_bg_radps",
+        "p0_sigma_ba_mps2",
+    ),
+}
+# The EKF's 3-vector parameters: key -> (units, typical range, strictly
+# positive). The sigmas are strictly positive because a zero initial variance
+# makes P0 singular and NEES undefined rather than merely large.
+_EKF_VEC3_PARAMS = (
+    ("v0_mps", "m/s", "-1e4 to 1e4", False),
+    ("p0_m", "m", "-1e9 to 1e9", False),
+    ("bg0_radps", "rad/s", "-1e-3 to 1e-3", False),
+    ("ba0_mps2", "m/s^2", "-1e-2 to 1e-2", False),
+    ("p0_sigma_att_rad", "rad", "1e-6 to 1e-1", True),
+    ("p0_sigma_vel_mps", "m/s", "1e-3 to 1e2", True),
+    ("p0_sigma_pos_m", "m", "1e-1 to 1e4", True),
+    ("p0_sigma_bg_radps", "rad/s", "1e-9 to 1e-4", True),
+    ("p0_sigma_ba_mps2", "m/s^2", "1e-6 to 1e-2", True),
+)
 _GNC_GUIDANCE_COMPONENTS = {
     "pitch_program": ("azimuth_deg", "pitch_t_s", "pitch_deg"),
     "attitude_hold": ("q_cmd",),
@@ -1605,6 +1639,66 @@ def _validate_gnc_component(
                 ok = False
             else:
                 resolved["q0"] = [float(x) for x in q]
+    elif component == "error_state_ekf":
+        # The initial attitude estimate, same contract as dead reckoning.
+        if "q0" not in table:
+            errs.add(
+                path, "q0",
+                "missing required key (the initial attitude estimate, "
+                "Hamilton scalar-first [w, x, y, z], D-7)",
+                units="1", typical="unit quaternion",
+            )
+            ok = False
+        else:
+            q = table["q0"]
+            valid = (
+                isinstance(q, list)
+                and len(q) == 4
+                and all(_is_number(x) and math.isfinite(x) for x in q)
+                and math.hypot(*[float(x) for x in q]) > 0.0
+            )
+            if not valid:
+                errs.add(
+                    path, "q0",
+                    f"expected 4 finite numbers with a non-zero norm "
+                    f"(Hamilton scalar-first [w, x, y, z], D-7), got {q!r}",
+                    units="1", typical="unit quaternion",
+                )
+                ok = False
+            else:
+                resolved["q0"] = [float(x) for x in q]
+        for key, units, typical, positive in _EKF_VEC3_PARAMS:
+            if key not in table:
+                errs.add(
+                    path, key, "missing required key", units=units,
+                    typical=typical,
+                )
+                ok = False
+                continue
+            v = table[key]
+            if not (
+                isinstance(v, list)
+                and len(v) == 3
+                and all(_is_number(x) and math.isfinite(x) for x in v)
+            ):
+                errs.add(
+                    path, key,
+                    f"expected 3 finite numbers, got {v!r}",
+                    units=units, typical=typical,
+                )
+                ok = False
+                continue
+            values = [float(x) for x in v]
+            if positive and any(x <= 0.0 for x in values):
+                errs.add(
+                    path, key,
+                    f"entries must be > 0 (a zero initial variance makes P0 "
+                    f"singular and NEES undefined), got {values!r}",
+                    units=units, typical=typical,
+                )
+                ok = False
+                continue
+            resolved[key] = values
     elif component == "pitch_program":
         azimuth = _req_num(
             table, path, "azimuth_deg", errs, units="deg",
