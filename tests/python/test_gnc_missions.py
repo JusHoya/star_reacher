@@ -356,3 +356,172 @@ def test_pitch_program_guidance_equals_openloop_command(tmp_path):
     q_ol = truth_q[[ol_index[k] for k in common]]
     q_cl = cmd["q_cmd_i2b"][[cl_index[k] for k in common]]
     assert np.array_equal(q_ol, q_cl)
+
+
+# --- FR-23 full sensor suite in the loop --------------------------------
+
+# All six canonical sensor kinds appended to the reference mission, with
+# representative error coefficients. Sample rates divide the 10 Hz control
+# rate exactly; the IMU's must equal it (ch:sensors-imu assumption 1).
+_FULL_SENSOR_SUITE = """
+[sensors.startracker]
+sample_rate_hz = 5
+boresight_b = [0.0, 0.0, 1.0]
+sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]
+sun_exclusion_rad = 0.5236
+central_body_exclusion_rad = 0.4363
+slew_limit_radps = 0.05
+
+[sensors.sunsensor]
+sample_rate_hz = 5
+boresight_b = [1.0, 0.0, 0.0]
+fov_half_angle_rad = 1.0472
+sigma_rad = 2.0e-3
+
+[sensors.navfix]
+sample_rate_hz = 1
+sigma_r_m = [5.0, 5.0, 9.0]
+sigma_v_mps = [0.05, 0.05, 0.09]
+
+[sensors.altimeter]
+sample_rate_hz = 2
+sigma_bias_m = 3.0
+sigma_noise_m = 0.5
+h_min_m = 0.0
+h_max_m = 1.0e6
+
+[sensors.camera]
+sample_rate_hz = 1
+fx_px = 800.0
+fy_px = 600.0
+cx_px = 511.5
+cy_px = 383.5
+width_px = 1024.0
+height_px = 768.0
+r_cam_b_m = [0.5, -0.25, 0.125]
+q_b2c = [0.9659258262890683, 0.0, 0.25881904510252074, 0.0]
+landmarks_fixed_m = [6378137.0, 0.0, 0.0, 0.0, 6378137.0, 0.0]
+"""
+
+
+@pytest.fixture(scope="module")
+def full_sensor_run(tmp_path_factory):
+    """One run of the reference mission with every FR-23 sensor enabled."""
+    _core_or_fail()
+    from star_reacher import load
+
+    tmp = tmp_path_factory.mktemp("gnc_full_sensors")
+    result = _run_variant(tmp, "full", [("[sensors.imu]",
+                                         _FULL_SENSOR_SUITE.lstrip()
+                                         + "\n[sensors.imu]")])
+    return result, load(result.srlog_path)
+
+
+def test_full_sensor_suite_reruns_bit_identical(tmp_path):
+    """Exit criterion 1: every sensor bit-identical across two seeded runs."""
+    _core_or_fail()
+    from star_reacher import load
+
+    variant = [("[sensors.imu]",
+                _FULL_SENSOR_SUITE.lstrip() + "\n[sensors.imu]")]
+    r1 = _run_variant(tmp_path, "full_a", variant)
+    r2 = _run_variant(tmp_path, "full_b", variant)
+    # Whole-file identity covers every sensor channel at once.
+    assert r1.srlog_sha256 == r2.srlog_sha256
+
+    # Per-group identity as well, so a future change that made two groups
+    # differ in compensating ways could not hide behind the file hash.
+    a = load(r1.srlog_path)
+    b = load(r2.srlog_path)
+    for kind in ("imu", "startracker", "sunsensor", "navfix", "altimeter",
+                 "camera"):
+        group = f"sensors.{kind}"
+        assert group in a.groups, f"{group} missing from the log"
+        for channel in a.groups[group].dtype.names:
+            assert np.array_equal(a.groups[group][channel],
+                                  b.groups[group][channel]), (
+                f"{group}.{channel} differs across two seeded runs")
+
+
+def test_full_sensor_suite_groups_and_rates(full_sensor_run):
+    """Every declared group is present, decimated on the cycle grid."""
+    result, run = full_sensor_run
+    header = run.header
+    # Declared in canonical kind order regardless of TOML key order.
+    assert header["gnc"]["sensors"] == [
+        "imu", "startracker", "sunsensor", "navfix", "altimeter", "camera",
+    ]
+    # 60 s run at a 10 Hz control rate: a sensor at R Hz emits 60*R records,
+    # starting at its first sample instant (k >= 1).
+    for kind, rate in (("imu", 10), ("startracker", 5), ("sunsensor", 5),
+                       ("navfix", 1), ("altimeter", 2), ("camera", 1)):
+        group = run.groups[f"sensors.{kind}"]
+        assert len(group) == 60 * rate, f"{kind} record count"
+        # First sample lands one sensor period after activation.
+        assert group["t_s"][0] == pytest.approx(1.0 / rate)
+        # Timestamps sit exactly on the sensor's grid.
+        steps = np.round(group["t_s"] * rate).astype(int)
+        assert np.array_equal(steps, np.arange(1, 60 * rate + 1))
+
+
+def test_camera_pose_channels_are_bit_exact_truth(full_sensor_run):
+    """Exit criterion 7: camera pose equals the truth channels bit-exactly.
+
+    The hook copies the same doubles the truth writer receives rather than
+    recomputing them (ch:camera implementation note 2), so this is an
+    array-equality assertion, not a tolerance.
+    """
+    _, run = full_sensor_run
+    cam = run.groups["sensors.camera"]
+    truth = run.groups["truth"]
+    # Match on the shared timestamps: the camera samples at 1 Hz, truth at
+    # 10 Hz, and both grids are exact multiples of the 0.1 s cycle.
+    truth_index = {int(round(t / 0.1)): i for i, t in enumerate(truth["t_s"])}
+    rows = [truth_index[int(round(t / 0.1))] for t in cam["t_s"]]
+    assert len(rows) == len(cam["t_s"])
+    assert np.array_equal(cam["r_m"], truth["r_m"][rows])
+    assert np.array_equal(cam["q_i2b"], truth["q_i2b"][rows])
+
+
+def test_camera_landmark_pixels_are_finite_and_shaped(full_sensor_run):
+    """The declared landmark count fixes the record's pixel-pair width."""
+    _, run = full_sensor_run
+    cam = run.groups["sensors.camera"]
+    # Two landmarks were configured, so px_uv carries 2*2 = 4 doubles.
+    assert cam["px_uv"].shape == (60, 4)
+    assert np.all(np.isfinite(cam["px_uv"]))
+
+
+def test_startracker_quaternions_are_unit(full_sensor_run):
+    """eq:optical:stmodel emits a normalized quaternion every sample."""
+    _, run = full_sensor_run
+    q = run.groups["sensors.startracker"]["q_meas_i2b"]
+    norms = np.linalg.norm(q, axis=1)
+    assert np.max(np.abs(norms - 1.0)) < 1e-12
+    # The sign is deliberately NOT canonicalized (consumers own the double
+    # cover), so this asserts only unit norm.
+
+
+def test_navfix_residuals_match_configured_sigmas(full_sensor_run):
+    """Exit criterion 6, in the loop: fix residuals track their sigmas.
+
+    The chi-square gate itself is a core unit test at fixed truth; here the
+    residual against the moving logged truth is checked to be
+    sigma-consistent, which is what catches a fix wired to the wrong truth
+    row or the wrong axis order.
+    """
+    _, run = full_sensor_run
+    fix = run.groups["sensors.navfix"]
+    truth = run.groups["truth"]
+    truth_index = {int(round(t / 0.1)): i for i, t in enumerate(truth["t_s"])}
+    rows = [truth_index[int(round(t / 0.1))] for t in fix["t_s"]]
+    sigma_r = np.array([5.0, 5.0, 9.0])
+    resid = fix["r_meas_m"] - truth["r_m"][rows]
+    # 60 samples per axis: the sample standard deviation is itself noisy, so
+    # this is a loose consistency band, not a distributional gate.
+    ratio = resid.std(axis=0) / sigma_r
+    assert np.all(ratio > 0.5), ratio
+    assert np.all(ratio < 1.8), ratio
+    # A residual wired to the wrong truth row would be orbit-scale, not
+    # metre-scale: the fix follows a 7000 km trajectory.
+    assert np.max(np.abs(resid)) < 100.0
