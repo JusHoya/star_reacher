@@ -150,3 +150,8 @@ label = "ch:gnc-builtin"
 module = "python/star_reacher/consistency.py"
 chapter = "docs/mathlib/chapters/ekf.tex"
 label = "ch:ekf"
+
+[[chapter]]
+module = "cpp/src/gnc/ekf.cpp"
+chapter = "docs/mathlib/chapters/ekf.tex"
+label = "ch:ekf"

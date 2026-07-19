@@ -425,12 +425,29 @@ pair \texttt{nav.innov.y}, \texttt{nav.innov.S} (packed upper triangle)
 tagged by sensor --- all inside the FR-16 reserved groups, by these
 names.
 
-\texttt{star consistency} reconstructs the true estimation error from
-the \texttt{truth} channels and the logged sensor-bias diagnostics
-(Chapter~\ref{ch:sensors-imu}), using the same error conventions:
-$\delta\vv{\theta}_k$ by the extraction~\eqref{eq:optical:extract}
-applied to $\hat{\quat{q}}_k^{-1} \quatmul \quat{q}_{\mathrm{true},k}$,
-additive differences elsewhere. The statistics
+The estimation error itself is formed core-side and logged on
+\texttt{nav.err}: the filter differences its nominal state against the
+truth kinematics and the true in-run bias states of
+Chapter~\ref{ch:sensors-imu}, in its own error conventions ---
+$\delta\quat{q}_k = \hat{\quat{q}}_k^{-1} \quatmul
+\quat{q}_{\mathrm{true},k}$ per~\eqref{eq:ekf:qerr}, canonicalized to the
+$+w$ hemisphere so the double cover cannot flip the logged error between
+neighbouring epochs, and additive differences elsewhere.
+
+\paragraph{The $n \to m$ reduction.} \texttt{nav.err.e} has the state
+dimension $n$ while $\mat{P}$ has the error dimension $m$, and for this
+filter those differ ($16$ against $15$). The evaluator therefore reduces
+the logged error to the parameterization the covariance describes before
+forming~\eqref{eq:ekf:nees}. For a quaternion-led error state --- the
+case $m = n - 1$, the leading four entries being an error quaternion ---
+the reduction is the small-angle extraction
+\begin{equation}
+  \delta\vv{\theta} = 2\,\operatorname{sgn}(\delta q_w)\,\delta\vv{q}_v,
+  \label{eq:ekf:reduce}
+\end{equation}
+with the remaining $n - 4$ entries passing through unchanged. Any other
+pairing of $n$ and $m$ is a genuine mismatch and is rejected rather than
+guessed at. The statistics
 (Bar-Shalom, Li, and Kirubarajan~\cite{barshalom2001}) are the
 normalized estimation error squared and the normalized innovation
 squared,
@@ -453,7 +470,17 @@ Two aggregations are computed:
     a \emph{diagnostic} with indicative bounds, because successive
     errors of one run are serially correlated and the independence
     assumption behind chi-square bounds does not hold across time
-    within a run~\cite{barshalom2001}.
+    within a run~\cite{barshalom2001}. The effect is large, not
+    marginal, and is measured rather than assumed: on the
+    exit-criterion-3 ensemble --- whose per-epoch statistic lies inside
+    the acceptance bounds at \emph{every} epoch --- the per-run interval
+    evaluated at $\mathrm{dof} = K n$ admits only a small minority of
+    those same consistent runs, because serial correlation inflates the
+    spread of $\bar\epsilon$ far beyond the width such an interval
+    assumes while leaving its expectation at $n$. The same caveat
+    applies to any statistic pooled across epochs at
+    $\mathrm{dof} = N K n$. Neither aggregation is an acceptance gate;
+    equation~\eqref{eq:ekf:ensemble} applied across runs is.
   \item \textbf{$N$-run ensemble average} at each epoch (and averaged
     over epochs for the headline number): for $N$ independent seeded
     runs, $N\bar\epsilon_N = \sum_{i=1}^{N}\epsilon^{(i)} \sim
@@ -536,16 +563,16 @@ Binding implementation notes for the Phase~6 module:
 \section{Validation evidence}
 \label{sec:ekf:validation}
 
-This chapter specifies two separable pieces, and only the second has
-landed. The reference error-state filter of
+This chapter specifies two separable pieces, both now implemented. The
+consistency statistics of Section~\ref{sec:ekf:consistency} ---
+equations~\eqref{eq:ekf:nees}, \eqref{eq:ekf:nis},
+\eqref{eq:ekf:ensemble}, and~\eqref{eq:ekf:wh} --- are implemented in
+\texttt{python/star\_reacher/consistency.py} (with the quantile evaluator
+in \texttt{chi2.py}) and are covered by
+Table~\ref{tab:ekf:validation-py}. The reference error-state filter of
 Sections~\ref{sec:ekf:purpose}--\ref{sec:ekf:implementation} is
-\emph{not} yet implemented; its gates remain a plan and are listed after
-the table. The consistency statistics of
-Section~\ref{sec:ekf:consistency} --- equations~\eqref{eq:ekf:nees},
-\eqref{eq:ekf:nis}, \eqref{eq:ekf:ensemble}, and~\eqref{eq:ekf:wh} ---
-are implemented in \texttt{python/star\_reacher/consistency.py} (with the
-quantile evaluator in \texttt{chi2.py}) and are covered by
-Table~\ref{tab:ekf:validation-py}.
+implemented in \texttt{cpp/src/gnc/ekf.cpp} and is covered by
+Table~\ref{tab:ekf:validation-filter}.
 
 \begin{table}[htbp]
   \centering
@@ -606,37 +633,123 @@ Table~\ref{tab:ekf:validation-py}.
   \end{tabular}
 \end{table}
 
-The gates below specify the reference filter and remain outstanding until
-its module lands; they mirror Phase~6 exit criterion~3 (with criteria 5
-and~6 adjacent):
-\begin{itemize}
-  \item \textbf{Ensemble NEES/NIS (exit criterion 3).} On the reference
-    consistency scenario (point-mass truth environment, turn-on biases
-    off, all three aiding sensors active), a committed pytest driver
-    executes a 100-run seeded ensemble and gates
-    equation~\eqref{eq:ekf:ensemble}: NEES within $[13.95, 16.09]$ and
-    per-sensor NIS within their stated bounds; rerunning the driver
-    reproduces every statistic bit-for-bit.
-  \item \textbf{Mechanization against dead reckoning.} With aiding
-    disabled and zero sensor errors, the filter's attitude equals the
-    Chapter~\ref{ch:gnc-builtin} dead reckoner exactly (shared code
-    path), and velocity/position follow the truth propagator within
-    the documented mechanization residuals on a short arc.
-  \item \textbf{Update algebra.} Single-update unit tests against an
-    independent NumPy implementation of
-    equations~\eqref{eq:ekf:joseph}--\eqref{eq:ekf:reset} for each
-    sensor at committed states: gain, posterior covariance
-    (Joseph form), and reset all match to tight tolerances; the
-    star-tracker innovation of equation~\eqref{eq:ekf:stinnov}
-    reproduces an injected $\delta\vv{\theta}$ exactly in the
-    noise-free case, including the aberration prediction.
-  \item \textbf{Covariance hygiene.} Long-run propagation preserves
-    symmetry to rounding and positive semi-definiteness (smallest
-    eigenvalue bounded) under alternating updates and outages.
-  \item \textbf{Innovation logging (FR-26).} Logged \texttt{nav.innov}
-    channels round-trip through the loader and reproduce the
-    filter-internal values exactly.
-\end{itemize}
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the reference error-state filter
+    (doctest, \texttt{cpp/tests/test\_ekf.cpp}; pytest,
+    \texttt{tests/python/test\_ekf\_consistency.py} and
+    \texttt{test\_ekf\_channels.py}).}
+  \label{tab:ekf:validation-filter}
+  \begin{tabular}{lp{7.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{test_ensemble_nees_gate_passes} &
+      Phase~6 exit criterion~3, NEES half. A 100-run seeded ensemble of the
+      reference consistency scenario satisfies the
+      gate~\eqref{eq:ekf:ensemble} at $n = 15$: the ensemble average is
+      inside the two-sided 95\,\% bounds, and so is the per-epoch ensemble
+      average at no fewer than 95\,\% of epochs. Bounds are evaluated with
+      the project's exact quantile function, not the
+      approximation~\eqref{eq:ekf:wh}. \\
+    \testid{test_ensemble_nis_gate_passes} &
+      Exit criterion~3, NIS half, parameterized over the three aiding
+      sensors: each sensor's ensemble NIS~\eqref{eq:ekf:nis} lies inside
+      the gate~\eqref{eq:ekf:ensemble} evaluated at that sensor's own
+      update dimension $m$. \\
+    \testid{test_ensemble_rerun_is_bit_identical} &
+      Exit criterion~3's determinism half: re-executing the whole ensemble
+      reproduces the SRLOG SHA-256 of every one of the 100 runs. \\
+    \testid{test_ensemble_has_the_expected_shape} &
+      All three aiding sensors contributed innovations in every run, so a
+      filter that silently skipped a sensor cannot pass the gates it did
+      run and appear healthy. \\
+    \testid{test_mission_file_matches_driver_run_zero} &
+      The committed reference mission is exactly run~0 of the ensemble:
+      the driver regenerates its initial estimate from the draw seed and
+      requires bit-equality, so scenario and driver cannot drift apart. \\
+    \testid{test_per_run_time_average_is_a_diagnostic_not_a_gate} &
+      Quantifies the serial-correlation caveat of
+      Section~\ref{sec:ekf:consistency}: on the same ensemble whose
+      per-epoch statistic is inside the bounds at every epoch, the mean
+      over runs of the per-run time averages is unbiased, while the
+      per-run interval --- whose bounds assume epochs within a run are
+      independent --- rejects the large majority of those same consistent
+      runs. \\
+    \testid{ekf_mechanization_attitude_matches_the_exact_rotation_path} &
+      The attitude line of~\eqref{eq:ekf:mech} composes each increment as
+      the exact rotation~\eqref{eq:gnc:exactrot}, the same map the
+      Chapter~\ref{ch:gnc-builtin} dead reckoner uses, reproduced over
+      twenty cycles to $10^{-14}$ relative. \\
+    \testid{ekf_free_fall_velocity_follows_point_mass_gravity} &
+      With zero specific force the velocity mechanization
+      of~\eqref{eq:ekf:mech} reduces to the navigator's own point-mass
+      gravity (assumption~2), advancing velocity by exactly
+      $\hat{\vv{g}}(\hat{\vv{p}})\,\Delta t$ per cycle. \\
+    \testid{ekf_navfix_update_matches_an_explicit_inverse_implementation} &
+      The update algebra of~\eqref{eq:ekf:joseph} and the reset
+      of~\eqref{eq:ekf:reset} for the nav fix, recomputed through an
+      explicit matrix inverse and the textbook expressions --- two paths
+      sharing nothing beyond their inputs --- agreeing on the posterior
+      covariance and on the state correction, with the applied update
+      reported for \texttt{nav.innov} at the right sensor id and
+      dimension. \\
+    \testid{ekf_star_tracker_innovation_recovers_an_injected_attitude_error} &
+      Equation~\eqref{eq:ekf:stinnov} in the noise-free, zero-aberration
+      case: the innovation equals an injected $\delta\vv{\theta}$ to
+      $10^{-8}$ relative, and the update absorbs all but 2\,\% of it. \\
+    \testid{ekf_propagated_covariance_stays_symmetric_and_psd} &
+      Covariance hygiene over 200 cycles of alternating propagation,
+      updates, and aiding outages: the symmetrization
+      of~\eqref{eq:ekf:disc} holds symmetry exactly, and the Joseph
+      form~\eqref{eq:ekf:joseph} keeps the smallest eigenvalue non-negative
+      to a floor scaled by the covariance's own magnitude. \\
+    \testid{ekf_skips_stale_and_invalid_aiding_samples} &
+      A held (non-fresh) sample and a sensor-gated invalid sample both
+      leave the covariance bit-unchanged and emit no innovation ---
+      folding one measurement in twice would be invisible in the state
+      error but would corrupt the covariance directly. \\
+    \testid{ekf_error_state_reports_the_multiplicative_attitude_error} &
+      The \texttt{nav.err} convention: the leading four entries are the
+      error quaternion of~\eqref{eq:ekf:qerr}, canonicalized to the $+w$
+      hemisphere so the double cover cannot flip the logged error, with
+      additive truth-minus-estimate entries thereafter including the bias
+      rows. \\
+    \testid{ekf_registry_and_declared_dimensions} &
+      The pinned interchange contract: $n = 16$, $m = 15$ (so
+      \texttt{nav.est.P} carries 120 doubles), and a maximum innovation
+      dimension of six. \\
+    \testid{ekf_rejects_malformed_parameters} &
+      Missing parameters, unknown parameters, a zero initial sigma (which
+      would make $\mat{P}_0$ singular and NEES undefined), and a run
+      configuring no IMU are each refused at construction or
+      initialization rather than producing a silently degraded filter. \\
+    \testid{ekf_initial_state_and_covariance_are_the_configured_belief} &
+      The filter starts from the configured nominal state with
+      $\mat{P}_0$ diagonal in the~\eqref{eq:ekf:staterr} block ordering,
+      so its initial belief is stated in the mission file and never
+      inferred from truth. \\
+    \testid{test_nav_channels_have_the_pinned_dimensions} &
+      \texttt{nav.est} and \texttt{nav.err} round-trip through the loader
+      at the pinned 16/120/16 shapes, at identical timestamps and equal
+      record counts, with a unit quaternion in the state's leading four
+      entries. \\
+    \testid{test_nav_innov_fires_for_every_aiding_sensor} &
+      Every configured aiding sensor contributes \texttt{nav.innov}
+      records, each tagged with its own fixed valid dimension $m$. \\
+    \testid{test_nav_innov_padding_is_structural} &
+      The zero-padding rule of the format document: entries whose row or
+      column exceeds $m$ are exactly zero and the leading $m \times m$
+      block factorizes, so a padded record is a valid covariance rather
+      than a singular one. \\
+    \testid{test_star_consistency_consumes_a_real_ekf_log} &
+      FR-26 at the command level on a real error-state run:
+      \texttt{star consistency} applies the $n \to m$ reduction of
+      Section~\ref{sec:ekf:consistency} and gates each aiding sensor's NIS
+      at that sensor's own dimension. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
 \section{References}
 \label{sec:ekf:references}

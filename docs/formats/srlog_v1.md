@@ -316,9 +316,18 @@ contract with the `star consistency` tooling, which computes NEES from
 chi-square(n); ensemble mean over R runs gated against two-sided 95 %
 chi-square(Rn)/R bounds); when the declared covariance dimension m differs
 from n, the estimator's chapter defines the m-dimensional error the NEES
-uses (for the error-state EKF, the attitude components of `e` map to the
-3-component attitude error). No state-to-truth mapping is defined in the
-file. The error is
+uses. One such reduction is defined and implemented: for a **quaternion-led
+error state** (m = n - 1, the leading four components of `e` being an error
+quaternion in the estimator's multiplicative convention, scalar-first and
+canonicalized to the +w hemisphere), the evaluator collapses those four to
+three by
+
+    dtheta = 2 * sign(dq_w) * dq_v
+
+and passes the remaining n - 4 components through unchanged. The reference
+error-state EKF is exactly this case, n = 16 against m = 15. Any other
+pairing of n and m is reported as a mismatch rather than guessed at. No
+state-to-truth mapping is defined in the file. The error is
 computed in-core from truth for analysis only; truth never enters the GNC
 components' inputs unless the scenario sets the `oracle` flag (FR-25).
 For quaternion-bearing states the producing estimator aligns the truth
