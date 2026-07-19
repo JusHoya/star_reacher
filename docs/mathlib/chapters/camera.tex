@@ -1,0 +1,329 @@
+% Chapter — Camera hook: pose, intrinsics, and landmark projection
+% (FR-23). Follows the mandatory FR-29 six-section template: purpose;
+% assumptions and domain of validity; derivation; discretization and
+% implementation; validation evidence; references. Written ahead of the
+% implementation (Phase 6): this chapter is the binding specification for
+% the camera-hook module. The implementing change adds the
+% chapter-manifest entry and the \testid{} evidence table. The equation
+% labels eq:camera:pose, eq:camera:K, eq:camera:landmark,
+% eq:camera:apparent, eq:camera:proj, and eq:camera:occlusion are intended
+% to be echoed verbatim in the module source (FR-29 traceability).
+\chapter{Camera Hook: Pose, Intrinsics, and Landmark Projection}
+\label{ch:camera}
+
+\section{Purpose}
+\label{sec:camera:purpose}
+
+This chapter specifies the FR-23 camera \emph{hook}: a sensor that emits
+geometric truth for offline external rendering and optical-navigation
+research --- the camera pose, the pinhole intrinsics, the list of
+visible bodies, the apparent Sun vector, and optional landmark pixel
+projections --- with \emph{no} in-core rendering and \emph{no} noise. It
+is the substrate for the world-model and AI/ML navigation work of the
+later phases: an external renderer or a learned perception model
+consumes the emitted pose stream and produces images or measurements,
+while the core remains small and deterministic. Everything emitted is
+truth: Phase~6 exit criterion~7 gates the pose and intrinsics channels
+\emph{bit-exactly} against the \texttt{truth} channels and the resolved
+configuration, and gates the landmark projections against an independent
+NumPy pinhole script to $< 10^{-6}$ pixels --- which is why every frame,
+axis, and pixel convention in this chapter is stated exactly. Direction
+outputs carry the FR-23 velocity-aberration correction of
+Chapter~\ref{ch:sensors-optical}, applied through the same shared code
+path.
+
+\section{Assumptions and domain of validity}
+\label{sec:camera:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Ideal pinhole.} No lens distortion, defocus, rolling
+    shutter, or exposure model: projection is the exact central
+    projection of equation~\eqref{eq:camera:proj}
+    (Hartley and Zisserman~\cite{hartley2004}). Distortion belongs to
+    the external renderer or perception model, not the truth hook.
+  \item \textbf{Rigid mount, CG-relative.} The camera is rigidly mounted
+    at the configured body-frame offset $\vv{r}_{\mathrm{cam}}^{B}$
+    \emph{relative to the composite center of mass} (the point whose
+    state the \texttt{truth} channels carry), with fixed orientation
+    $\quat{q}_{b2c}$. Center-of-mass travel during propellant depletion
+    (Chapter~\ref{ch:massprops}) is therefore not re-projected onto the
+    mount: for a station-fixed physical camera the neglected offset is
+    bounded by the vehicle's CG travel (centimetres to a metre on the
+    DX-3 starter fleet) --- immaterial at orbital target ranges, and
+    zero for the rigid post-burn spacecraft this hook targets.
+  \item \textbf{Spherical occluders.} Visibility against a body uses
+    its mean spherical radius (IAU values per Archinal et
+    al.~\cite{archinal2018}, as configured); terrain and oblateness are
+    not modeled in the occlusion tests. Near-limb landmarks within the
+    oblateness band of the true figure may be misclassified; scenarios
+    that care sit the landmark away from the limb.
+  \item \textbf{Light-time policy.} Per FR-23 and
+    Chapter~\ref{ch:sensors-optical}: geometric ephemeris positions,
+    velocity aberration on emitted \emph{directions} (landmark
+    projections and the Sun vector), residual light-time effects
+    bounded there. The emitted \emph{pose} is geometric truth and is
+    not aberrated --- aberration is a property of arriving light, not
+    of the platform state.
+  \item \textbf{Landmarks are body-fixed points.} A landmark is a
+    configured position $\vv{\ell}^{T}$ in a target body's body-fixed
+    frame (Moon principal-axis, Mars-fixed, or Earth-fixed frames of
+    Chapter~\ref{ch:frames}); it rotates rigidly with the body.
+\end{enumerate}
+
+Domain of validity: any propagatable state; projections are defined for
+landmarks strictly in front of the camera ($Z^{C} > 0$, enforced by the
+visibility flag rather than by exception); the model is a total,
+noise-free, draw-free function inside the loop and never throws.
+Configurations with $f_x, f_y \le 0$, non-positive image dimensions, or
+a landmark on an unconfigured body are rejected by the FR-15 validator.
+
+\section{Derivation}
+\label{sec:camera:derivation}
+
+\subsection{Pose and frame chain}
+\label{sec:camera:pose}
+
+The camera frame $C$ follows the standard computer-vision convention
+(Hartley and Zisserman~\cite{hartley2004}): $+Z^{C}$ along the boresight
+(out of the camera, toward the scene), $+X^{C}$ toward increasing image
+column ($u$, right), $+Y^{C}$ toward increasing image row ($v$, down) ---
+a right-handed triad. The chain from inertial to camera is
+\begin{equation}
+  \boxed{\;
+  \quat{q}_{i2c} = \quat{q}_{i2b} \quatmul \quat{q}_{b2c},
+  \qquad
+  \vv{r}_{\mathrm{cam}}^{I} = \vv{r}^{I}
+    + {\dcm{I}{B}(\quat{q}_{i2b})}^{\mathsf T}\, \vv{r}_{\mathrm{cam}}^{B},
+  \;}
+  \label{eq:camera:pose}
+\end{equation}
+with $\vv{r}^{I}$, $\quat{q}_{i2b}$ the truth state (composition per
+equation~\eqref{eq:notation:quatcomp}). The emitted pose channels are
+$\vv{r}^{I}$ and $\quat{q}_{i2b}$ themselves --- byte-identical to the
+\texttt{truth} group (exit criterion~7) --- together with the
+configuration constants $\quat{q}_{b2c}$, $\vv{r}_{\mathrm{cam}}^{B}$,
+and the intrinsics, echoed once in the log header so a consumer can
+compose equation~\eqref{eq:camera:pose} without the mission file.
+
+\subsection{Pinhole intrinsics}
+\label{sec:camera:intrinsics}
+
+The intrinsics are the four pinhole constants $(f_x, f_y, c_x, c_y)$, in
+pixels, forming
+\begin{equation}
+  \mat{K} =
+  \begin{bmatrix}
+    f_x & 0 & c_x \\
+    0 & f_y & c_y \\
+    0 & 0 & 1
+  \end{bmatrix},
+  \label{eq:camera:K}
+\end{equation}
+with image dimensions $W \times H$ pixels (columns $\times$ rows). Pixel
+coordinate convention, normative: $(u, v)$ are continuous image
+coordinates with the origin at the \emph{center of the top-left pixel},
+$u$ increasing rightward along columns, $v$ increasing downward along
+rows; a point exactly on the optical axis projects to $(c_x, c_y)$; the
+physical sensor spans $u \in [-\tfrac12,\, W - \tfrac12]$, $v \in
+[-\tfrac12,\, H - \tfrac12]$. For a square-pixel camera of horizontal
+field of view $2\alpha_h$, $f_x = f_y = (W/2)/\tan\alpha_h$; skew is
+identically zero and is not a parameter.
+
+\subsection{Landmark projection chain}
+\label{sec:camera:projection}
+
+A landmark $\vv{\ell}^{T}$ fixed to target body $T$ has inertial
+position
+\begin{equation}
+  \vv{r}_{\ell}^{I} = \vv{r}_{T}^{I}
+    + {\dcm{I}{T}}^{\mathsf T}\, \vv{\ell}^{T},
+  \label{eq:camera:landmark}
+\end{equation}
+with $\vv{r}_{T}^{I}$ the body's geometric ephemeris position
+(Chapter~\ref{ch:ephemeris}) and $\dcm{I}{T}$ its body-fixed rotation
+(Chapter~\ref{ch:frames}: ITRF chain for Earth, DE440 principal-axis
+frame for the Moon, IAU 2015 elements for Mars). The line of sight from
+the camera is
+\begin{equation}
+  \vv{d}^{I} = \vv{r}_{\ell}^{I} - \vv{r}_{\mathrm{cam}}^{I},
+  \qquad
+  \hat{\vv{u}}^{I} = \frac{\vv{d}^{I}}{\norm{\vv{d}^{I}}},
+  \label{eq:camera:los}
+\end{equation}
+its apparent direction $\hat{\vv{u}}'^{\,I}$ follows from the
+velocity-aberration formula of Chapter~\ref{ch:sensors-optical},
+equation~\eqref{eq:optical:aberration}, with the same barycentric
+$\vv{\beta}$ of equation~\eqref{eq:optical:beta} (one shared code path,
+exit criterion~9), and the camera-frame point is the apparent direction
+carried at the geometric range:
+\begin{equation}
+  \boxed{\;
+  \vv{p}^{C} =
+    \norm{\vv{d}^{I}}\;
+    \dcm{B}{C}(\quat{q}_{b2c})\,\dcm{I}{B}(\quat{q}_{i2b})\,
+    \hat{\vv{u}}'^{\,I}
+    = [X, Y, Z]^{\mathsf T},
+  \;}
+  \label{eq:camera:apparent}
+\end{equation}
+where each DCM is the quaternion-to-DCM map of
+equation~\eqref{eq:notation:quat2dcm} applied to the corresponding
+frame-transformation quaternion. The pixel projection is the exact
+central projection
+\begin{equation}
+  \boxed{\;
+  u = f_x\, \frac{X}{Z} + c_x,
+  \qquad
+  v = f_y\, \frac{Y}{Z} + c_y .
+  \;}
+  \label{eq:camera:proj}
+\end{equation}
+
+\subsection{Visibility conditions}
+\label{sec:camera:visibility}
+
+A landmark is emitted with $\mathrm{visible} = \mathrm{true}$ iff all
+four tests pass, evaluated in this order:
+\begin{enumerate}
+  \item \textbf{In front of the camera:} $Z > 0$ in
+    equation~\eqref{eq:camera:apparent}.
+  \item \textbf{Within the sensor:} $-\tfrac12 \le u \le W - \tfrac12$
+    and $-\tfrac12 \le v \le H - \tfrac12$ per the pixel-center
+    convention of Section~\ref{sec:camera:intrinsics}.
+  \item \textbf{Near side of the target body:}
+    \begin{equation}
+      \bigl(\vv{r}_{\mathrm{cam}}^{I} - \vv{r}_{\ell}^{I}\bigr) \cdot
+      \bigl(\vv{r}_{\ell}^{I} - \vv{r}_{T}^{I}\bigr) > 0 ,
+      \label{eq:camera:nearside}
+    \end{equation}
+    the camera lies above the landmark's local tangent plane. For a
+    spherical body and a surface landmark this test is \emph{exactly}
+    equivalent to non-occlusion by the body itself, so no separate
+    self-occlusion test exists.
+  \item \textbf{Not occluded by any other configured body:} for each
+    body with center $\vv{c}^{I}$ and mean radius $R$ (excluding the
+    target body, handled by test 3), the segment from camera to
+    landmark must miss the sphere:
+    \begin{equation}
+      s^{*} = \operatorname{clamp}\!\left(
+        \frac{(\vv{c}^{I} - \vv{r}_{\mathrm{cam}}^{I}) \cdot \vv{d}^{I}}
+             {\vv{d}^{I} \cdot \vv{d}^{I}},\; 0,\; 1\right),
+      \qquad
+      \text{occluded} \iff
+      \bigl\lVert \vv{r}_{\mathrm{cam}}^{I} + s^{*}\vv{d}^{I}
+        - \vv{c}^{I} \bigr\rVert^2 < R^2 ,
+      \label{eq:camera:occlusion}
+    \end{equation}
+    the closest point of the (clamped) segment to the sphere center.
+    Occlusion geometry is evaluated on the \emph{geometric} positions:
+    occlusion is a property of the mass distribution, and at the
+    $\lesssim \qty{20.5}{\arcsecond}$ aberration scale the distinction
+    only shifts the flag transition by milliseconds of grazing
+    geometry.
+\end{enumerate}
+The \emph{visible-bodies list} applies tests 1, 2, and 4 to each
+configured body's center direction (test 3 does not apply to a center);
+a body whose center is barely outside the sensor bound while its limb is
+inside is listed not-visible --- the list is a coarse scene inventory
+for renderers, not a limb model, and the convention is pinned here so
+the flag is deterministic.
+
+\subsection{Sun vector}
+\label{sec:camera:sun}
+
+The emitted Sun vector is the apparent unit direction to the Sun in
+camera axes,
+\begin{equation}
+  \hat{\vv{u}}_{\odot}^{C}
+    = \dcm{B}{C}(\quat{q}_{b2c})\,\dcm{I}{B}(\quat{q}_{i2b})\,
+      \hat{\vv{u}}'^{\,I}_{\odot},
+  \label{eq:camera:sunvec}
+\end{equation}
+with $\hat{\vv{u}}'^{\,I}_{\odot}$ aberrated per
+equation~\eqref{eq:optical:aberration} --- consistent by construction
+with the sun sensor of Chapter~\ref{ch:sensors-optical}, since both
+consume the same function. It supports renderer lighting and
+phase-angle bookkeeping downstream.
+
+\section{Discretization and implementation}
+\label{sec:camera:implementation}
+
+Binding implementation notes for the Phase~6 module:
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The camera hook is a
+    core-side \texttt{ISensor} on the major-cycle schedule (D-5) with
+    \emph{no} PRNG stream --- it is noise-free truth and consumes no
+    draws. Source comments echo \texttt{eq:camera:pose},
+    \texttt{eq:camera:K}, \texttt{eq:camera:landmark},
+    \texttt{eq:camera:apparent}, \texttt{eq:camera:proj}, and
+    \texttt{eq:camera:occlusion} verbatim.
+  \item \textbf{Bit-exact pose emission.} The pose channels are copies
+    of the same doubles the \texttt{truth} writer receives --- not
+    recomputed values --- so exit criterion~7's bit-exactness clause is
+    satisfied by construction; intrinsics and extrinsics are emitted
+    from the resolved configuration verbatim.
+  \item \textbf{Evaluation order.} Per sample: pose copy; per landmark:
+    equations~\eqref{eq:camera:landmark}--\eqref{eq:camera:proj}, then
+    the four visibility tests in the stated order with short-circuit
+    evaluation (the projection values are logged even when a later
+    test fails, with the flag false --- consumers filter on the flag);
+    then the visible-bodies list; then the Sun vector.
+  \item \textbf{Cross-check tolerance.} The $< 10^{-6}$ pixel gate
+    against the independent NumPy script absorbs
+    double-rounding-order differences between the core and NumPy
+    ($\sim 10^{-16}$ relative on kilo-pixel coordinates
+    $\approx 10^{-13}$ pixels) with six orders of margin; the gate
+    tolerance is set by the reproduction fidelity this chapter's
+    conventions must support, not by floating-point noise.
+  \item \textbf{Logged channels.} Everything lands under
+    \texttt{sensors.cam.*} with unit-suffixed names: pose, per-landmark
+    $(u, v, \mathrm{visible})$, per-body visibility, Sun vector.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:camera:validation}
+
+This chapter precedes its module; the validation-evidence table with
+machine-checked test identifiers is added by the implementing change.
+The planned gates, mirroring Phase~6 exit criterion~7 (and~9 for the
+shared aberration path):
+\begin{itemize}
+  \item \textbf{Bit-exact pose and intrinsics (exit criterion 7).} The
+    \texttt{sensors.cam} pose channels compare byte-identical to the
+    \texttt{truth} channels of the same run; intrinsics and extrinsics
+    compare byte-identical to the resolved configuration.
+  \item \textbf{Independent pinhole recomputation (exit criterion 7).}
+    A NumPy script written from this chapter alone --- truth channels
+    and resolved config in, equations~\eqref{eq:camera:pose},
+    \eqref{eq:camera:landmark}--\eqref{eq:camera:proj} out --- matches
+    every logged visible-landmark $(u, v)$ to $< 10^{-6}$ pixels
+    across a scenario exercising off-axis mounts
+    ($\vv{r}_{\mathrm{cam}}^{B} \ne \vv{0}$,
+    $\quat{q}_{b2c} \ne$ identity) and anisotropic focal lengths
+    ($f_x \ne f_y$).
+  \item \textbf{Visibility truth table.} Constructed geometries drive
+    each of the four tests across its boundary independently ---
+    behind-camera, each sensor edge at the half-pixel convention, limb
+    grazing via equation~\eqref{eq:camera:nearside}, and a third-body
+    transit via equation~\eqref{eq:camera:occlusion} --- and the flag
+    flips exactly at the stated thresholds.
+  \item \textbf{Aberration consistency (exit criterion 9).} On a
+    common scenario the camera Sun vector and the sun-sensor
+    noise-free direction agree to rounding, both matching the
+    independent aberration recomputation of
+    Chapter~\ref{ch:sensors-optical} to $< \qty{1}{\mas}$.
+  \item \textbf{Bit identity.} Two runs of the same scenario produce
+    byte-identical \texttt{sensors.cam.*} channels.
+\end{itemize}
+
+\section{References}
+\label{sec:camera:references}
+
+The pinhole model, intrinsics matrix, and image-coordinate conventions
+follow Hartley and Zisserman~\cite{hartley2004}; body radii and
+rotational elements follow Archinal et al.~\cite{archinal2018} through
+the frames machinery of Chapter~\ref{ch:frames}; the aberration
+correction is specified once in Chapter~\ref{ch:sensors-optical} after
+Kaplan~\cite{kaplan2005}. Full bibliographic details appear in the
+bibliography.

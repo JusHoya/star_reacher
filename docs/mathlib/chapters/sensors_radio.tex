@@ -1,0 +1,272 @@
+% Chapter — Radio-class sensors: external nav fix and altimeter (FR-23,
+% A-6). Follows the mandatory FR-29 six-section template: purpose;
+% assumptions and domain of validity; derivation; discretization and
+% implementation; validation evidence; references. Written ahead of the
+% implementation (Phase 6): this chapter is the binding specification for
+% the external-nav-fix and altimeter sensor modules. The implementing
+% change adds the chapter-manifest entry and the \testid{} evidence table.
+% The equation labels eq:radio:fix, eq:radio:gm, eq:radio:alt, and
+% eq:radio:chi2 are intended to be echoed verbatim in the module source
+% (FR-29 traceability).
+\chapter{Sensors: External Nav Fix and Altimeter}
+\label{ch:sensors-radio}
+
+\section{Purpose}
+\label{sec:radio:purpose}
+
+This chapter specifies the two radio-class FR-23 sensors. The
+\emph{external nav fix} is the project's generalization of GNSS
+(assumption A-6): an abstract service that delivers position and
+velocity fixes in the GCRF with configurable Gaussian errors, so the
+same sensor stands in for GPS, a future LNSS-class lunar service, or
+ground-based radiometric tracking without re-architecting. The
+\emph{altimeter} delivers a scalar geodetic-altitude measurement over
+the central body's reference ellipsoid with a per-run bias and white
+noise. Both feed the Chapter~\ref{ch:ekf} reference EKF as aiding
+updates, and both are gated by Phase~6 exit criterion~6: error
+statistics inside two-sided 95\,\% chi-square bounds over 1{,}000 seeded
+draws, with the exact statistic defined in
+Section~\ref{sec:radio:stats}.
+
+\section{Assumptions and domain of validity}
+\label{sec:radio:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Fix-level abstraction.} The nav fix models the
+    \emph{output} of an external navigation service, not its
+    measurements: no pseudoranges, constellation geometry, dilution of
+    precision, clock states, or atmospheric delays. Error anisotropy
+    that a real service exhibits (e.g.\ vertical inflation) is
+    expressible through the per-axis sigmas; error correlation with
+    geometry is not, and analyses that depend on it are outside this
+    model's domain.
+  \item \textbf{GCRF axes.} Fix errors are drawn per GCRF axis. A
+    service whose natural error frame is local (east/north/up) is
+    approximated by choosing equivalent GCRF sigmas; the difference
+    matters only for strongly anisotropic configurations.
+  \item \textbf{Optional correlated component.} A first-order
+    Gauss--Markov error component exists as an option on both the
+    position and the velocity fix (Section~\ref{sec:radio:fix}),
+    defaulted off. It models slowly varying service biases
+    (ephemeris/clock residuals). When enabled, the chi-square gate of
+    Section~\ref{sec:radio:stats} applies only to the white part
+    (the gate scenario disables the correlated part); a separate
+    deterministic test pins the recursion.
+  \item \textbf{Altimeter over the reference ellipsoid.} The altimeter
+    measures geodetic altitude over the central body's reference
+    ellipsoid exactly as the environment models do
+    (Chapter~\ref{ch:environment}): the Bowring two-pass conversion of
+    Chapter~\ref{ch:harrispriester},
+    equation~\eqref{eq:hp:geodetic}, applied to the Earth-fixed (or
+    planet-fixed) truth position via the Chapter~\ref{ch:frames}
+    rotation. Terrain, tides, and geoid undulation are not modeled ---
+    the instrument is a radar altimeter over the ellipsoid, and any
+    scenario needing terrain-relative altitude is out of scope.
+  \item \textbf{No latency.} Fixes apply at their sample instant;
+    transport and processing latency for realism studies is provided
+    generically by the FR-25 \texttt{latency\_cycles} mechanism
+    (Chapter~\ref{ch:gnc-builtin}), not duplicated per sensor.
+\end{enumerate}
+
+Domain of validity: any state the core can propagate; the altimeter
+additionally requires the truth position inside its configured operating
+band $h \in [h_{\min}, h_{\max}]$ (outside it the sample is emitted with
+$\mathrm{valid} = \mathrm{false}$, the flag semantics of
+Chapter~\ref{ch:sensors-optical}) and outside the Bowring conversion's
+polar-axis neighborhood only in the sense documented in
+Chapter~\ref{ch:harrispriester}. Non-positive sigmas, $\tau_c \le 0$, or
+$h_{\min} \ge h_{\max}$ are rejected by the FR-15 validator; the in-loop
+model never throws.
+
+\section{Derivation}
+\label{sec:radio:derivation}
+
+\subsection{External nav fix}
+\label{sec:radio:fix}
+
+At each sample (major-cycle schedule, D-5), with truth position
+$\vv{r}^{I}$ and velocity $\vv{v}^{I}$ (the logged \texttt{truth}
+channels),
+\begin{equation}
+  \boxed{\;
+  \vv{r}_{\mathrm{meas}} = \vv{r}^{I} + \vv{c}_{r,k} + \vv{\eta}_{r,k},
+  \qquad
+  \vv{v}_{\mathrm{meas}} = \vv{v}^{I} + \vv{c}_{v,k} + \vv{\eta}_{v,k},
+  \;}
+  \label{eq:radio:fix}
+\end{equation}
+with independent white errors per GCRF axis $a \in \{x,y,z\}$,
+\begin{equation}
+  \eta_{r,k,a} \sim \mathcal{N}(0, \sigma_{r,a}^2),
+  \qquad
+  \eta_{v,k,a} \sim \mathcal{N}(0, \sigma_{v,a}^2),
+  \label{eq:radio:white}
+\end{equation}
+and the optional first-order Gauss--Markov components (defaulted off,
+$\vv{c} \equiv \vv{0}$) following exactly the recursion of
+Chapter~\ref{ch:sensors-imu}, equation~\eqref{eq:imu:gm}:
+\begin{equation}
+  \vv{c}_{k} = \varphi\,\vv{c}_{k-1} + \vv{w}_k,
+  \qquad
+  \varphi = e^{-\Delta t_s/\tau_c},
+  \qquad
+  \vv{w}_k \sim \mathcal{N}\bigl(\vv{0},\,
+    \sigma_{\mathrm{GM}}^2(1 - \varphi^2)\,\mat{I}_3\bigr),
+  \qquad
+  \vv{c}_{0} \sim \mathcal{N}\bigl(\vv{0},\,
+    \sigma_{\mathrm{GM}}^2\,\mat{I}_3\bigr),
+  \label{eq:radio:gm}
+\end{equation}
+with separate $(\sigma_{\mathrm{GM}}, \tau_c)$ pairs for the position
+and velocity components. The exactness of the discretization and its
+stationary initialization are established in
+Chapter~\ref{ch:sensors-imu}. The fix carries
+$\mathrm{valid} = \mathrm{true}$ unconditionally in v1; outage modeling
+is a configuration concern deferred until a use case demands it (PRD
+Non-Goals discipline), and the flag exists in the interface so adding it
+later breaks nothing.
+
+\subsection{Altimeter}
+\label{sec:radio:alt}
+
+With $h(\vv{r})$ the geodetic altitude of the truth position over the
+central body's reference ellipsoid --- the planet-fixed position
+$\dcm{I}{E}\,\vv{r}^{I}$ (Chapter~\ref{ch:frames}) put through the
+Bowring two-pass conversion of
+equation~\eqref{eq:hp:geodetic} with the body's $(a, 1/f)$; for a
+spherical body ($f = 0$) the conversion degenerates exactly to
+$h = \norm{\vv{r}} - a$ --- the measurement is
+\begin{equation}
+  \boxed{\;
+  h_{\mathrm{meas},k} = h(\vv{r}^{I}_k) + b_h + \eta_{h,k},
+  \qquad
+  b_h \sim \mathcal{N}(0, \sigma_{b}^2) \text{ once per run},
+  \qquad
+  \eta_{h,k} \sim \mathcal{N}(0, \sigma_{h}^2),
+  \;}
+  \label{eq:radio:alt}
+\end{equation}
+with validity
+\begin{equation}
+  \mathrm{valid}_k = \bigl[h_{\min} \le h(\vv{r}^{I}_k) \le
+    h_{\max}\bigr],
+  \label{eq:radio:altgate}
+\end{equation}
+the configured operating band of the instrument. The measurement is
+computed and logged regardless of the flag, and draws are unconditional,
+per the sensor-wide semantics of Chapter~\ref{ch:sensors-optical}.
+
+\subsection{Acceptance statistics (exit criterion 6)}
+\label{sec:radio:stats}
+
+The gate scenario holds truth fixed, disables the correlated components
+($\sigma_{\mathrm{GM}} = 0$ for the fix, $\sigma_b = 0$ for the
+altimeter), and collects $M = 1000$ seeded samples. Per sample $k$ the
+statistics are the exact normalized quadratic forms
+\begin{equation}
+  q^{(k)}_{r} = \sum_{a}
+    \frac{(r_{\mathrm{meas},a} - r^{I}_a)^2_{(k)}}{\sigma_{r,a}^2}
+    \sim \chi^2_3,
+  \qquad
+  q^{(k)}_{v} = \sum_{a}
+    \frac{(v_{\mathrm{meas},a} - v^{I}_a)^2_{(k)}}{\sigma_{v,a}^2}
+    \sim \chi^2_3,
+  \qquad
+  q^{(k)}_{h} =
+    \frac{(h_{\mathrm{meas}} - h(\vv{r}^{I}))^2_{(k)}}{\sigma_{h}^2}
+    \sim \chi^2_1,
+  \label{eq:radio:chi2}
+\end{equation}
+each i.i.d.\ across samples by construction, and the gates are two-sided
+on the ensemble means:
+\begin{equation}
+  \frac{\chi^2_{0.025}(nM)}{M} \le \frac{1}{M} \sum_{k=1}^{M} q^{(k)}
+    \le \frac{\chi^2_{0.975}(nM)}{M},
+  \qquad
+  \begin{cases}
+    [2.850,\; 3.154] & n = 3 \text{ (fix position, fix velocity)},\\[2pt]
+    [0.914,\; 1.090] & n = 1 \text{ (altimeter)},
+  \end{cases}
+  \label{eq:radio:bounds}
+\end{equation}
+for $M = 1000$, quantiles evaluated by the Wilson--Hilferty form of
+Chapter~\ref{ch:ekf}, equation~\eqref{eq:ekf:wh}. These are exactly the
+statistics the committed pytest driver computes from the logged
+\texttt{sensors.*} and \texttt{truth} channels; the bias and
+Gauss--Markov terms are pinned separately by deterministic tests (the
+seeded draw values themselves), because a per-run bias makes the
+per-sample statistics of equation~\eqref{eq:radio:chi2} dependent and
+the mean gate invalid.
+
+\section{Discretization and implementation}
+\label{sec:radio:implementation}
+
+Binding implementation notes for the Phase~6 modules:
+\begin{enumerate}
+  \item \textbf{Modules and traceability.} Both sensors are core-side
+    \texttt{ISensor} modules on the named streams
+    \texttt{sensors.navfix} and \texttt{sensors.alt} (D-9). Source
+    comments echo \texttt{eq:radio:fix}, \texttt{eq:radio:gm},
+    \texttt{eq:radio:alt}, and \texttt{eq:radio:chi2} verbatim.
+  \item \textbf{Draw schedule, normative.} Nav fix, per sample and in
+    order: position Gauss--Markov drive $(x,y,z)$ if enabled, velocity
+    Gauss--Markov drive $(x,y,z)$ if enabled, position white $(x,y,z)$,
+    velocity white $(x,y,z)$. Enabling a Gauss--Markov component also
+    consumes its stationary-initialization draws at run start (position
+    then velocity). Altimeter: turn-on bias (one draw at run start),
+    then one white draw per sample. Within a fixed configuration the
+    schedule is unconditional; enabling or disabling the optional
+    components is a configuration change and lands in the resolved
+    config hash (FR-15), which is the reproducibility anchor.
+  \item \textbf{Geodetic reuse.} The altimeter calls the same core
+    geodetic-altitude function the atmosphere and environment models
+    use (Chapters~\ref{ch:harrispriester}, \ref{ch:environment}) --- no
+    second conversion path; its accuracy budget
+    (sub-millimetre in-domain) is inherited and already documented
+    there.
+  \item \textbf{Logged channels.} Measurements and flags land under
+    \texttt{sensors.navfix.*} and \texttt{sensors.alt.*} with
+    unit-suffixed names at the sensor rate.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:radio:validation}
+
+This chapter precedes its modules; the validation-evidence table with
+machine-checked test identifiers is added by the implementing change.
+The planned gates, mirroring Phase~6 exit criterion~6:
+\begin{itemize}
+  \item \textbf{Chi-square gates (exit criterion 6).} The three
+    ensemble-mean statistics of
+    equations~\eqref{eq:radio:chi2}--\eqref{eq:radio:bounds} over
+    1{,}000 seeded draws fall inside their stated bounds, and rerunning
+    the same seeds reproduces the statistics bit-for-bit.
+  \item \textbf{Deterministic error terms.} With white terms zeroed, the
+    altimeter output equals $h(\vv{r}) + b_h$ with $b_h$ the exact
+    seeded stationary draw; the enabled Gauss--Markov component
+    reproduces the recursion~\eqref{eq:radio:gm} value-for-value
+    against an independent Python evaluation of the same stream.
+  \item \textbf{Geodetic consistency.} On the reference ellipsoid
+    ($h = 0$ states) and on a spherical body the noise-free altimeter
+    returns $0$ and $\norm{\vv{r}} - a$ respectively to the
+    Chapter~\ref{ch:harrispriester} conversion budget.
+  \item \textbf{Gating.} Truth trajectories crossing $h_{\min}$ and
+    $h_{\max}$ flip the altimeter flag exactly at the thresholds, with
+    draws consumed identically on both sides.
+  \item \textbf{Bit identity.} Two runs of the same seeded scenario
+    produce byte-identical \texttt{sensors.navfix.*} and
+    \texttt{sensors.alt.*} channels.
+\end{itemize}
+
+\section{References}
+\label{sec:radio:references}
+
+The fix-level abstraction of a navigation service and the additive
+Gaussian error convention follow standard aided-navigation practice
+(Titterton and Weston~\cite{titterton2004}); the Gauss--Markov machinery
+is specified in Chapter~\ref{ch:sensors-imu} after
+Maybeck~\cite{maybeck1979}; the geodetic conversion is
+Bowring~\cite{bowring1976} as implemented in
+Chapter~\ref{ch:harrispriester}. Full bibliographic details appear in
+the bibliography.
