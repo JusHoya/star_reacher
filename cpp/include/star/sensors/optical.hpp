@@ -47,6 +47,15 @@ Eigen::Vector3d aberrate(const Eigen::Vector3d& u_hat,
 // atan2(norm(a x b), a . b), used for every gating comparison.
 double angle_between(const Eigen::Vector3d& a, const Eigen::Vector3d& b);
 
+// Exact exponential map of a rotation vector to a unit quaternion
+// (eq:optical:noiseq / eq:optical:qab): [cos(th/2), sin(th/2) * v/th], with
+// the identity at th == 0. Exported for the same reason aberrate() is: a
+// consumer that must PREDICT an optical measurement - the reference EKF's
+// star-tracker update, eq:ekf:stinnov - composes its aberration factor
+// through the identical map the sensor used, instead of a second
+// construction that would differ in the last bits.
+Eigen::Quaterniond quat_exp(const Eigen::Vector3d& v);
+
 // --- star tracker ---------------------------------------------------------
 
 struct StarTrackerCfg {

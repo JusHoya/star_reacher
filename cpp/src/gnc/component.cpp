@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "star/gnc/builtin.hpp"
+#include "star/gnc/ekf.hpp"
 
 namespace star {
 namespace gnc {
@@ -53,6 +54,7 @@ std::map<std::string, GncFactory>& registry() {
 void ensure_builtins() {
   static const bool once = [] {
     register_builtin_components();
+    register_ekf_component();
     return true;
   }();
   (void)once;

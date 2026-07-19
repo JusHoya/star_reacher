@@ -116,6 +116,18 @@ class Imu final : public ISensor {
   const Eigen::Vector3d& gyro_bias_radps() const { return gyro_.b; }
   const Eigen::Vector3d& accel_bias_mps2() const { return accel_.b; }
 
+  // Total true bias: the turn-on draw plus the in-run Gauss-Markov state
+  // (eq:imu:gyro / eq:imu:accel apply their sum). This, not the
+  // Gauss-Markov part alone, is the quantity a filter's bias state
+  // estimates, so it is what a truth-minus-estimate bias error must
+  // difference against. The two agree exactly when the scenario disables
+  // turn-on biases, which is the reference consistency scenario's
+  // configuration (ch:ekf assumption 3).
+  Eigen::Vector3d gyro_total_bias_radps() const { return gyro_.b0 + gyro_.b; }
+  Eigen::Vector3d accel_total_bias_mps2() const {
+    return accel_.b0 + accel_.b;
+  }
+
  private:
   // One instrument's error coefficients and per-sample error state.
   struct Triad {

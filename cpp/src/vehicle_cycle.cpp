@@ -41,6 +41,8 @@
 #include "star/rotation.hpp"
 #include "star/sensors/camera.hpp"
 #include "star/sensors/imu.hpp"
+#include "star/sensors/optical.hpp"
+#include "star/sensors/radio.hpp"
 #include "star/sensors/sensor.hpp"
 #include "star/time.hpp"
 #include "star/version.hpp"
@@ -622,6 +624,24 @@ struct VehicleCycle::Impl {
   std::vector<std::unique_ptr<sensors::ISensor>> sensor_list;
   std::vector<std::int64_t> sensor_decim;
   sensors::Imu* imu = nullptr;  // non-owning view into sensor_list
+  // Non-owning views of the aiding sensors, so the GNC block can offer their
+  // latest measurements to the nav stage (an aiding estimator has no other
+  // route to them). Each is null when the run configures no such sensor.
+  sensors::NavFix* navfix = nullptr;
+  sensors::StarTracker* startracker = nullptr;
+  sensors::Altimeter* altimeter = nullptr;
+  // Which sensor index each aiding kind occupies, for the nav.innov records.
+  std::uint32_t navfix_id = 0;
+  std::uint32_t startracker_id = 0;
+  std::uint32_t altimeter_id = 0;
+  // The sensor-suite parameters handed to components at init, so an
+  // estimator's stochastic model is the configured truth model (ch:ekf
+  // assumption 3) rather than a duplicate that can drift out of sync.
+  gnc::NavSensorModel sensor_model;
+  // Geometry composed at the most recent cycle end - which is exactly the
+  // instant the point sensors are sampled at, and therefore the instant the
+  // GNC block's environment context describes.
+  models::SensorGeometry last_geom;
   // True when any configured sensor consumes ephemeris/shadow/body-fixed
   // geometry; the IMU alone does not, and composing it costs ephemeris
   // evaluations per cycle.
@@ -760,12 +780,56 @@ struct VehicleCycle::Impl {
         sensor_list.push_back(sensors::make_sensor(s, cfg.master_seed));
         sensor_decim.push_back(static_cast<std::int64_t>(
             cfg.gnc.control_rate_hz / s.sample_rate_hz));
+        const std::uint32_t id =
+            static_cast<std::uint32_t>(sensor_list.size() - 1);
         if (s.kind == "imu") {
           imu = static_cast<sensors::Imu*>(sensor_list.back().get());
+          // The filter's process model is the configured instrument's error
+          // model (eq:ekf:G): the random-walk coefficients drive Q's
+          // attitude/velocity blocks and the Gauss-Markov pair drives its
+          // bias blocks, through the same preset mapping the sensor uses.
+          const sensors::ImuErrorCfg e = sensors::parse_imu_error_cfg(s);
+          sensor_model.imu_present = true;
+          sensor_model.imu_id = id;
+          sensor_model.gyro_arw = e.gyro.random_walk;
+          sensor_model.accel_vrw = e.accel.random_walk;
+          sensor_model.gyro_gm_sigma =
+              sensors::gm_sigma_from_bias_instability(e.gyro.bias_instability);
+          sensor_model.gyro_tau_s = e.gyro.bias_tau_s;
+          sensor_model.accel_gm_sigma = sensors::gm_sigma_from_bias_instability(
+              e.accel.bias_instability);
+          sensor_model.accel_tau_s = e.accel.bias_tau_s;
         } else {
           // Every FR-23 kind except the IMU measures against ephemeris,
           // shadow, or body-fixed geometry.
           needs_geometry_ = true;
+          if (s.kind == "navfix") {
+            navfix = static_cast<sensors::NavFix*>(sensor_list.back().get());
+            navfix_id = id;
+            const sensors::NavFixCfg c = sensors::parse_nav_fix_cfg(s);
+            sensor_model.navfix_present = true;
+            sensor_model.navfix_id = id;
+            sensor_model.navfix_sigma_r_m = c.sigma_r_m;
+            sensor_model.navfix_sigma_v_mps = c.sigma_v_mps;
+          } else if (s.kind == "startracker") {
+            startracker =
+                static_cast<sensors::StarTracker*>(sensor_list.back().get());
+            startracker_id = id;
+            const sensors::StarTrackerCfg c = sensors::parse_star_tracker_cfg(s);
+            sensor_model.startracker_present = true;
+            sensor_model.startracker_id = id;
+            sensor_model.startracker_sigma_rad = c.sigma_rad;
+            sensor_model.startracker_boresight_b = c.boresight_b;
+          } else if (s.kind == "altimeter") {
+            altimeter =
+                static_cast<sensors::Altimeter*>(sensor_list.back().get());
+            altimeter_id = id;
+            const sensors::AltimeterCfg c = sensors::parse_altimeter_cfg(s);
+            sensor_model.altimeter_present = true;
+            sensor_model.altimeter_id = id;
+            sensor_model.altimeter_sigma_noise_m = c.sigma_noise_m;
+            sensor_model.altimeter_sigma_bias_m = c.sigma_bias_m;
+          }
         }
       }
       // Free-flying missions close the loop from t = 0; geodetic missions
@@ -797,6 +861,12 @@ struct VehicleCycle::Impl {
     ictx.north_i = north0;
     ictx.control_rate_hz = cfg.gnc.control_rate_hz;
     ictx.dt_s = dt;
+    // Central-body constants an estimator needs for its own dynamics and
+    // measurement models (eq:ekf:mech, eq:ekf:altH).
+    ictx.mu_m3ps2 = mu;
+    ictx.ellipsoid_a_m = planet_a_m;
+    ictx.ellipsoid_inv_f = planet_inv_f;
+    ictx.sensors = sensor_model;
     nav->init(ictx);
     guidance->init(ictx);
     control->init(ictx);
@@ -815,10 +885,21 @@ struct VehicleCycle::Impl {
   void run_gnc_block(std::int64_t k, double t) {
     const std::int64_t n_act = k - act_cycle;
     bool imu_fresh = false;
+    bool navfix_fresh = false;
+    bool startracker_fresh = false;
+    bool altimeter_fresh = false;
     for (std::size_t si = 0; si < sensor_list.size(); ++si) {
       if (n_act > 0 && n_act % sensor_decim[si] == 0) {
-        sensor_list[si]->sample(t, writer);
-        if (sensor_list[si].get() == imu) imu_fresh = true;
+        sensors::ISensor* s = sensor_list[si].get();
+        s->sample(t, writer);
+        // Freshness is per sensor: an estimator must fold a measurement in
+        // exactly once, on the cycle it was produced. Reprocessing a held
+        // sample would make the filter overconfident in a way that is
+        // invisible in the state error but shows up immediately in NEES.
+        if (s == imu) imu_fresh = true;
+        if (s == navfix) navfix_fresh = true;
+        if (s == startracker) startracker_fresh = true;
+        if (s == altimeter) altimeter_fresh = true;
       }
     }
 
@@ -829,6 +910,32 @@ struct VehicleCycle::Impl {
     if (imu != nullptr) in.imu = imu->last_sample();
     in.imu_fresh = imu_fresh;
     in.prev_applied = fifo->applied();
+    if (navfix != nullptr) {
+      in.navfix.valid = true;  // the nav fix carries no gating flag
+      in.navfix.fresh = navfix_fresh;
+      in.navfix.sensor_id = navfix_id;
+      in.navfix.r_i_m = navfix->last_position_m();
+      in.navfix.v_i_mps = navfix->last_velocity_mps();
+    }
+    if (startracker != nullptr) {
+      in.startracker.valid = startracker->last_valid();
+      in.startracker.fresh = startracker_fresh;
+      in.startracker.sensor_id = startracker_id;
+      in.startracker.q_i2b = startracker->last_measurement();
+    }
+    if (altimeter != nullptr) {
+      in.altimeter.valid = altimeter->last_valid();
+      in.altimeter.fresh = altimeter_fresh;
+      in.altimeter.sensor_id = altimeter_id;
+      in.altimeter.h_m = altimeter->last_measurement_m();
+    }
+    // Ephemeris- and frame-derived context only: a navigator may compute
+    // these onboard from time alone, so supplying them crosses no privileged
+    // boundary (unlike GncInput.oracle, which is gated on the oracle flag).
+    in.env.ephemeris_valid = last_geom.ephemeris_valid;
+    in.env.v_central_ssb_mps = last_geom.v_central_ssb_mps;
+    in.env.bodyfixed_valid = last_geom.bodyfixed_valid;
+    in.env.c_gcrf_to_bodyfixed = last_geom.c_gcrf_to_bodyfixed;
     if (cfg.oracle) {
       // FR-25 privileged boundary: truth enters GncInput if and only if the
       // scenario set oracle = true (already stamped in the header).
@@ -866,6 +973,13 @@ struct VehicleCycle::Impl {
       truth.q_i2b = q;
       truth.omega_b_radps = omega_b;
       truth.mass_kg = sp.composite.mass_kg;
+      if (imu != nullptr) {
+        // An estimator carrying bias states needs the true biases to report
+        // a complete error; without an IMU there are none to report.
+        truth.imu_bias_valid = true;
+        truth.b_g_radps = imu->gyro_total_bias_radps();
+        truth.b_a_mps2 = imu->accel_total_bias_mps2();
+      }
       nav->error_state(truth, e_buf.data());
       writer.write_nav_err(t, e_buf.data(), e_buf.size());
     }
@@ -1262,6 +1376,11 @@ struct VehicleCycle::Impl {
       // it, so a GNC run with an IMU alone pays nothing for it.
       if (needs_geometry_) {
         st.geom = env.sensor_geometry(t + dt, r_m);
+        // The GNC block of the NEXT cycle runs at exactly this instant, so
+        // this composition is the environment context its nav stage sees -
+        // stashed rather than recomputed, so the sensors and the estimator
+        // predicting them cannot disagree about the geometry.
+        last_geom = st.geom;
       }
       for (auto& s : sensor_list) {
         s->accumulate(st);

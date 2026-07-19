@@ -105,6 +105,7 @@ add_library(star_core STATIC
   cpp/src/frames.cpp
   cpp/src/gnc/builtin.cpp
   cpp/src/gnc/component.cpp
+  cpp/src/gnc/ekf.cpp
   cpp/src/integrate.cpp
   cpp/src/models/actuators.cpp
   cpp/src/models/aero.cpp

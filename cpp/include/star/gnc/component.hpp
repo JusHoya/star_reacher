@@ -58,6 +58,93 @@ struct TruthState {
   Eigen::Quaterniond q_i2b = Eigen::Quaterniond::Identity();
   Eigen::Vector3d omega_b_radps = Eigen::Vector3d::Zero();
   double mass_kg = 0.0;
+  // True in-run IMU bias states (ch:sensors-imu implementation note 4).
+  // An estimator that carries bias states needs these to report a complete
+  // truth-minus-estimate error on nav.err; without them the bias rows would
+  // have to be logged as zero, which reads as "no error" rather than "not
+  // known". Valid only when the run configures an IMU.
+  bool imu_bias_valid = false;
+  Eigen::Vector3d b_g_radps = Eigen::Vector3d::Zero();
+  Eigen::Vector3d b_a_mps2 = Eigen::Vector3d::Zero();
+};
+
+// --- aiding measurements visible to the nav stage -------------------------
+//
+// One slot per FR-23 aiding kind. `fresh` is true only on the cycle the
+// sensor was actually sampled: an estimator must not reprocess a held
+// sample, because folding one measurement in twice makes the filter
+// overconfident and is invisible in the state error until the covariance is
+// checked. `valid` echoes the sensor's own gating flag (ch:sensors-optical
+// eq:optical:gating and the altimeter band gate), so a gated-out sample is
+// skipped rather than trusted. sensor_id indexes GncConfig::sensors, the
+// same index nav.innov records carry.
+
+struct NavFixSample {
+  bool valid = false;
+  bool fresh = false;
+  std::uint32_t sensor_id = 0;
+  Eigen::Vector3d r_i_m = Eigen::Vector3d::Zero();
+  Eigen::Vector3d v_i_mps = Eigen::Vector3d::Zero();
+};
+
+struct StarTrackerSample {
+  bool valid = false;
+  bool fresh = false;
+  std::uint32_t sensor_id = 0;
+  // Attitude relative to the APPARENT inertial frame (eq:optical:stmodel);
+  // a consumer that predicts it must apply the same aberration factor.
+  Eigen::Quaterniond q_i2b = Eigen::Quaterniond::Identity();
+};
+
+struct AltimeterSample {
+  bool valid = false;
+  bool fresh = false;
+  std::uint32_t sensor_id = 0;
+  double h_m = 0.0;  // geodetic height over the central body's ellipsoid
+};
+
+// Environment context a navigator may legitimately use: quantities a real
+// onboard navigator computes from time and its own ephemeris, never from
+// truth. Supplied every cycle so an estimator can predict frame- and
+// ephemeris-dependent measurements (the star tracker's aberration, the
+// altimeter's body-fixed conversion) without reaching for truth.
+struct NavEnvironment {
+  bool ephemeris_valid = false;
+  Eigen::Vector3d v_central_ssb_mps = Eigen::Vector3d::Zero();
+  bool bodyfixed_valid = false;
+  Eigen::Matrix3d c_gcrf_to_bodyfixed = Eigen::Matrix3d::Identity();
+};
+
+// The configured sensor-suite parameters, handed to components at init.
+// An estimator's stochastic model is then the configured truth model
+// (ch:ekf assumption 3, the reference-implementation stance) rather than a
+// hand-copied duplicate in the mission file that can silently drift out of
+// sync with the sensors it is supposed to describe. Fixed-size throughout,
+// like every other struct here.
+struct NavSensorModel {
+  bool imu_present = false;
+  std::uint32_t imu_id = 0;
+  double gyro_arw = 0.0;         // N_g [rad/sqrt(s)], eq:imu:arw
+  double accel_vrw = 0.0;        // N_a [(m/s)/sqrt(s)], eq:imu:arw
+  double gyro_gm_sigma = 0.0;    // sigma_GM [rad/s], eq:imu:presetmap
+  double gyro_tau_s = 0.0;       // tau_c [s], eq:imu:gm
+  double accel_gm_sigma = 0.0;   // sigma_GM [m/s^2]
+  double accel_tau_s = 0.0;      // tau_c [s]
+
+  bool navfix_present = false;
+  std::uint32_t navfix_id = 0;
+  Eigen::Vector3d navfix_sigma_r_m = Eigen::Vector3d::Zero();
+  Eigen::Vector3d navfix_sigma_v_mps = Eigen::Vector3d::Zero();
+
+  bool startracker_present = false;
+  std::uint32_t startracker_id = 0;
+  Eigen::Vector3d startracker_sigma_rad = Eigen::Vector3d::Zero();
+  Eigen::Vector3d startracker_boresight_b = Eigen::Vector3d::UnitZ();
+
+  bool altimeter_present = false;
+  std::uint32_t altimeter_id = 0;
+  double altimeter_sigma_noise_m = 0.0;
+  double altimeter_sigma_bias_m = 0.0;
 };
 
 // One component's output. The same struct serves all three chain roles with
@@ -92,6 +179,12 @@ struct GncInput {
   GncOutput att_cmd;       // filled after the guidance stage
   GncOutput prev_applied;  // command applied on the previous cycle
   TruthState oracle;       // FR-25: populated ONLY when oracle == true
+  // Aiding measurements offered to the nav stage this cycle (zero-valued and
+  // not fresh when the run configures no such sensor).
+  NavFixSample navfix;
+  StarTrackerSample startracker;
+  AltimeterSample altimeter;
+  NavEnvironment env;      // ephemeris/frame context, never truth-derived
 };
 
 // One-time initialization context, captured at construction of the run.
@@ -109,6 +202,15 @@ struct GncInitContext {
   Eigen::Vector3d north_i = Eigen::Vector3d::UnitY();
   std::uint32_t control_rate_hz = 0;
   double dt_s = 0.0;
+  // Central-body constants an estimator needs for its own dynamics and
+  // measurement models: the point-mass gravity parameter (eq:ekf:mech) and
+  // the reference ellipsoid the altimeter measures against (eq:ekf:altH).
+  double mu_m3ps2 = 0.0;
+  double ellipsoid_a_m = 0.0;
+  double ellipsoid_inv_f = 0.0;
+  // The run's configured sensor suite, so an estimator's stochastic model is
+  // the configured truth model rather than a duplicate that can drift.
+  NavSensorModel sensors;
 };
 
 // One applied aiding update, reported by an estimator for nav.innov

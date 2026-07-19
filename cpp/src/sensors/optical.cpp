@@ -91,6 +91,8 @@ Eigen::Vector3d sigma_vector(const gnc::GncSensorCfg& cfg, const char* key,
   return v;
 }
 
+}  // namespace
+
 // Exact exponential map of a rotation vector to a unit quaternion
 // (eq:optical:noiseq / eq:optical:qab): [cos(th/2), sin(th/2) * v/th], with
 // the identity at th == 0. Using the exact map rather than a small-angle
@@ -104,8 +106,6 @@ Eigen::Quaterniond quat_exp(const Eigen::Vector3d& v) {
   const double s = std::sin(half) / theta;
   return Eigen::Quaterniond(std::cos(half), s * v.x(), s * v.y(), s * v.z());
 }
-
-}  // namespace
 
 Eigen::Vector3d aberration_beta(const Eigen::Vector3d& v_sc_i_mps,
                                 const Eigen::Vector3d& v_central_ssb_mps) {
