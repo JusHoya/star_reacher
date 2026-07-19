@@ -168,6 +168,7 @@ if(STAR_BUILD_TESTING)
     cpp/tests/test_drag.cpp
     cpp/tests/test_environment.cpp
     cpp/tests/test_events.cpp
+    cpp/tests/test_ekf.cpp
     cpp/tests/test_gnc.cpp
     cpp/tests/test_gnc_cycle.cpp
     cpp/tests/test_integrate.cpp
