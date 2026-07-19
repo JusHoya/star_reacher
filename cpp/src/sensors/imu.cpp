@@ -7,6 +7,9 @@
 #include <string>
 #include <vector>
 
+#include "star/sensors/camera.hpp"
+#include "star/sensors/optical.hpp"
+#include "star/sensors/radio.hpp"
 #include "star/srlog_writer.hpp"
 
 namespace star {
@@ -266,10 +269,31 @@ std::unique_ptr<ISensor> make_sensor(const gnc::GncSensorCfg& cfg,
     return std::unique_ptr<ISensor>(
         new Imu(cfg.sample_rate_hz, parse_imu_error_cfg(cfg), master_seed));
   }
+  if (cfg.kind == "startracker") {
+    return std::unique_ptr<ISensor>(new StarTracker(
+        cfg.sample_rate_hz, parse_star_tracker_cfg(cfg), master_seed));
+  }
+  if (cfg.kind == "sunsensor") {
+    return std::unique_ptr<ISensor>(new SunSensor(
+        cfg.sample_rate_hz, parse_sun_sensor_cfg(cfg), master_seed));
+  }
+  if (cfg.kind == "navfix") {
+    return std::unique_ptr<ISensor>(
+        new NavFix(cfg.sample_rate_hz, parse_nav_fix_cfg(cfg), master_seed));
+  }
+  if (cfg.kind == "altimeter") {
+    return std::unique_ptr<ISensor>(new Altimeter(
+        cfg.sample_rate_hz, parse_altimeter_cfg(cfg), master_seed));
+  }
+  if (cfg.kind == "camera") {
+    // The camera hook is noise-free truth and takes no seed (ch:camera).
+    return std::unique_ptr<ISensor>(
+        new CameraHook(cfg.sample_rate_hz, parse_camera_cfg(cfg)));
+  }
   throw std::invalid_argument(
       "make_sensor: unknown sensor kind '" + cfg.kind +
-      "'; supported in this phase: {imu} (the remaining FR-23 kinds land "
-      "with the sensor error-model workstream)");
+      "'; supported: {imu, startracker, sunsensor, navfix, altimeter, "
+      "camera}");
 }
 
 }  // namespace sensors

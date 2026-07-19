@@ -10,9 +10,13 @@
 
 #include <Eigen/Dense>
 
+#include "star/constants.hpp"
 #include "star/gnc/config.hpp"
 #include "star/rng.hpp"
+#include "star/sensors/camera.hpp"
 #include "star/sensors/imu.hpp"
+#include "star/sensors/optical.hpp"
+#include "star/sensors/radio.hpp"
 #include "star/sensors/sensor.hpp"
 #include "star/srlog_writer.hpp"
 #include "vendor/doctest.h"
@@ -351,18 +355,384 @@ TEST_CASE("sensors_imu_zero_error_config_is_the_ideal_special_case") {
   std::remove(path.c_str());
 }
 
-TEST_CASE("sensors_factory_kind_vocabulary") {
-  star::gnc::GncSensorCfg cfg;
-  cfg.kind = "imu";
-  cfg.sample_rate_hz = 100;
-  const auto imu = star::sensors::make_sensor(cfg, 42);
-  CHECK(std::string(imu->kind()) == "imu");
-  CHECK(imu->sample_rate_hz() == 100);
+TEST_CASE("sensors_aberration_magnitude_and_direction") {
+  // eq:optical:aberration against the closed-form magnitude of
+  // eq:optical:abmag. The headline number of ch:sensors-optical: at Earth's
+  // mean heliocentric speed of 29.78 km/s, a source perpendicular to the
+  // velocity is displaced by 20.49 arcsec.
+  const double c = star::constants::SPEED_OF_LIGHT_M_PER_S;
+  const double v = 29780.0;
+  const double arcsec = star::constants::TWO_PI / (360.0 * 3600.0);
+  const Eigen::Vector3d beta = Eigen::Vector3d(v, 0.0, 0.0) / c;
 
-  // The remaining FR-23 kinds land in a later workstream; until then the
-  // factory refuses them by name rather than returning a stub.
+  const Eigen::Vector3d u_perp(0.0, 0.0, 1.0);
+  const Eigen::Vector3d u_ab = star::sensors::aberrate(u_perp, beta);
+  CHECK(u_ab.norm() == doctest::Approx(1.0).epsilon(1e-15));
+  const double disp = star::sensors::angle_between(u_perp, u_ab);
+  CHECK(disp / arcsec == doctest::Approx(20.49).epsilon(1e-3));
+
+  // The apparent direction is displaced TOWARD the velocity: the component
+  // of the apparent direction along beta is positive where the geometric
+  // direction had none. This is the sign convention ch:sensors-optical
+  // calls out as the usual defect, so it is asserted rather than assumed.
+  CHECK(u_ab.dot(beta.normalized()) > 0.0);
+  CHECK(u_ab.z() > 0.0);  // still predominantly the original direction
+
+  // Parallel and antiparallel sources are undisplaced: beta has no
+  // perpendicular component to add (eq:optical:abmag's sin(theta) factor).
+  for (double sign : {1.0, -1.0}) {
+    const Eigen::Vector3d u_par(sign, 0.0, 0.0);
+    const Eigen::Vector3d out = star::sensors::aberrate(u_par, beta);
+    CHECK(star::sensors::angle_between(u_par, out) <
+          1e-12 * arcsec);
+  }
+
+  // The first-order displacement is beta*sin(theta) across the full range.
+  for (int k = 0; k <= 8; ++k) {
+    const double th = star::constants::TWO_PI * 0.5 * k / 8.0;
+    const Eigen::Vector3d u(std::cos(th), 0.0, std::sin(th));
+    const double got =
+        star::sensors::angle_between(u, star::sensors::aberrate(u, beta));
+    // sin(theta) here is the angle to +X, and u is built with that angle.
+    CHECK(got == doctest::Approx((v / c) * std::sin(th)).epsilon(2e-4));
+  }
+
+  // beta = 0 returns the input untouched, exactly (a run without ephemeris
+  // must not perturb a direction).
+  const Eigen::Vector3d u0(0.0, 1.0, 0.0);
+  const Eigen::Vector3d same =
+      star::sensors::aberrate(u0, Eigen::Vector3d::Zero());
+  CHECK(same.x() == u0.x());
+  CHECK(same.y() == u0.y());
+  CHECK(same.z() == u0.z());
+
+  // eq:optical:beta composes the spacecraft and central-body barycentric
+  // velocities before dividing by c.
+  const Eigen::Vector3d b = star::sensors::aberration_beta(
+      Eigen::Vector3d(1000.0, 0.0, 0.0), Eigen::Vector3d(29000.0, 0.0, 0.0));
+  CHECK(b.x() == doctest::Approx(30000.0 / c).epsilon(1e-15));
+}
+
+TEST_CASE("sensors_startracker_noise_extraction_is_the_drawn_rotation") {
+  // eq:optical:stmodel with the deterministic factors removed
+  // (eq:optical:extract) must return the drawn rotation vector identically -
+  // that exactness is what makes the acceptance statistic chi-square rather
+  // than approximately so.
+  //
+  // The observer is held at rest so beta, and hence the eq:optical:rho field
+  // rotation, is exactly zero and q_ab is the identity: that isolates the
+  // noise quaternion, which is what this case is about. Note that beta
+  // depends on the truth VELOCITY, not on whether an ephemeris is loaded -
+  // a moving observer aberrates even with no barycentric term available -
+  // so zeroing the velocity is the way to remove the factor, and the
+  // aberration itself is covered by its own case above.
+  const std::uint64_t seed = 90210;
+  star::sensors::StarTrackerCfg cfg;
+  cfg.sigma_rad = Eigen::Vector3d(2e-5, 3e-5, 9e-5);
+  star::sensors::StarTracker st(4, cfg, seed);
+
+  star::sensors::SensorCycleTruth truth;
+  truth.dt_s = 0.25;
+  // A non-identity truth attitude, so the extraction cannot pass by
+  // accident on an identity quaternion.
+  truth.q_end_i2b =
+      Eigen::Quaterniond(0.5, 0.5, -0.5, 0.5).normalized();
+  truth.v_end_i_mps = Eigen::Vector3d::Zero();
+  st.accumulate(truth);
+
+  star::rng::NormalSampler ref(
+      star::rng::make_stream(seed, "sensors.startracker"));
+
+  const std::string path = "test_sensors_st.srlog";
+  {
+    star::log::SrlogHeaderFields f;
+    f.core_version = "0.6.0-test";
+    f.git_hash = "unknown";
+    f.config_sha256 = std::string(64, '0');
+    f.master_seed = seed;
+    f.oracle = false;
+    f.epoch_utc = "2026-01-01T00:00:00Z";
+    f.central_body = "earth";
+    f.truth_rate_hz = 4;
+    f.cycle_rate_hz = 4;
+    f.sensors = {{"startracker", 4, 0}};
+    star::log::SrlogWriter writer(path, f);
+
+    for (int k = 0; k < 8; ++k) {
+      st.accumulate(truth);
+      st.sample(0.25 * (k + 1), writer);
+      Eigen::Vector3d eps;
+      for (int i = 0; i < 3; ++i) eps[i] = cfg.sigma_rad[i] * ref.next();
+      // beta is zero, so rho is zero and q_ab is identity: the extraction
+      // dq = q_true^-1 (x) q_meas must be exactly the drawn rotation.
+      const Eigen::Quaterniond dq =
+          truth.q_end_i2b.conjugate() * st.last_measurement();
+      // eq:optical:extract, with every intermediate bound to a named type:
+      // an Eigen product held in a deduced type can outlive its temporary
+      // operands, so the vector part and the sign-corrected axis are
+      // materialized explicitly.
+      const Eigen::Vector3d dqv = dq.vec();
+      const double vn = dqv.norm();
+      const double theta = 2.0 * std::atan2(vn, std::fabs(dq.w()));
+      Eigen::Vector3d axis = Eigen::Vector3d::Zero();
+      if (vn > 0.0) {
+        // sgn(dq_w) resolves the double cover; sgn(0) = +1 by convention.
+        axis = (dq.w() >= 0.0) ? Eigen::Vector3d(dqv / vn)
+                               : Eigen::Vector3d(-dqv / vn);
+      }
+      const Eigen::Vector3d extracted = theta * axis;
+      for (int i = 0; i < 3; ++i) {
+        CHECK(extracted[i] == doctest::Approx(eps[i]).epsilon(1e-11));
+      }
+    }
+    writer.close();
+  }
+  std::remove(path.c_str());
+}
+
+TEST_CASE("sensors_camera_pinhole_projection_and_visibility") {
+  // eq:camera:proj on constructed geometry, and each visibility test across
+  // its boundary. The camera looks along +Z_body with an identity mount, so
+  // a landmark straight ahead lands on the principal point.
+  star::sensors::CameraCfg cfg;
+  cfg.fx = 800.0;
+  cfg.fy = 600.0;  // anisotropic, per the exit-criterion-7 scenario
+  cfg.cx = 511.5;
+  cfg.cy = 383.5;
+  cfg.width_px = 1024;
+  cfg.height_px = 768;
+  // Body -> camera identity means camera +Z is body +Z. The landmark sits
+  // off the body center: a landmark AT the center is degenerate for the
+  // eq:camera:nearside test, whose dot product against (l - r_T) is
+  // identically zero there.
+  cfg.landmarks_fixed_m = {Eigen::Vector3d(0.0, 0.0, -1000.0)};
+
+  star::sensors::CameraHook cam(4, cfg);
+  star::sensors::SensorCycleTruth truth;
+  truth.dt_s = 0.25;
+  truth.q_end_i2b = Eigen::Quaterniond::Identity();
+  truth.geom.c_gcrf_to_bodyfixed = Eigen::Matrix3d::Identity();
+  truth.geom.bodyfixed_valid = true;
+
+  const std::string path = "test_sensors_cam.srlog";
+  star::log::SrlogHeaderFields f;
+  f.core_version = "0.6.0-test";
+  f.git_hash = "unknown";
+  f.config_sha256 = std::string(64, '0');
+  f.master_seed = 1;
+  f.oracle = false;
+  f.epoch_utc = "2026-01-01T00:00:00Z";
+  f.central_body = "earth";
+  f.truth_rate_hz = 4;
+  f.cycle_rate_hz = 4;
+  f.sensors = {{"camera", 4, 1}};
+  {
+    star::log::SrlogWriter writer(path, f);
+
+    // Camera at z = -5000 looking along +Z, landmark at z = -1000: dead
+    // ahead at 4000 m range, so it projects to the principal point.
+    truth.r_end_i_m = Eigen::Vector3d(0.0, 0.0, -5000.0);
+    cam.accumulate(truth);
+    cam.sample(0.25, writer);
+    CHECK(cam.last_pixels()[0] == doctest::Approx(cfg.cx).epsilon(1e-12));
+    CHECK(cam.last_pixels()[1] == doctest::Approx(cfg.cy).epsilon(1e-12));
+    CHECK(cam.last_visible()[0] == 1);
+
+    // Offset the camera to +X by 100 m: the landmark sits at X = -100 in
+    // camera axes at Z = 4000, so u shifts by fx * (-100/4000) = -20 px.
+    // Anisotropy is exercised by fy != fx on the v axis elsewhere.
+    truth.r_end_i_m = Eigen::Vector3d(100.0, 0.0, -5000.0);
+    cam.accumulate(truth);
+    cam.sample(0.5, writer);
+    CHECK(cam.last_pixels()[0] ==
+          doctest::Approx(cfg.cx - 20.0).epsilon(1e-12));
+    CHECK(cam.last_pixels()[1] == doctest::Approx(cfg.cy).epsilon(1e-12));
+    CHECK(cam.last_visible()[0] == 1);
+
+    // A +Y camera offset moves v by fy * (-100/4000) = -15 px, which is a
+    // different shift than u took for the same metric offset - the
+    // anisotropic-focal-length case exit criterion 7 calls for.
+    truth.r_end_i_m = Eigen::Vector3d(0.0, 100.0, -5000.0);
+    cam.accumulate(truth);
+    cam.sample(0.75, writer);
+    CHECK(cam.last_pixels()[1] ==
+          doctest::Approx(cfg.cy - 15.0).epsilon(1e-12));
+
+    // Test 1 (in front of the camera): move the camera past the landmark so
+    // the line of sight runs backward along the boresight; Z goes negative.
+    truth.r_end_i_m = Eigen::Vector3d(0.0, 0.0, 0.0);
+    cam.accumulate(truth);
+    cam.sample(1.0, writer);
+    CHECK(cam.last_visible()[0] == 0);
+
+    // Test 2 (within the sensor) at the half-pixel edge: with Z = 4000,
+    // u = cx + fx*(-x_off/4000) = 511.5 - 0.2*x_off, so the right edge
+    // u = W - 1/2 = 1023.5 is crossed at x_off = -2560.
+    truth.r_end_i_m = Eigen::Vector3d(-2559.0, 0.0, -5000.0);
+    cam.accumulate(truth);
+    cam.sample(1.25, writer);
+    CHECK(cam.last_pixels()[0] < 1023.5);
+    CHECK(cam.last_visible()[0] == 1);
+    truth.r_end_i_m = Eigen::Vector3d(-2561.0, 0.0, -5000.0);
+    cam.accumulate(truth);
+    cam.sample(1.5, writer);
+    CHECK(cam.last_pixels()[0] > 1023.5);
+    CHECK(cam.last_visible()[0] == 0);
+    writer.close();
+  }
+  std::remove(path.c_str());
+
+  // Test 3 (eq:camera:nearside) in isolation: one camera pose, two
+  // landmarks on opposite sides of the body center, BOTH in front of the
+  // camera and both inside the sensor - only the near-side one is visible.
+  // The camera sits at +Z with a 180 degree roll about X, so its boresight
+  // (body +Z) points along inertial -Z toward the body.
+  star::sensors::CameraCfg c2 = cfg;
+  c2.landmarks_fixed_m = {Eigen::Vector3d(0.0, 0.0, 1000.0),
+                          Eigen::Vector3d(0.0, 0.0, -1000.0)};
+  star::sensors::CameraHook cam2(4, c2);
+  star::sensors::SensorCycleTruth t2;
+  t2.dt_s = 0.25;
+  t2.geom.bodyfixed_valid = true;
+  t2.geom.c_gcrf_to_bodyfixed = Eigen::Matrix3d::Identity();
+  t2.q_end_i2b = Eigen::Quaterniond(0.0, 1.0, 0.0, 0.0);  // 180 deg about X
+  t2.r_end_i_m = Eigen::Vector3d(0.0, 0.0, 5000.0);
+  star::log::SrlogHeaderFields f2 = f;
+  f2.sensors = {{"camera", 4, 2}};
+  {
+    star::log::SrlogWriter writer(path, f2);
+    cam2.accumulate(t2);
+    cam2.sample(0.25, writer);
+    // Near-side landmark (z = +1000, same side as the camera): visible.
+    CHECK(cam2.last_visible()[0] == 1);
+    // Far-side landmark (z = -1000, body between it and the camera): the
+    // camera is below its local tangent plane, so the flag drops even
+    // though the projection itself is well inside the sensor.
+    CHECK(cam2.last_visible()[1] == 0);
+    CHECK(cam2.last_pixels()[2] == doctest::Approx(cfg.cx).epsilon(1e-9));
+    CHECK(cam2.last_pixels()[3] == doctest::Approx(cfg.cy).epsilon(1e-9));
+    writer.close();
+  }
+  std::remove(path.c_str());
+}
+
+TEST_CASE("sensors_navfix_and_altimeter_error_terms") {
+  // eq:radio:fix and eq:radio:alt against independently replicated streams,
+  // which pins both the arithmetic and the normative draw schedules.
+  const std::uint64_t seed = 5150;
+  const Eigen::Vector3d r_true(7.0e6, 1.0e6, -2.0e6);
+  const Eigen::Vector3d v_true(1.0e3, 7.4e3, 0.5e3);
+
+  star::sensors::NavFixCfg fix;
+  fix.sigma_r_m = Eigen::Vector3d(5.0, 5.0, 9.0);
+  fix.sigma_v_mps = Eigen::Vector3d(0.05, 0.05, 0.09);
+  star::sensors::NavFix nav(4, fix, seed);
+
+  star::sensors::SensorCycleTruth truth;
+  truth.dt_s = 0.25;
+  truth.r_end_i_m = r_true;
+  truth.v_end_i_mps = v_true;
+
+  star::rng::NormalSampler ref(
+      star::rng::make_stream(seed, "sensors.navfix"));
+
+  const std::string path = "test_sensors_radio.srlog";
+  star::log::SrlogHeaderFields f;
+  f.core_version = "0.6.0-test";
+  f.git_hash = "unknown";
+  f.config_sha256 = std::string(64, '0');
+  f.master_seed = seed;
+  f.oracle = false;
+  f.epoch_utc = "2026-01-01T00:00:00Z";
+  f.central_body = "earth";
+  f.truth_rate_hz = 4;
+  f.cycle_rate_hz = 4;
+  f.sensors = {{"navfix", 4, 0}, {"altimeter", 4, 0}};
+  {
+    star::log::SrlogWriter writer(path, f);
+    for (int k = 0; k < 5; ++k) {
+      nav.accumulate(truth);
+      nav.sample(0.25 * (k + 1), writer);
+      // With the correlated components off, the schedule is position white
+      // then velocity white - three draws each, no Gauss-Markov draws.
+      for (int i = 0; i < 3; ++i) {
+        CHECK(nav.last_position_m()[i] ==
+              r_true[i] + fix.sigma_r_m[i] * ref.next());
+      }
+      for (int i = 0; i < 3; ++i) {
+        CHECK(nav.last_velocity_mps()[i] ==
+              v_true[i] + fix.sigma_v_mps[i] * ref.next());
+      }
+    }
+
+    // Altimeter: turn-on bias is one draw at construction, then one white
+    // draw per sample (eq:radio:alt). A spherical central body makes the
+    // truth altitude exactly norm(r) - a.
+    star::sensors::AltimeterCfg alt_cfg;
+    alt_cfg.sigma_bias_m = 3.0;
+    alt_cfg.sigma_noise_m = 0.5;
+    alt_cfg.h_min_m = 0.0;
+    alt_cfg.h_max_m = 1.0e6;
+    star::rng::NormalSampler aref(
+        star::rng::make_stream(seed, "sensors.altimeter"));
+    const double bias = alt_cfg.sigma_bias_m * aref.next();
+    star::sensors::Altimeter alt(4, alt_cfg, seed);
+    CHECK(alt.turnon_bias_m() == bias);
+
+    star::sensors::SensorCycleTruth at = truth;
+    at.geom.bodyfixed_valid = true;
+    at.geom.c_gcrf_to_bodyfixed = Eigen::Matrix3d::Identity();
+    at.geom.ellipsoid_a_m = 6378137.0;
+    at.geom.ellipsoid_inv_f = 0.0;  // sphere: h = norm(r) - a exactly
+    at.r_end_i_m = Eigen::Vector3d(6378137.0 + 400000.0, 0.0, 0.0);
+    for (int k = 0; k < 5; ++k) {
+      alt.accumulate(at);
+      alt.sample(0.25 * (k + 1), writer);
+      const double expect =
+          400000.0 + bias + alt_cfg.sigma_noise_m * aref.next();
+      CHECK(alt.last_measurement_m() == doctest::Approx(expect).epsilon(1e-14));
+      CHECK(alt.last_valid());  // inside the configured band
+    }
+    // eq:radio:altgate: outside the band the flag drops, and the draw is
+    // still consumed so the stream schedule is gate-independent.
+    at.r_end_i_m = Eigen::Vector3d(6378137.0 + 2.0e6, 0.0, 0.0);
+    alt.accumulate(at);
+    alt.sample(2.0, writer);
+    CHECK_FALSE(alt.last_valid());
+    const double expect_out =
+        2.0e6 + bias + alt_cfg.sigma_noise_m * aref.next();
+    CHECK(alt.last_measurement_m() ==
+          doctest::Approx(expect_out).epsilon(1e-14));
+    writer.close();
+  }
+  std::remove(path.c_str());
+}
+
+TEST_CASE("sensors_factory_kind_vocabulary") {
+  // Every canonical FR-23 kind constructs at its configured rate and reports
+  // its own group name, so the log declaration and the sensor cannot drift
+  // apart. The camera needs positive intrinsics to be well defined; the rest
+  // are fully specified by their defaults (the ideal instrument).
+  for (const char* kind : {"imu", "startracker", "sunsensor", "navfix",
+                           "altimeter", "camera"}) {
+    star::gnc::GncSensorCfg cfg;
+    cfg.kind = kind;
+    cfg.sample_rate_hz = 100;
+    if (cfg.kind == "camera") {
+      cfg.scalars["fx_px"] = 800.0;
+      cfg.scalars["fy_px"] = 800.0;
+      cfg.scalars["width_px"] = 1024.0;
+      cfg.scalars["height_px"] = 768.0;
+    }
+    const auto s = star::sensors::make_sensor(cfg, 42);
+    CHECK(std::string(s->kind()) == kind);
+    CHECK(s->sample_rate_hz() == 100);
+  }
+
+  // A name outside the canonical vocabulary is refused by name rather than
+  // silently resolved to a stub, so a typo cannot enter a run.
   star::gnc::GncSensorCfg bad;
-  bad.kind = "startracker";
+  bad.kind = "lidar";
   bad.sample_rate_hz = 10;
   CHECK_THROWS_AS(star::sensors::make_sensor(bad, 42), std::invalid_argument);
 

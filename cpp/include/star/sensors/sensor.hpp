@@ -30,6 +30,7 @@
 #include <Eigen/Geometry>
 
 #include "star/gnc/config.hpp"
+#include "star/models/environment.hpp"
 
 namespace star {
 namespace log {
@@ -61,6 +62,23 @@ struct SensorCycleTruth {
   Eigen::Vector3d omega_b_end_radps = Eigen::Vector3d::Zero();
   Eigen::Vector3d sf_b_start_mps2 = Eigen::Vector3d::Zero();
   Eigen::Vector3d sf_b_end_mps2 = Eigen::Vector3d::Zero();
+
+  // Cycle-END state, i.e. the state at t_s + dt_s. Increment sensors use the
+  // endpoint pairs above; POINT sensors (star tracker, sun sensor, nav fix,
+  // altimeter, camera hook) measure an instant, and the instant they are
+  // sampled at is the end of the cycle most recently accumulated - the loop
+  // runs its GNC block, which samples, at the top of a cycle, after the
+  // previous cycle's integration has landed. These fields are therefore the
+  // truth AT the sample instant, and the camera hook emits r_end_i_m and
+  // q_end_i2b as the bit-exact copies exit criterion 7 requires.
+  Eigen::Vector3d r_end_i_m = Eigen::Vector3d::Zero();
+  Eigen::Vector3d v_end_i_mps = Eigen::Vector3d::Zero();
+  Eigen::Quaterniond q_end_i2b = Eigen::Quaterniond::Identity();
+
+  // Ephemeris-, shadow-, and frame-derived geometry at the cycle-end state,
+  // served by the environment model so every sensor and the force model see
+  // one composition (models/environment.hpp).
+  models::SensorGeometry geom;
 };
 
 class ISensor {

@@ -39,6 +39,7 @@
 #include "star/models/twobody.hpp"
 #include "star/models/vehicle6dof.hpp"
 #include "star/rotation.hpp"
+#include "star/sensors/camera.hpp"
 #include "star/sensors/imu.hpp"
 #include "star/sensors/sensor.hpp"
 #include "star/time.hpp"
@@ -483,6 +484,13 @@ log::SrlogHeaderFields build_header_fields(const RunConfig& cfg,
       log::SensorGroupDecl decl;
       decl.kind = s.kind;
       decl.rate_hz = s.sample_rate_hz;
+      if (s.kind == "camera") {
+        // The camera record's pixel-pair count is fixed at header-write
+        // time, so the declaration reads the landmark count out of the
+        // resolved config through the same parser the sensor uses.
+        decl.landmarks = static_cast<std::uint32_t>(
+            sensors::parse_camera_cfg(s).landmarks_fixed_m.size());
+      }
       fields.sensors.push_back(decl);
     }
     if (nav_state_dim > 0) {
@@ -614,6 +622,10 @@ struct VehicleCycle::Impl {
   std::vector<std::unique_ptr<sensors::ISensor>> sensor_list;
   std::vector<std::int64_t> sensor_decim;
   sensors::Imu* imu = nullptr;  // non-owning view into sensor_list
+  // True when any configured sensor consumes ephemeris/shadow/body-fixed
+  // geometry; the IMU alone does not, and composing it costs ephemeris
+  // evaluations per cycle.
+  bool needs_geometry_ = false;
   std::optional<gnc::LatencyFifo> fifo;
   Eigen::Vector3d tau_applied = Eigen::Vector3d::Zero();
   integrate::Rk4 rk4_att{models::kAttitudeStateDim};
@@ -750,6 +762,10 @@ struct VehicleCycle::Impl {
             cfg.gnc.control_rate_hz / s.sample_rate_hz));
         if (s.kind == "imu") {
           imu = static_cast<sensors::Imu*>(sensor_list.back().get());
+        } else {
+          // Every FR-23 kind except the IMU measures against ephemeris,
+          // shadow, or body-fixed geometry.
+          needs_geometry_ = true;
         }
       }
       // Free-flying missions close the loop from t = 0; geodetic missions
@@ -1233,6 +1249,20 @@ struct VehicleCycle::Impl {
       st.omega_b_end_radps = omega_b;
       st.sf_b_start_mps2 = sf_start_;
       st.sf_b_end_mps2 = specific_force(t + dt, r_m, v_mps);
+      // Cycle-END state: the truth AT the next sample instant, which is when
+      // the point sensors are sampled (the GNC block runs at the top of the
+      // following cycle). The camera hook emits these doubles verbatim, so
+      // they are assigned, never recomputed downstream.
+      st.r_end_i_m = r_m;
+      st.v_end_i_mps = v_mps;
+      st.q_end_i2b = q;
+      // Ephemeris-, shadow-, and frame-derived geometry at that same
+      // instant, composed once by the environment model and shared by every
+      // sensor (models/environment.hpp). Evaluated only when a sensor needs
+      // it, so a GNC run with an IMU alone pays nothing for it.
+      if (needs_geometry_) {
+        st.geom = env.sensor_geometry(t + dt, r_m);
+      }
       for (auto& s : sensor_list) {
         s->accumulate(st);
       }
