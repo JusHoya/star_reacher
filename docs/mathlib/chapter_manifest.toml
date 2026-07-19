@@ -122,9 +122,24 @@ chapter = "docs/mathlib/chapters/vehicle6dof.tex"
 label = "ch:vehicle6dof"
 
 [[chapter]]
-module = "cpp/src/sensors/imu_ideal.cpp"
+module = "cpp/src/sensors/imu.cpp"
 chapter = "docs/mathlib/chapters/sensors_imu.tex"
 label = "ch:sensors-imu"
+
+[[chapter]]
+module = "cpp/src/sensors/optical.cpp"
+chapter = "docs/mathlib/chapters/sensors_optical.tex"
+label = "ch:sensors-optical"
+
+[[chapter]]
+module = "cpp/src/sensors/radio.cpp"
+chapter = "docs/mathlib/chapters/sensors_radio.tex"
+label = "ch:sensors-radio"
+
+[[chapter]]
+module = "cpp/src/sensors/camera.cpp"
+chapter = "docs/mathlib/chapters/camera.tex"
+label = "ch:camera"
 
 [[chapter]]
 module = "cpp/src/gnc/builtin.cpp"

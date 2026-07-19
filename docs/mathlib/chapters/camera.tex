@@ -284,38 +284,80 @@ Binding implementation notes for the Phase~6 module:
 \section{Validation evidence}
 \label{sec:camera:validation}
 
-This chapter precedes its module; the validation-evidence table with
-machine-checked test identifiers is added by the implementing change.
-The planned gates, mirroring Phase~6 exit criterion~7 (and~9 for the
-shared aberration path):
-\begin{itemize}
-  \item \textbf{Bit-exact pose and intrinsics (exit criterion 7).} The
-    \texttt{sensors.cam} pose channels compare byte-identical to the
-    \texttt{truth} channels of the same run; intrinsics and extrinsics
-    compare byte-identical to the resolved configuration.
-  \item \textbf{Independent pinhole recomputation (exit criterion 7).}
-    A NumPy script written from this chapter alone --- truth channels
-    and resolved config in, equations~\eqref{eq:camera:pose},
-    \eqref{eq:camera:landmark}--\eqref{eq:camera:proj} out --- matches
-    every logged visible-landmark $(u, v)$ to $< 10^{-6}$ pixels
-    across a scenario exercising off-axis mounts
-    ($\vv{r}_{\mathrm{cam}}^{B} \ne \vv{0}$,
-    $\quat{q}_{b2c} \ne$ identity) and anisotropic focal lengths
-    ($f_x \ne f_y$).
-  \item \textbf{Visibility truth table.} Constructed geometries drive
-    each of the four tests across its boundary independently ---
-    behind-camera, each sensor edge at the half-pixel convention, limb
-    grazing via equation~\eqref{eq:camera:nearside}, and a third-body
-    transit via equation~\eqref{eq:camera:occlusion} --- and the flag
-    flips exactly at the stated thresholds.
-  \item \textbf{Aberration consistency (exit criterion 9).} On a
-    common scenario the camera Sun vector and the sun-sensor
-    noise-free direction agree to rounding, both matching the
-    independent aberration recomputation of
-    Chapter~\ref{ch:sensors-optical} to $< \qty{1}{\mas}$.
-  \item \textbf{Bit identity.} Two runs of the same scenario produce
-    byte-identical \texttt{sensors.cam.*} channels.
-\end{itemize}
+The module implementing this chapter is
+\texttt{cpp/src/sensors/camera.cpp}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the camera hook (doctest,
+    \texttt{cpp/tests/test\_sensors.cpp}).}
+  \label{tab:camera:validation}
+  \begin{tabular}{lp{8.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{sensors_camera_pinhole_projection_and_visibility} &
+      Equation~\eqref{eq:camera:proj} on constructed geometry: a landmark
+      on the boresight projects to the principal point; a metric camera
+      offset moves $u$ by $f_x X/Z$ and $v$ by $f_y Y/Z$, the two shifts
+      differing for the same offset under the anisotropic focal lengths
+      ($f_x \ne f_y$) exit criterion~7 calls for. Visibility test 1 drops
+      the flag when the line of sight runs backward along the boresight;
+      test 2 flips it exactly across the half-pixel sensor edge
+      $u = W - \tfrac12$ of the pixel-center convention; and test 3,
+      equation~\eqref{eq:camera:nearside}, is isolated by one camera pose
+      viewing two landmarks on opposite sides of the body center, both in
+      front of the camera and both inside the sensor, with only the near
+      one flagged visible. \\
+    \testid{sensors_factory_kind_vocabulary} &
+      The camera kind constructs from the factory at its configured rate
+      and reports the \texttt{sensors.camera} group name; non-positive
+      intrinsics are refused at construction. \\
+    \testid{gnc_cycle_double_run_is_byte_identical} &
+      Exit criterion~1 bit identity at the whole-file level: two runs of
+      the same seeded scenario on the same binary produce byte-identical
+      logs, covering the camera channels. The hook consumes no draws, so
+      its contribution is deterministic by construction. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Exit criterion~7's bit-exactness clause is satisfied \emph{by
+construction} rather than by a test tolerance: the emitted pose channels
+are assignments of the same \texttt{double} values the truth writer
+receives, never recomputed (implementation note 2), so no arithmetic
+exists that could differ. The remaining criterion-7 clause --- the
+independent NumPy recomputation of
+equations~\eqref{eq:camera:pose} and
+\eqref{eq:camera:landmark}--\eqref{eq:camera:proj} matching every logged
+visible-landmark $(u, v)$ to $< 10^{-6}$ pixels on a scenario with an
+off-axis mount and $f_x \ne f_y$ --- is outstanding, as is the
+aberration-consistency check pairing the camera Sun vector against the
+sun-sensor direction.
+
+\paragraph{Scope of the implemented hook.} Landmarks are body-fixed points
+on the \emph{central} body, which is the surface-relative
+optical-navigation case this hook targets and is served exactly by the
+central-body-fixed rotation the environment model already composes for the
+dynamics. Landmarks on a third body, and with them the multi-body
+occlusion test of equation~\eqref{eq:camera:occlusion}, require a
+configured body table the sensor layer does not yet receive; the near-side
+test of equation~\eqref{eq:camera:nearside} is exact for a spherical
+central body and a surface landmark, so self-occlusion is handled without
+it. Note also that a landmark placed \emph{at} the body center is
+degenerate for that test, whose dot product against
+$(\vv{\ell} - \vv{r}_T)$ is then identically zero.
+
+\paragraph{Logged channels versus emitted quantities.} Implementation
+note 5 lists the visible-bodies list and the Sun vector among the logged
+channels, but the normative \texttt{sensors.camera} record layout carries
+$t_s$, $\vv{r}$, $\quat{q}_{i2b}$, and the $2L$ interleaved pixel
+coordinates only. The Sun vector of equation~\eqref{eq:camera:sunvec} is
+computed through the shared aberration path and exposed to in-process
+consumers, and the per-landmark visibility flags likewise; extending the
+record to carry them would be a log-format change, which this
+implementation deliberately does not make. Exit criterion~7 gates the pose,
+intrinsics, and landmark pixels, all of which the current layout carries.
 
 \section{References}
 \label{sec:camera:references}

@@ -233,31 +233,69 @@ Binding implementation notes for the Phase~6 modules:
 \section{Validation evidence}
 \label{sec:radio:validation}
 
-This chapter precedes its modules; the validation-evidence table with
-machine-checked test identifiers is added by the implementing change.
-The planned gates, mirroring Phase~6 exit criterion~6:
-\begin{itemize}
-  \item \textbf{Chi-square gates (exit criterion 6).} The three
-    ensemble-mean statistics of
-    equations~\eqref{eq:radio:chi2}--\eqref{eq:radio:bounds} over
-    1{,}000 seeded draws fall inside their stated bounds, and rerunning
-    the same seeds reproduces the statistics bit-for-bit.
-  \item \textbf{Deterministic error terms.} With white terms zeroed, the
-    altimeter output equals $h(\vv{r}) + b_h$ with $b_h$ the exact
-    seeded stationary draw; the enabled Gauss--Markov component
-    reproduces the recursion~\eqref{eq:radio:gm} value-for-value
-    against an independent Python evaluation of the same stream.
-  \item \textbf{Geodetic consistency.} On the reference ellipsoid
-    ($h = 0$ states) and on a spherical body the noise-free altimeter
-    returns $0$ and $\norm{\vv{r}} - a$ respectively to the
-    Chapter~\ref{ch:harrispriester} conversion budget.
-  \item \textbf{Gating.} Truth trajectories crossing $h_{\min}$ and
-    $h_{\max}$ flip the altimeter flag exactly at the thresholds, with
-    draws consumed identically on both sides.
-  \item \textbf{Bit identity.} Two runs of the same seeded scenario
-    produce byte-identical \texttt{sensors.navfix.*} and
-    \texttt{sensors.alt.*} channels.
-\end{itemize}
+The module implementing this chapter is
+\texttt{cpp/src/sensors/radio.cpp}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the radio-class sensors (doctest,
+    \texttt{cpp/tests/test\_sensors.cpp}).}
+  \label{tab:radio:validation}
+  \begin{tabular}{lp{8.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{sensors_navfix_altimeter_chi_square_over_1000_draws} &
+      Exit criterion~6: the three ensemble-mean
+      statistics~\eqref{eq:radio:chi2} over $M = 1000$ seeded draws at
+      fixed truth, with the correlated components disabled as
+      Section~\ref{sec:radio:stats} requires, fall inside
+      the~\eqref{eq:radio:bounds} intervals --- $[2.850, 3.154]$ for the
+      position and velocity fixes and $[0.914, 1.090]$ for the
+      altimeter. \\
+    \testid{sensors_navfix_and_altimeter_error_terms} &
+      Equations~\eqref{eq:radio:fix} and~\eqref{eq:radio:alt} value-for-value
+      against independently replicated \texttt{sensors.navfix} and
+      \texttt{sensors.altimeter} streams, which pins the normative
+      per-sample draw schedules (position white then velocity white with
+      the correlated components off; one turn-on bias draw at construction
+      then one white draw per sample for the altimeter) as well as the
+      arithmetic. The altimeter's turn-on bias is checked to be exactly the
+      seeded draw, and the spherical-body altitude to be exactly
+      $\norm{\vv{r}} - a$. \\
+    \testid{sensors_factory_kind_vocabulary} &
+      Both radio kinds construct from the factory at their configured rate
+      and report their own \texttt{sensors.*} group names. \\
+    \testid{gnc_cycle_double_run_is_byte_identical} &
+      Exit criterion~1 bit identity at the whole-file level: two runs of
+      the same seeded scenario on the same binary produce byte-identical
+      logs, covering the radio sensor channels. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The altimeter's gating~\eqref{eq:radio:altgate} is exercised by the second
+test above across the $h_{\max}$ boundary, with the white draw shown to be
+consumed identically on both sides. Outstanding, recorded rather than
+tabled: the enabled Gauss--Markov component of
+equation~\eqref{eq:radio:gm} on the fix is implemented but is pinned only
+by the shared derivation and by the IMU chapter's recursion test, not yet
+by its own committed value-for-value case; and the ellipsoidal ($h = 0$
+state) geodetic consistency case is not yet committed --- the spherical
+case is.
+
+\paragraph{Correction to assumption 4.} That assumption states that for a
+spherical body ($f = 0$) the Bowring conversion of
+equation~\eqref{eq:hp:geodetic} "degenerates exactly to
+$h = \norm{\vv{r}} - a$." That is true of the mathematics but \emph{not}
+of the implementation: \texttt{geodetic\_altitude()} validates
+$1/f > 1$ and rejects zero flattening outright rather than returning the
+limit. The altimeter therefore branches explicitly on a spherical central
+body and evaluates $\norm{\vv{r}} - a$ in closed form, which additionally
+needs no body-fixed rotation. The two branches agree in the limit and the
+single-conversion-path intent of implementation note 3 is preserved for
+every ellipsoidal body; the flat statement above should be read as
+"degenerates to" in the mathematical sense only.
 
 \section{References}
 \label{sec:radio:references}

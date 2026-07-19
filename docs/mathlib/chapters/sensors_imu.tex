@@ -503,20 +503,19 @@ Binding implementation notes for the Phase~6 module:
 \section{Validation evidence}
 \label{sec:imu:validation}
 
-The module implementing this chapter has landed in part. The zero-error
-special case of the measurement model --- the increment interface, its
-trapezoidal quadrature~\eqref{eq:imu:quadrature}, and the sample-and-reset
-semantics --- is implemented in \texttt{cpp/src/sensors/imu\_ideal.cpp} and
-is covered by the tables below. The error chain of
-equations~\eqref{eq:imu:gyro}--\eqref{eq:imu:quant} and the Allan machinery
-of Section~\ref{sec:imu:recovery} are \emph{not} yet implemented; their
-gates remain a plan and are listed separately at the end of this section,
-so the tables state only evidence that exists.
+The module implementing this chapter is
+\texttt{cpp/src/sensors/imu.cpp}. The full error chain of
+equations~\eqref{eq:imu:gyro}--\eqref{eq:imu:quant} and the Allan
+identification of Section~\ref{sec:imu:recovery} have landed, so every gate
+this chapter specifies now appears in the tables below with a
+machine-checked test identifier. The zero-error increments remain the
+model's zero-coefficient special case: each error stage degenerates to an
+exact identity, which is itself asserted rather than assumed.
 
 \begin{table}[htbp]
   \centering
-  \caption{Validation evidence for the ideal (zero-error) IMU: core
-    (doctest, \texttt{cpp/tests/test\_sensors.cpp},
+  \caption{Validation evidence for the IMU: core (doctest,
+    \texttt{cpp/tests/test\_sensors.cpp},
     \texttt{cpp/tests/test\_gnc\_cycle.cpp}).}
   \label{tab:imu:validation}
   \begin{tabular}{lp{8.4cm}}
@@ -530,11 +529,49 @@ so the tables state only evidence that exists.
       equality (not a tolerance); \texttt{sample()} then resets the
       accumulators, so the following interval integrates only its own
       cycle. \\
+    \testid{sensors_imu_zero_error_config_is_the_ideal_special_case} &
+      Two instances with all-zero coefficients and \emph{different} seeds
+      emit bit-identical increments, each equal to the raw
+      quadrature~\eqref{eq:imu:quadrature} --- the zero-error special case
+      is an exact identity through every stage of
+      equations~\eqref{eq:imu:gyro}--\eqref{eq:imu:quant}, not an
+      approximation. \\
+    \testid{sensors_imu_turnon_bias_and_draw_schedule} &
+      With only the turn-on bias~\eqref{eq:imu:turnon} enabled, the emitted
+      increment equals $\Delta\vv{\theta} + \vv{b}_{g0}\Delta t_s$ under bit
+      equality, with $\vv{b}_{g0}$ taken from an independently replicated
+      \texttt{sensors.imu} stream --- which pins the normative
+      initialization draw schedule, not merely the arithmetic. \\
+    \testid{sensors_imu_scale_factor_and_misalignment} &
+      The $\mat{M} = \mat{S} + \mat{\Gamma}$ assembly of
+      equation~\eqref{eq:imu:mis} places scale factors (configured in ppm)
+      on the diagonal and the six misalignment entries off it in the order
+      $xy, xz, yx, yz, zx, zy$; the distorted increment matches
+      $(\mat{I} + \mat{M})\Delta\vv{\theta}$ to $10^{-15}$ relative. An
+      unknown key, a wrong-length vector, and a negative magnitude are each
+      refused by \texttt{std::invalid\_argument}. \\
+    \testid{sensors_imu_quantizer_carry_and_ties} &
+      Equation~\eqref{eq:imu:quant} on exact binary fractions, asserted with
+      bit equality: a truth increment of exactly half a quantum emits the
+      alternating sequence $q, 0, q, 0, \dots$, exercising both the
+      round-half-up tie (toward $+\infty$ by construction) and the residual
+      carry. The accumulated output tracks the accumulated input to within
+      half a quantum at every sample and closes exactly over a whole number
+      of quanta --- quantization is lossless in accumulation. \\
+    \testid{sensors_imu_gauss_markov_recursion_and_preset_map} &
+      The in-run bias follows recursion~\eqref{eq:imu:gm} value-for-value
+      against an independently replicated stream, including its stationary
+      initialization. The preset map~\eqref{eq:imu:presetmap} is checked
+      against the closed form~\eqref{eq:imu:gmadev}: the ADEV at the
+      \eqref{eq:imu:gmpeak} abscissa $\tau^{*} = 1.8926\,\tau_c$ equals
+      $0.664282\,B$ to $10^{-4}$ relative, and $\tau^{*}$ is confirmed to be
+      a maximum by evaluation on both sides. \\
     \testid{sensors_factory_kind_vocabulary} &
-      The factory constructs the \texttt{imu} kind at its configured rate
-      and rejects both an unimplemented sensor kind and a zero sample rate
-      by \texttt{std::invalid\_argument} --- refusal by name rather than a
-      stub, so an unimplemented FR-23 kind cannot silently enter a run. \\
+      The factory constructs every canonical FR-23 kind at its configured
+      rate, each reporting its own group name, and rejects both a
+      non-canonical kind name and a zero sample rate by
+      \texttt{std::invalid\_argument} --- refusal by name rather than a
+      stub, so a typo cannot silently enter a run. \\
     \testid{gnc_cycle_double_run_is_byte_identical} &
       Exit criterion~1 bit identity at the whole-file level: two runs of
       the same seeded GNC scenario on the same binary produce
@@ -545,8 +582,34 @@ so the tables state only evidence that exists.
 
 \begin{table}[htbp]
   \centering
-  \caption{Validation evidence for the ideal (zero-error) IMU: in-loop
-    increments (pytest, \texttt{tests/python/}).}
+  \caption{Validation evidence for the Allan identification of
+    Section~\ref{sec:imu:recovery} (exit criterion~1).}
+  \label{tab:imu:validation-allan}
+  \begin{tabular}{lp{8.4cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{sensors_imu_allan_recovers_arw_and_bias_instability} &
+      The Section~\ref{sec:imu:recovery} procedure on a
+      \qty{e4}{\second} static record ($\vv{\omega}^{B} \equiv \vv{0}$,
+      $\vv{f}^{B} \equiv \vv{0}$, fixed seed), applied per instrument:
+      the overlapping estimator~\eqref{eq:imu:oadev} at the one-second
+      anchor with the known Gauss--Markov term removed in quadrature
+      \eqref{eq:imu:recovery} returns $N$ to $0.8\,\%$ (gyro) and
+      $0.08\,\%$ (accelerometer), and the peak anchor with the recovered
+      white term removed~\eqref{eq:imu:recoverybi} returns $B$ to
+      $2.7\,\%$ and $3.7\,\%$ --- all inside the $\pm 10\,\%$ gate. The
+      analytic curve $\sqrt{N^2/\tau + \sigma_{\mathrm{GM}}^2(\tau)}$
+      overlays the estimate across the octave grid within four times the
+      cluster-count scatter. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the ideal IMU: in-loop increments
+    (pytest, \texttt{tests/python/}).}
   \label{tab:imu:validation-py}
   \begin{tabular}{lp{7.2cm}}
     \toprule
@@ -562,31 +625,44 @@ so the tables state only evidence that exists.
   \end{tabular}
 \end{table}
 
-The gates below specify the error-chain model and remain outstanding until
-its module lands; they mirror Phase~6 exit criterion~1:
+Two items specified by this chapter remain outstanding and are recorded
+here rather than tabled, so the evidence tables state only evidence that
+exists:
 \begin{itemize}
-  \item \textbf{Golden increments.} Deterministic error chain
-    (all noise coefficients zero; fixed $\mat{M}$, biases, quantum)
-    against hand-computed references at committed states, exercising
-    every term of equations~\eqref{eq:imu:gyro}--\eqref{eq:imu:quant}
-    including the quantizer's carry and tie behavior.
-  \item \textbf{Gauss--Markov statistics.} Sample variance and lag-one
-    autocorrelation of the recursion~\eqref{eq:imu:gm} over a long
-    seeded record against $\sigma_{\mathrm{GM}}^2$ and $\varphi$ within
-    two-sided 95\,\% bounds.
-  \item \textbf{Allan recovery (exit criterion 1).} The
-    Section~\ref{sec:imu:recovery} procedure on a \qty{e4}{\second}
-    static record recovers $N_g$, $N_a$, $B_g$, $B_a$ within
-    $\pm 10\,\%$; the analytic curve
-    $\sqrt{N^2/\tau + \sigma_{\mathrm{GM}}^2(\tau) + \sigma_Q^2(\tau)}$
-    overlays the estimated ADEV within estimator scatter across the
-    octave grid.
+  \item \textbf{Gate-preset design (exit criterion 1).} The dispersion
+    argument closing Section~\ref{sec:imu:recovery} accounts for the ADEV
+    estimator scatter but not for the amplification that
+    equation~\eqref{eq:imu:recoverybi} introduces by subtracting the
+    white-noise term before inverting~\eqref{eq:imu:bi}. Writing
+    $A = \hat{\sigma}^2(\tau^{*})$, $W = \hat{N}^2/\tau^{*}$, and
+    $G = A - W$, the relative error propagates as $\delta B/B =
+    (A/G)\,(\delta\hat{\sigma}/\hat{\sigma})$, so a preset whose
+    Gauss--Markov term is a minority of the Allan variance at $\tau^{*}$
+    produces an unreliable gate: at $N = 0.1\ \mathrm{deg}/\sqrt{\mathrm{h}}$
+    and $\tau_c = \qty{20}{\second}$, $G/W$ is only $0.46$ at
+    $B = 1\ \mathrm{deg/h}$. The committed gate therefore takes
+    $B = 4\ \mathrm{deg/h}$ ($G/W = 7.4$ by design, $7.96$ and $15.47$ as
+    measured), and the design rule is $B \ge \sqrt{G/W}\,N/(0.664282
+    \sqrt{1.8926\,\tau_c})$. This paragraph, not the estimator-scatter
+    sentence above it, is the binding guidance for choosing a gate preset.
   \item \textbf{Coning preservation.} On a pure coning trajectory
     (Chapter~\ref{ch:rigidbody}, closed form), accumulated increments
-    match the analytic integral of the body rate to the quadrature
-    bound of equation~\eqref{eq:imu:quaderr}, and are measurably
-    distinct from point-sampled $\vv{\omega}(t_k)\Delta t_s$.
+    should match the analytic integral of the body rate to the quadrature
+    bound of equation~\eqref{eq:imu:quaderr} and be measurably distinct
+    from point-sampled $\vv{\omega}(t_k)\Delta t_s$. The increment
+    interface and its quadrature are covered by the tables above; the
+    closed-form coning case is not yet implemented.
 \end{itemize}
+
+A note on equation~\eqref{eq:imu:quantadev}, for anyone writing a
+quantization-specific Allan gate: the $\sigma_Q(\tau) = q/(2\tau)$
+signature assumes the carried residual is white sample to sample, which the
+carry of equation~\eqref{eq:imu:quant} makes true only when the input is
+dithered at or above roughly one quantum. Below that the residual is
+correlated over $\sim q/\sigma_{\mathrm{in}}$ samples and the measured ADEV
+falls below this formula at short cluster times --- a property of the
+model, not a defect. The committed Allan gate runs with the quantizer
+disabled, so the term is exactly zero there.
 
 \section{References}
 \label{sec:imu:references}

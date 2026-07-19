@@ -408,38 +408,96 @@ Binding implementation notes for the Phase~6 modules:
 \section{Validation evidence}
 \label{sec:optical:validation}
 
-This chapter precedes its modules; the validation-evidence table with
-machine-checked test identifiers is added by the implementing change.
-The planned gates, mirroring Phase~6 exit criteria~1 and~9:
+The modules implementing this chapter are
+\texttt{cpp/src/sensors/optical.cpp} (both sensors and the shared
+aberration function).
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the optical sensors (doctest,
+    \texttt{cpp/tests/test\_sensors.cpp}).}
+  \label{tab:optical:validation}
+  \begin{tabular}{lp{8.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{sensors_aberration_magnitude_and_direction} &
+      Equation~\eqref{eq:optical:aberration} against the closed-form
+      magnitude~\eqref{eq:optical:abmag}: the perpendicular-source
+      displacement is \qty{20.49}{\arcsecond} at
+      $v = \qty{29.78}{\kilo\metre\per\second}$ to $10^{-3}$ relative, the
+      output is a unit vector, and the displacement is verified to be
+      \emph{toward} the velocity (the sign convention this chapter calls
+      out as the usual defect). Parallel and antiparallel sources are
+      undisplaced; the $\beta\sin\vartheta$ law holds across a nine-point
+      $\vartheta$ grid spanning $[0, \pi]$ including both extremes; and
+      $\vv{\beta} = \vv{0}$ returns the input bit-unchanged. The
+      composition of equation~\eqref{eq:optical:beta} is checked to sum
+      the vehicle and central-body barycentric velocities before dividing
+      by $c$. \\
+    \testid{sensors_startracker_noise_extraction_is_the_drawn_rotation} &
+      With the observer at rest (so $\vv{\rho} = \vv{0}$ and
+      $\quat{q}_{\mathrm{ab}}$ is the identity) about a non-identity truth
+      attitude, the extraction~\eqref{eq:optical:extract} returns the drawn
+      rotation vector of equation~\eqref{eq:optical:noiseq} to $10^{-11}$
+      relative over eight seeded draws --- the exactness that makes the
+      acceptance statistic chi-square rather than approximately so. \\
+    \testid{sensors_startracker_chi_square_over_1000_draws} &
+      Exit criterion~1: the ensemble-mean
+      statistic~\eqref{eq:optical:ststat} over $M = 1000$ seeded draws
+      falls inside the~\eqref{eq:optical:stbounds} interval
+      $[2.850, 3.154]$, and each of the three per-axis sample variances
+      matches its configured sigma within the corresponding two-sided
+      95\,\% interval $[0.914, 1.090]$. \\
+    \testid{sensors_sunsensor_chi_square_over_1000_draws} &
+      The Section~\ref{sec:optical:stats} tangent-plane statistic over
+      $M = 1000$ seeded draws falls inside $[1.878, 2.126]$, the two-sided
+      95\,\% interval for $\chi^2_2$. \\
+    \testid{sensors_factory_kind_vocabulary} &
+      Both optical kinds construct from the factory at their configured
+      rate and report their own \texttt{sensors.*} group names, so a
+      sensor and its log declaration cannot drift apart. \\
+    \testid{gnc_cycle_double_run_is_byte_identical} &
+      Exit criterion~1 bit identity at the whole-file level: two runs of
+      the same seeded scenario on the same binary produce byte-identical
+      logs, covering the optical sensor channels. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Outstanding, recorded rather than tabled:
 \begin{itemize}
-  \item \textbf{Aberration recomputation (exit criterion 9).} An
-    independent NumPy implementation of
-    equations~\eqref{eq:optical:beta}--\eqref{eq:optical:abmag},
-    written from this chapter alone, reproduces the core's apparent
-    directions to $< \qty{1}{\mas}$ at
-    $\beta$ corresponding to \qty{30}{\kilo\metre\per\second}, across a
-    grid of source--velocity angles including the extremes
-    $\vartheta \in \{0, \pi/2, \pi\}$; the displacement is verified to
-    be \emph{toward} the velocity and \qty{20.49}{\arcsecond} at
-    $v = \qty{29.78}{\kilo\metre\per\second}$, $\vartheta = \pi/2$.
-  \item \textbf{Star-tracker statistics (exit criterion 1).} The
-    ensemble-mean statistic of
-    equations~\eqref{eq:optical:extract}--\eqref{eq:optical:stbounds}
-    over 1{,}000 seeded draws falls inside $[2.850, 3.154]$; per-axis
-    sample variances match the configured sigmas within their own
-    two-sided 95\,\% bounds; the same seeds reproduce the same
-    statistic bit-for-bit.
-  \item \textbf{Gating.} Deterministic geometry cases: boresight swept
-    across each exclusion boundary and the rate swept across
-    $\omega_{\max}$ flip the flag at the configured thresholds exactly;
-    an umbra transit (Chapter~\ref{ch:srp} shadow) drops the sun-sensor
-    flag; draws are consumed identically on both sides of every gate.
-  \item \textbf{Sun-sensor statistics.} Tangent-plane ensemble statistic
-    inside $[1.878, 2.126]$ over 1{,}000 draws.
-  \item \textbf{Bit identity.} Two runs of the same seeded scenario
-    produce byte-identical \texttt{sensors.st.*} and
-    \texttt{sensors.sun.*} channels (exit criterion~1).
+  \item \textbf{Independent aberration recomputation (exit criterion 9).}
+    A NumPy implementation of
+    equations~\eqref{eq:optical:beta}--\eqref{eq:optical:abmag} written
+    from this chapter alone, run against logged truth and ephemeris inputs
+    from a committed scenario, gating agreement at $< \qty{1}{\mas}$. The
+    comparison is first-order form against first-order form: this chapter
+    declares equation~\eqref{eq:optical:aberration} normative, and the gap
+    to the exact relativistic form is \qty{0.51}{\mas} at Earth's mean
+    heliocentric speed and \qty{0.81}{\mas} once low-Earth-orbit speed is
+    added, which would consume most of the \qty{1}{\mas} budget on a
+    formula substitution the chapter does not ask for. The magnitude,
+    direction, and angular law of the implemented formula are covered by
+    the table above; what remains is the independent reimplementation and
+    the in-loop scenario comparison.
+  \item \textbf{Gating geometry.} Deterministic sweeps of the boresight
+    across each exclusion boundary and of the rate across
+    $\omega_{\max}$, and an umbra transit dropping the sun-sensor flag,
+    each confirming the flag flips at the configured threshold with draws
+    consumed identically on both sides. The gating logic of
+    equations~\eqref{eq:optical:gating} and~\eqref{eq:optical:sungate} is
+    implemented and its draws are unconditional by construction, but the
+    boundary sweeps are not yet committed as tests.
 \end{itemize}
+
+A scope note on equation~\eqref{eq:optical:gating}: the implemented
+exclusion set is the Sun and the central body, each with its own
+configured half-angle. The general "each configured excluded body" form
+requires a configured third-body table that the sensor layer does not yet
+receive; the single-code-path treatment of apparent directions is
+unaffected, since both implemented exclusions run through
+equation~\eqref{eq:optical:aberration}.
 
 \section{References}
 \label{sec:optical:references}
