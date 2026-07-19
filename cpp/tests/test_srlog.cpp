@@ -1,9 +1,10 @@
 // SRLOG v1 writer byte-level tests: headers round-trip against independently
 // assembled reference byte sequences (contract section 2 /
 // docs/formats/srlog_v1.md), and the record stream layout is verified field
-// by field, for the always-present Phase 1 groups and the v1.1 vehicle
-// channel groups. The reference bytes are synthesized here in test code -
-// binary fixtures are never committed (contract section 11).
+// by field, for the always-present Phase 1 groups, the v1.1 vehicle channel
+// groups, and the v1.2 GNC channel groups. The reference bytes are
+// synthesized here in test code - binary fixtures are never committed
+// (contract section 11).
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -54,7 +55,7 @@ TEST_CASE("srlog_writer_header_roundtrip") {
   // byte (compact separators, fixed key order per contract section 2). Any
   // serializer change that alters the bytes must fail here first.
   const std::string expected_json =
-      "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":1},"
+      "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":2},"
       "\"producer\":{\"core_version\":\"0.1.0-test\","
       "\"git_hash\":\"0123456789abcdef0123456789abcdef01234567\"},"
       "\"config_sha256\":"
@@ -100,7 +101,7 @@ TEST_CASE("srlog_writer_header_roundtrip") {
   REQUIRE(bytes.size() >= 16);
   CHECK(std::memcmp(bytes.data(), magic, 8) == 0);
   CHECK(read_le<std::uint16_t>(bytes, 8) == 1);    // version_major
-  CHECK(read_le<std::uint16_t>(bytes, 10) == 1);   // version_minor
+  CHECK(read_le<std::uint16_t>(bytes, 10) == 2);   // version_minor
   const std::uint32_t json_len = read_le<std::uint32_t>(bytes, 12);
   CHECK(json_len == expected_json.size());
   REQUIRE(bytes.size() >= 16 + json_len);
@@ -181,7 +182,7 @@ TEST_CASE("srlog_v11_header_declares_vehicle_groups") {
   // fixed order forces, mass, env, with the source-derived forces channels
   // in declaration order.
   const std::string expected_json =
-      "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":1},"
+      "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":2},"
       "\"producer\":{\"core_version\":\"0.3.0-test\","
       "\"git_hash\":\"0123456789abcdef0123456789abcdef01234567\"},"
       "\"config_sha256\":"
@@ -426,6 +427,451 @@ TEST_CASE("srlog_v11_write_calls_guard_declaration") {
     writer.close();
   }
   std::remove(path.c_str());
+}
+
+namespace {
+
+// Baseline v1.2 declaration used by the GNC-group tests: two sensors (imu at
+// the cycle rate, camera decimated with two landmarks), the nav estimator
+// groups at n = 7 / m_max = 3, and the applied-command group, with no v1.1
+// vehicle groups so the group indices are compact.
+star::log::SrlogHeaderFields v12_fields() {
+  star::log::SrlogHeaderFields fields;
+  fields.core_version = "0.6.0-test";
+  fields.git_hash = "0123456789abcdef0123456789abcdef01234567";
+  fields.config_sha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  fields.master_seed = 1234567890ULL;
+  fields.oracle = false;
+  fields.epoch_utc = "2026-01-01T00:00:00Z";
+  fields.central_body = "earth";
+  fields.truth_rate_hz = 10;
+  fields.cycle_rate_hz = 100;
+  fields.latency_cycles = 2;
+  fields.sensors = {{"imu", 100, 0}, {"camera", 10, 2}};
+  fields.nav_est_rate_hz = 100;
+  fields.nav_state_dim = 7;
+  fields.nav_err_enabled = true;
+  fields.nav_innov_enabled = true;
+  fields.nav_innov_max_dim = 3;
+  fields.gnc_cmd_rate_hz = 100;
+  return fields;
+}
+
+}  // namespace
+
+TEST_CASE("srlog_v12_header_declares_gnc_groups") {
+  // Reference JSON assembled independently of the serializer (format doc
+  // sections 3 and 3.2): the "gnc" object follows central_body, and the
+  // declared v1.2 groups follow the v1.1 groups (none here) in the fixed
+  // order sensors.* (canonical kind order), nav.est, nav.err, nav.innov,
+  // gnc.cmd.
+  const std::string expected_json =
+      "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":2},"
+      "\"producer\":{\"core_version\":\"0.6.0-test\","
+      "\"git_hash\":\"0123456789abcdef0123456789abcdef01234567\"},"
+      "\"config_sha256\":"
+      "\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\","
+      "\"master_seed\":\"1234567890\",\"oracle\":false,"
+      "\"epoch_utc\":\"2026-01-01T00:00:00Z\",\"central_body\":\"earth\","
+      "\"gnc\":{\"cycle_rate_hz\":100,\"latency_cycles\":2,"
+      "\"sensors\":[\"imu\",\"camera\"]},"
+      "\"groups\":["
+      "{\"name\":\"truth\",\"rate_hz\":10,\"channels\":["
+      "{\"name\":\"t_s\",\"dtype\":\"f64\",\"units\":\"s\",\"frame\":\"\"},"
+      "{\"name\":\"r_m\",\"dtype\":\"f64[3]\",\"units\":\"m\",\"frame\":\"GCRF\"},"
+      "{\"name\":\"v_mps\",\"dtype\":\"f64[3]\",\"units\":\"m/s\","
+      "\"frame\":\"GCRF\"},"
+      "{\"name\":\"q_i2b\",\"dtype\":\"f64[4]\",\"units\":\"1\","
+      "\"frame\":\"GCRF->body Hamilton scalar-first\"},"
+      "{\"name\":\"w_b_radps\",\"dtype\":\"f64[3]\",\"units\":\"rad/s\","
+      "\"frame\":\"body\"},"
+      "{\"name\":\"mass_kg\",\"dtype\":\"f64\",\"units\":\"kg\",\"frame\":\"\"}"
+      "]},"
+      "{\"name\":\"events\",\"rate_hz\":0,\"channels\":["
+      "{\"name\":\"t_s\",\"dtype\":\"f64\",\"units\":\"s\",\"frame\":\"\"},"
+      "{\"name\":\"code\",\"dtype\":\"u32\",\"units\":\"1\",\"frame\":\"\"},"
+      "{\"name\":\"detail\",\"dtype\":\"str16\",\"units\":\"\",\"frame\":\"\"}"
+      "]},"
+      "{\"name\":\"sensors.imu\",\"rate_hz\":100,\"channels\":["
+      "{\"name\":\"t_s\",\"dtype\":\"f64\",\"units\":\"s\",\"frame\":\"\"},"
+      "{\"name\":\"dtheta_b_rad\",\"dtype\":\"f64[3]\",\"units\":\"rad\","
+      "\"frame\":\"body\"},"
+      "{\"name\":\"dv_b_mps\",\"dtype\":\"f64[3]\",\"units\":\"m/s\","
+      "\"frame\":\"body\"}"
+      "]},"
+      "{\"name\":\"sensors.camera\",\"rate_hz\":10,\"channels\":["
+      "{\"name\":\"t_s\",\"dtype\":\"f64\",\"units\":\"s\",\"frame\":\"\"},"
+      "{\"name\":\"r_m\",\"dtype\":\"f64[3]\",\"units\":\"m\",\"frame\":\"GCRF\"},"
+      "{\"name\":\"q_i2b\",\"dtype\":\"f64[4]\",\"units\":\"1\","
+      "\"frame\":\"GCRF->body Hamilton scalar-first\"},"
+      "{\"name\":\"px_uv\",\"dtype\":\"f64[4]\",\"units\":\"px\","
+      "\"frame\":\"image\"}"
+      "]},"
+      "{\"name\":\"nav.est\",\"rate_hz\":100,\"channels\":["
+      "{\"name\":\"t_s\",\"dtype\":\"f64\",\"units\":\"s\",\"frame\":\"\"},"
+      "{\"name\":\"x_hat\",\"dtype\":\"f64[7]\",\"units\":\"\",\"frame\":\"\"},"
+      "{\"name\":\"P\",\"dtype\":\"f64[28]\",\"units\":\"\",\"frame\":\"\"}"
+      "]},"
+      "{\"name\":\"nav.err\",\"rate_hz\":100,\"channels\":["
+      "{\"name\":\"t_s\",\"dtype\":\"f64\",\"units\":\"s\",\"frame\":\"\"},"
+      "{\"name\":\"e\",\"dtype\":\"f64[7]\",\"units\":\"\",\"frame\":\"\"}"
+      "]},"
+      "{\"name\":\"nav.innov\",\"rate_hz\":0,\"channels\":["
+      "{\"name\":\"t_s\",\"dtype\":\"f64\",\"units\":\"s\",\"frame\":\"\"},"
+      "{\"name\":\"sensor_id\",\"dtype\":\"u32\",\"units\":\"1\",\"frame\":\"\"},"
+      "{\"name\":\"m\",\"dtype\":\"u32\",\"units\":\"1\",\"frame\":\"\"},"
+      "{\"name\":\"y\",\"dtype\":\"f64[3]\",\"units\":\"\",\"frame\":\"\"},"
+      "{\"name\":\"S\",\"dtype\":\"f64[6]\",\"units\":\"\",\"frame\":\"\"}"
+      "]},"
+      "{\"name\":\"gnc.cmd\",\"rate_hz\":100,\"channels\":["
+      "{\"name\":\"t_s\",\"dtype\":\"f64\",\"units\":\"s\",\"frame\":\"\"},"
+      "{\"name\":\"tau_b_nm\",\"dtype\":\"f64[3]\",\"units\":\"N*m\","
+      "\"frame\":\"body\"},"
+      "{\"name\":\"q_cmd_i2b\",\"dtype\":\"f64[4]\",\"units\":\"1\","
+      "\"frame\":\"GCRF->body Hamilton scalar-first\"},"
+      "{\"name\":\"w_cmd_b_radps\",\"dtype\":\"f64[3]\",\"units\":\"rad/s\","
+      "\"frame\":\"body\"},"
+      "{\"name\":\"valid\",\"dtype\":\"u32\",\"units\":\"1\",\"frame\":\"\"}"
+      "]}]}";
+  CHECK(star::log::SrlogWriter::header_json(v12_fields()) == expected_json);
+
+  // A v1.2 declaration with no GNC groups carries no "gnc" key: pre-Phase-6
+  // configurations differ from v1.1 output in the version words alone.
+  star::log::SrlogHeaderFields plain = v12_fields();
+  plain.cycle_rate_hz = 0;
+  plain.latency_cycles = 0;
+  plain.sensors.clear();
+  plain.nav_est_rate_hz = 0;
+  plain.nav_state_dim = 0;
+  plain.nav_err_enabled = false;
+  plain.nav_innov_enabled = false;
+  plain.nav_innov_max_dim = 0;
+  plain.gnc_cmd_rate_hz = 0;
+  const std::string json = star::log::SrlogWriter::header_json(plain);
+  CHECK(json.find("\"gnc\"") == std::string::npos);
+  CHECK(json.find("\"sensors.") == std::string::npos);
+  CHECK(json.find("\"nav.") == std::string::npos);
+}
+
+TEST_CASE("srlog_v12_record_stream_roundtrip") {
+  // Group indices with no v1.1 groups declared: truth 0, events 1, then
+  // sensors.imu 2, sensors.camera 3, nav.est 4, nav.err 5, nav.innov 6,
+  // gnc.cmd 7 (declaration order).
+  const std::string path = "test_srlog_v12_roundtrip.srlog";
+  {
+    star::log::SrlogWriter writer(path, v12_fields());
+    writer.write_sensor_imu(0.01, Eigen::Vector3d(1e-4, -2e-4, 3e-4),
+                            Eigen::Vector3d(0.05, 0.0, -0.01));
+    const double q_cam[4] = {1.0, 0.0, 0.0, 0.0};
+    const double px[4] = {320.5, 240.25, 100.0, 900.75};
+    writer.write_sensor_camera(0.1, Eigen::Vector3d(7.0e6, 0.0, 0.0), q_cam,
+                               px, 4);
+    const double x_hat[7] = {1.0, 0.0, 0.0, 0.0, 0.01, -0.02, 0.03};
+    double p_upper[28];
+    for (int i = 0; i < 28; ++i) p_upper[i] = 0.5 * i;
+    writer.write_nav_est(0.01, x_hat, 7, p_upper, 28);
+    const double e[7] = {0.0, 1e-6, -1e-6, 0.0, 1e-5, 0.0, -1e-5};
+    writer.write_nav_err(0.01, e, 7);
+    const double y[3] = {0.25, -0.5, 0.0};
+    const double s_upper[6] = {2.0, 0.1, 0.0, 3.0, 0.0, 4.0};
+    writer.write_nav_innov(0.01, 1, 2, y, 3, s_upper, 6);
+    const double q_cmd[4] = {0.0, 1.0, 0.0, 0.0};
+    writer.write_gnc_cmd(0.01, Eigen::Vector3d(0.05, 0.0, -0.05), q_cmd,
+                         Eigen::Vector3d::Zero(), 1);
+    writer.close();
+  }
+  const std::vector<unsigned char> bytes = read_all_bytes(path);
+  std::remove(path.c_str());
+
+  const std::uint32_t json_len = read_le<std::uint32_t>(bytes, 12);
+  std::size_t off = 16 + json_len;
+
+  // sensors.imu: index 2; payload = t_s + 2 x f64[3] = 56 bytes.
+  CHECK(read_le<std::uint16_t>(bytes, off) == 2);
+  CHECK(read_le<double>(bytes, off + 2) == 0.01);
+  CHECK(read_le<double>(bytes, off + 10) == 1e-4);   // dtheta_b_rad[0]
+  CHECK(read_le<double>(bytes, off + 26) == 3e-4);   // dtheta_b_rad[2]
+  CHECK(read_le<double>(bytes, off + 34) == 0.05);   // dv_b_mps[0]
+  CHECK(read_le<double>(bytes, off + 50) == -0.01);  // dv_b_mps[2]
+  off += 2 + 56;
+
+  // sensors.camera: index 3; payload = t_s + r(3) + q(4) + px(4) = 96 bytes.
+  CHECK(read_le<std::uint16_t>(bytes, off) == 3);
+  CHECK(read_le<double>(bytes, off + 2) == 0.1);
+  CHECK(read_le<double>(bytes, off + 10) == 7.0e6);    // r_m[0]
+  CHECK(read_le<double>(bytes, off + 34) == 1.0);      // q_i2b[0] scalar first
+  CHECK(read_le<double>(bytes, off + 66) == 320.5);    // px_uv[0]
+  CHECK(read_le<double>(bytes, off + 90) == 900.75);   // px_uv[3]
+  off += 2 + 96;
+
+  // nav.est: index 4; payload = t_s + x_hat(7) + P(28) = 288 bytes.
+  CHECK(read_le<std::uint16_t>(bytes, off) == 4);
+  CHECK(read_le<double>(bytes, off + 2) == 0.01);
+  CHECK(read_le<double>(bytes, off + 10) == 1.0);      // x_hat[0] = q_w
+  CHECK(read_le<double>(bytes, off + 58) == 0.03);     // x_hat[6]
+  CHECK(read_le<double>(bytes, off + 66) == 0.0);      // P[0]
+  CHECK(read_le<double>(bytes, off + 282) == 13.5);    // P[27] = 0.5 * 27
+  off += 2 + 288;
+
+  // nav.err: index 5; payload = t_s + e(7) = 64 bytes.
+  CHECK(read_le<std::uint16_t>(bytes, off) == 5);
+  CHECK(read_le<double>(bytes, off + 18) == 1e-6);     // e[1]
+  CHECK(read_le<double>(bytes, off + 58) == -1e-5);    // e[6]
+  off += 2 + 64;
+
+  // nav.innov: index 6; payload = t_s + u32 + u32 + y(3) + S(6) = 88 bytes.
+  CHECK(read_le<std::uint16_t>(bytes, off) == 6);
+  CHECK(read_le<double>(bytes, off + 2) == 0.01);
+  CHECK(read_le<std::uint32_t>(bytes, off + 10) == 1);  // sensor_id (camera)
+  CHECK(read_le<std::uint32_t>(bytes, off + 14) == 2);  // m
+  CHECK(read_le<double>(bytes, off + 18) == 0.25);      // y[0]
+  CHECK(read_le<double>(bytes, off + 34) == 0.0);       // y[2] zero-filled
+  CHECK(read_le<double>(bytes, off + 42) == 2.0);       // S[0] = S_00
+  CHECK(read_le<double>(bytes, off + 82) == 4.0);       // S[5] = S_22
+  off += 2 + 88;
+
+  // gnc.cmd: index 7; payload = t_s + tau(3) + q(4) + w(3) + u32 = 92 bytes.
+  CHECK(read_le<std::uint16_t>(bytes, off) == 7);
+  CHECK(read_le<double>(bytes, off + 10) == 0.05);      // tau_b_nm[0]
+  CHECK(read_le<double>(bytes, off + 34) == 0.0);       // q_cmd_i2b[0]
+  CHECK(read_le<double>(bytes, off + 42) == 1.0);       // q_cmd_i2b[1]
+  CHECK(read_le<std::uint32_t>(bytes, off + 90) == 1);  // valid
+  off += 2 + 92;
+
+  // No footer, no trailing bytes.
+  CHECK(off == bytes.size());
+}
+
+TEST_CASE("srlog_v12_declaration_validation") {
+  // Every rejection happens in header_json (shared with the constructor).
+  // A GNC group without a cycle rate has no grid to decimate from.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.cycle_rate_hz = 0;
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // Sensor rates must divide the cycle rate exactly.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.sensors = {{"imu", 3, 0}};  // 100 % 3 != 0
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // The kind subset must come from the canonical vocabulary, in canonical
+  // order, without duplicates.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.sensors = {{"lidar", 10, 0}};
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.sensors = {{"imu", 100, 0}, {"imu", 50, 0}};
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.sensors = {{"camera", 10, 2}, {"imu", 100, 0}};  // canonical order broken
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // Landmarks are a camera-only parameter.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.sensors = {{"imu", 100, 3}};
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // nav.est needs rate and dimension jointly.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.nav_state_dim = 0;
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // nav.err cannot exist without nav.est (shared rate and dimension).
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.nav_est_rate_hz = 0;
+    f.nav_state_dim = 0;
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // The covariance dimension qualifies the nav.est declaration and cannot
+  // stand alone.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.nav_est_rate_hz = 0;
+    f.nav_state_dim = 0;
+    f.nav_err_enabled = false;
+    f.nav_cov_dim = 15;
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // An independently declared covariance dimension changes only the P
+  // channel: the error-state EKF layout (a later workstream) declares
+  // n = 16 (q, v, p, b_g, b_a) with m = 15, so P is f64[120] while x_hat
+  // and nav.err.e stay f64[16].
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.nav_state_dim = 16;
+    f.nav_cov_dim = 15;
+    const std::string j = star::log::SrlogWriter::header_json(f);
+    CHECK(j.find("{\"name\":\"x_hat\",\"dtype\":\"f64[16]\"") !=
+          std::string::npos);
+    CHECK(j.find("{\"name\":\"P\",\"dtype\":\"f64[120]\"") !=
+          std::string::npos);
+    CHECK(j.find("{\"name\":\"e\",\"dtype\":\"f64[16]\"") !=
+          std::string::npos);
+  }
+  // nav.innov needs the sensor-identity table its records index.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.sensors.clear();
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // nav.innov enable flag and maximum dimension are declared jointly.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.nav_innov_max_dim = 0;
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // gnc.cmd rate must divide the cycle rate.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.gnc_cmd_rate_hz = 30;
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // The constructor rejects before creating the output file.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.sensors = {{"warp", 10, 0}};
+    const std::string path = "test_srlog_v12_never_created.srlog";
+    CHECK_THROWS_AS(star::log::SrlogWriter(path, f), std::invalid_argument);
+    std::ifstream probe(path, std::ios::binary);
+    CHECK_FALSE(static_cast<bool>(probe));
+  }
+}
+
+TEST_CASE("srlog_v12_write_calls_guard_declaration_and_dimensions") {
+  const std::string path = "test_srlog_v12_guards.srlog";
+  {
+    // Only sensors.imu and gnc.cmd are declared: the undeclared v1.2 writes
+    // are programming errors, the declared ones write normally.
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.sensors = {{"imu", 100, 0}};
+    f.nav_est_rate_hz = 0;
+    f.nav_state_dim = 0;
+    f.nav_err_enabled = false;
+    f.nav_innov_enabled = false;
+    f.nav_innov_max_dim = 0;
+    star::log::SrlogWriter writer(path, f);
+    const double x[7] = {1, 0, 0, 0, 0, 0, 0};
+    const double p[28] = {0};
+    CHECK_THROWS_AS(writer.write_nav_est(0.0, x, 7, p, 28), std::logic_error);
+    CHECK_THROWS_AS(writer.write_nav_err(0.0, x, 7), std::logic_error);
+    const double y[3] = {0};
+    const double s[6] = {0};
+    CHECK_THROWS_AS(writer.write_nav_innov(0.0, 0, 1, y, 3, s, 6),
+                    std::logic_error);
+    const double q[4] = {1, 0, 0, 0};
+    CHECK_THROWS_AS(writer.write_sensor_startracker(0.0, q, 1),
+                    std::logic_error);
+    CHECK_NOTHROW(writer.write_sensor_imu(0.01, Eigen::Vector3d::Zero(),
+                                          Eigen::Vector3d::Zero()));
+    CHECK_NOTHROW(writer.write_gnc_cmd(0.01, Eigen::Vector3d::Zero(), q,
+                                       Eigen::Vector3d::Zero(), 0));
+    writer.close();
+  }
+  {
+    // Dimension mismatches are caller bugs the writer must refuse rather
+    // than emit a short (corrupt) fixed-stride record.
+    star::log::SrlogWriter writer(path, v12_fields());
+    const double x[7] = {1, 0, 0, 0, 0, 0, 0};
+    const double p[28] = {0};
+    CHECK_THROWS_AS(writer.write_nav_est(0.0, x, 6, p, 28),
+                    std::invalid_argument);
+    CHECK_THROWS_AS(writer.write_nav_est(0.0, x, 7, p, 27),
+                    std::invalid_argument);
+    CHECK_THROWS_AS(writer.write_nav_err(0.0, x, 6), std::invalid_argument);
+    const double y[3] = {0};
+    const double s[6] = {0};
+    CHECK_THROWS_AS(writer.write_nav_innov(0.0, 0, 4, y, 3, s, 6),
+                    std::invalid_argument);  // m > m_max
+    CHECK_THROWS_AS(writer.write_nav_innov(0.0, 0, 0, y, 3, s, 6),
+                    std::invalid_argument);  // m == 0
+    const double q[4] = {1, 0, 0, 0};
+    const double px[2] = {0.0, 0.0};
+    CHECK_THROWS_AS(
+        writer.write_sensor_camera(0.0, Eigen::Vector3d::Zero(), q, px, 2),
+        std::invalid_argument);  // declaration fixes 2 landmarks = 4 values
+    writer.close();
+  }
+  {
+    // Independent covariance dimension (the EKF layout reservation): with
+    // n = 16 and m = 15 declared, x_hat carries 16 doubles and P exactly
+    // 120 - the n-derived 136 is a caller bug.
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.nav_state_dim = 16;
+    f.nav_cov_dim = 15;
+    star::log::SrlogWriter writer(path, f);
+    double x16[16] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    double p136[136] = {0};
+    CHECK_NOTHROW(writer.write_nav_est(0.0, x16, 16, p136, 120));
+    CHECK_THROWS_AS(writer.write_nav_est(0.01, x16, 16, p136, 136),
+                    std::invalid_argument);
+    // nav.err stays at the STATE dimension n = 16.
+    CHECK_NOTHROW(writer.write_nav_err(0.0, x16, 16));
+    CHECK_THROWS_AS(writer.write_nav_err(0.01, x16, 15),
+                    std::invalid_argument);
+    writer.close();
+  }
+  std::remove(path.c_str());
+}
+
+TEST_CASE("srlog_v12_double_write_is_byte_identical") {
+  // Whole-file determinism (FR-21) including every v1.2 group.
+  auto write_once = [](const std::string& path) {
+    star::log::SrlogWriter writer(path, v12_fields());
+    writer.write_event(0.0, 1, "run_start");
+    writer.write_sensor_imu(0.01, Eigen::Vector3d(1e-4, -2e-4, 3e-4),
+                            Eigen::Vector3d(0.05, 0.0, -0.01));
+    const double q_cam[4] = {1.0, 0.0, 0.0, 0.0};
+    const double px[4] = {320.5, 240.25, 100.0, 900.75};
+    writer.write_sensor_camera(0.1, Eigen::Vector3d(7.0e6, 0.0, 0.0), q_cam,
+                               px, 4);
+    const double x_hat[7] = {1.0, 0.0, 0.0, 0.0, 0.01, -0.02, 0.03};
+    double p_upper[28];
+    for (int i = 0; i < 28; ++i) p_upper[i] = 0.5 * i;
+    writer.write_nav_est(0.01, x_hat, 7, p_upper, 28);
+    const double e[7] = {0.0, 1e-6, -1e-6, 0.0, 1e-5, 0.0, -1e-5};
+    writer.write_nav_err(0.01, e, 7);
+    const double y[3] = {0.25, -0.5, 0.0};
+    const double s_upper[6] = {2.0, 0.1, 0.0, 3.0, 0.0, 4.0};
+    writer.write_nav_innov(0.01, 1, 2, y, 3, s_upper, 6);
+    const double q_cmd[4] = {0.0, 1.0, 0.0, 0.0};
+    writer.write_gnc_cmd(0.01, Eigen::Vector3d(0.05, 0.0, -0.05), q_cmd,
+                         Eigen::Vector3d::Zero(), 1);
+    writer.write_event(600.0, 2, "run_end");
+    writer.close();
+  };
+  const std::string p1 = "test_srlog_v12_det_a.srlog";
+  const std::string p2 = "test_srlog_v12_det_b.srlog";
+  write_once(p1);
+  write_once(p2);
+  const std::vector<unsigned char> a = read_all_bytes(p1);
+  const std::vector<unsigned char> b = read_all_bytes(p2);
+  std::remove(p1.c_str());
+  std::remove(p2.c_str());
+  REQUIRE(!a.empty());
+  CHECK(a == b);
 }
 
 TEST_CASE("srlog_v11_double_write_is_byte_identical") {

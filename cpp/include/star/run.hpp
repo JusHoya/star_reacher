@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "star/gnc/config.hpp"
 #include "star/vehicle_config.hpp"
 
 namespace star {
@@ -91,6 +92,12 @@ struct RunConfig {
   std::uint32_t forces_rate_hz = 0;
   std::uint32_t mass_rate_hz = 0;
   std::uint32_t env_rate_hz = 0;
+
+  // --- Phase 6 extension (consumed by run_vehicle only) --------------------
+  // The resolved [gnc]/[sensors.*] surface (D-2, star/gnc/config.hpp).
+  // gnc.enabled == false leaves every earlier path byte-frozen: no v1.2 log
+  // group is declared and the kinematic attitude modes keep sole authority.
+  gnc::GncConfig gnc;
 };
 
 // Run summary returned across the binding: enough for the CLI to print a
@@ -132,19 +139,23 @@ RunSummary run_twobody(const RunConfig& cfg, const std::string& out_path);
 // (the FR-16 forces group lands with the Phase 4 torque channels).
 RunSummary run_env(const RunConfig& cfg, const std::string& out_path);
 
-// Propagate the full 6DOF vehicle case (Phase 4): a staged vehicle
-// (star/vehicle_config.hpp) flown under the composed environment
+// Propagate the full 6DOF vehicle case (Phase 4; Phase 6 GNC): a staged
+// vehicle (star/vehicle_config.hpp) flown under the composed environment
 // (star/models/environment.hpp) plus its own thrust, aerodynamics, and
 // attitude, driven by the open-loop event [[sequence]]. The translational
 // state [r, v] is advanced with fixed-step RK4; attitude, per-tank propellant
 // masses, and per-engine spool/gimbal/ignition states are advanced per control
-// cycle (D-5 zero-order hold). The SRLOG carries the v1.1 truth (with real q
-// and omega), forces, mass, and env groups. Events (pad release, ignition,
-// cutoff, staging/jettison with the FR-10 remap, orbit-insertion, and
+// cycle (D-5 zero-order hold). With cfg.gnc.enabled the GNC chain
+// (nav -> guidance -> control) runs once per control cycle, commands are
+// applied through the latency FIFO, and attitude is integrated dynamically
+// from the applied torque; the SRLOG then adds the v1.2 sensors.*, nav.*,
+// and gnc.cmd groups. Events (pad release, ignition, cutoff,
+// staging/jettison with the FR-10 remap, orbit-insertion, and
 // SOI-transition) are located at control-cycle boundaries; a terminal event
 // stops the run. Defensive re-checks throw std::invalid_argument, matching
 // run_env's check_config_env style. run() and run_env() are byte-frozen and
-// share none of this path.
+// share none of this path; the implementation is a batch loop over the
+// VehicleCycle stepping core (star/vehicle_cycle.hpp).
 RunSummary run_vehicle(const RunConfig& cfg, const std::string& out_path);
 
 }  // namespace star

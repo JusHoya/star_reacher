@@ -326,6 +326,38 @@ Eigen::Matrix3d EnvironmentModel::c_gcrf_to_bodyfixed(double t_s,
   throw std::logic_error("environment: unreachable central-body enum");
 }
 
+Eigen::Vector3d EnvironmentModel::gravitational_acceleration(
+    double t_s, const Eigen::Vector3d& r_m) {
+  // Terms (a) and (b) of acceleration(), verbatim and in the same order, so
+  // acceleration() - gravitational_acceleration() cancels them exactly and
+  // isolates the non-gravitational (sensed) terms; see the header contract
+  // and eq:imu:specificforce.
+  const double tdb_s = eph_.has_value() ? tdb_s_at(t_s) : 0.0;
+  Eigen::Matrix3d c_bf = Eigen::Matrix3d::Identity();
+  if (use_field_) {
+    c_bf = c_gcrf_to_bodyfixed(t_s, tdb_s);
+  }
+  Eigen::Vector3d r_central_ssb = Eigen::Vector3d::Zero();
+  if (eph_.has_value()) {
+    r_central_ssb = central_ssb(tdb_s);
+  }
+
+  Eigen::Vector3d a = Eigen::Vector3d::Zero();
+  if (use_field_) {
+    const Eigen::Vector3d r_bf = c_bf * r_m;
+    a += c_bf.transpose() *
+         gravity_->acceleration(r_bf, tier_, degree_, order_);
+  } else {
+    a += twobody_accel(gm_central_, r_m);
+  }
+  for (const Perturber& p : perturbers_) {
+    const Eigen::Vector3d r_third = body_rel_central(p.body, tdb_s,
+                                                     r_central_ssb);
+    a += thirdbody_accel(p.gm_m3ps2, r_m, r_third);
+  }
+  return a;
+}
+
 Eigen::Vector3d EnvironmentModel::acceleration(double t_s,
                                                const Eigen::Vector3d& r_m,
                                                const Eigen::Vector3d& v_mps) {

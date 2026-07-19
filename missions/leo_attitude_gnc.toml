@@ -1,0 +1,88 @@
+# Closed-loop LEO attitude acquisition of the 150 kg smallsat (Phase 6,
+# FR-23/FR-25): the reference GNC mission the Phase 6 test suite drives.
+# The vehicle free-flies a circular-class LEO state while the built-in chain
+# - ideal IMU, dead-reckoning navigation, attitude-hold guidance, PD
+# control - slews the body 10 degrees about its +Z axis and holds. Attitude
+# is integrated dynamically from the applied command torque (torque-driven
+# rigid-body dynamics); no propulsion or event sequence is involved.
+#
+# provenance "representative": orbit and gains are round, class-plausible
+# values chosen for a well-conditioned closed-loop transient (documented
+# below), not a published spacecraft configuration.
+
+schema_version = 1
+vehicle = "vehicles/smallsat.toml"
+
+[mission]
+name = "leo-attitude-gnc"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 60.0
+
+[run]
+seed = 20260601
+
+[integrator]
+type = "rk4"
+# One control cycle per step (D-5): dt_s = 1 / control_rate_hz exactly.
+dt_s = 0.1
+
+[environment]
+central_body = "earth"
+
+[logging]
+# truth_rate_hz equal to the control rate logs truth every cycle, which is
+# what lets the test suite reconstruct the ideal IMU increments bit-exactly
+# from the truth channels (trapezoidal accumulation over each cycle:
+# dtheta_k = (dt/2) (w_(k-1) + w_k), the sensor chapter's quadrature rule).
+truth_rate_hz = 10
+
+[initial_state.cartesian]
+# Clean-axis LEO state: r along +X, v along +Y (speed ~ circular at 7000 km
+# radius). The Phase 4 initial-attitude rule points body +X prograde (+Y
+# inertial) with body +Y toward +X inertial, giving the exact initial
+# attitude quaternion q0 = [0, sqrt(1/2), sqrt(1/2), 0] (Hamilton
+# scalar-first, D-7).
+r_m = [7.0e6, 0.0, 0.0]
+v_mps = [0.0, 7546.0, 0.0]
+frame = "GCRF"
+
+[gnc]
+control_rate_hz = 10
+latency_cycles = 0
+
+[gnc.nav]
+component = "dead_reckoning"
+# The initial attitude estimate, stated explicitly per the dead-reckoning
+# contract (no implicit truth access). Set to the true initial attitude:
+# exactly [0, sqrt(1/2), sqrt(1/2), 0] by the derivation above.
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+
+[gnc.guidance]
+component = "attitude_hold"
+# The initial attitude rotated 10 degrees about body +Z:
+# q_cmd = q0 (x) [cos 5 deg, 0, 0, sin 5 deg]
+#       = [0, a(c + s), a(c - s), 0],  a = sqrt(1/2), c = cos 5 deg,
+#         s = sin 5 deg
+# so the run opens with a pure 10-degree body-Z tracking error and a clean
+# second-order closed-loop transient.
+q_cmd = [0.0, 0.7660444431189781, 0.6427876096865393, 0.0]
+
+[gnc.control]
+component = "pd_attitude"
+# Per-axis PD gains against the smallsat inertia diag(9, 10, 11) kg*m^2:
+# omega_n = sqrt(kp/I) ~ 0.2 rad/s and zeta = kd / (2 sqrt(kp I)) ~ 0.9
+# (near-critically damped, settled well inside the 60 s window), with the
+# 10 Hz cycle rate ~300x faster than omega_n so the discrete loop behaves
+# like the continuous design.
+kp_nm_per_rad = [0.4, 0.4, 0.4]
+kd_nm_per_radps = [3.6, 3.6, 3.6]
+# Symmetric per-axis saturation at a reaction-wheel-class authority; the
+# opening 10-degree error commands ~0.035 N*m, inside the limit, so the
+# reference transient is linear.
+tau_max_nm = [0.05, 0.05, 0.05]
+
+[sensors.imu]
+# Ideal IMU sampled at the control rate: every cycle contributes exactly one
+# accumulation interval, making the dead-reckoning estimate's per-cycle
+# composition auditable against the truth channels.
+sample_rate_hz = 10
