@@ -507,6 +507,16 @@ _STATISTICS_MISSION = _OPTICAL_GATE_MISSION.replace(
     "sigma_rad = [0.0, 0.0, 0.0]", "sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]"
 ).replace(
     "sigma_rad = 0.0", "sigma_rad = 2.0e-3"
+).replace(
+    # Inclined 45 degrees at the same speed. The criterion-7/9 mission is
+    # equatorial, and on an equatorial orbit the geodetic altitude of
+    # eq:radio:alt degenerates to |r| - a exactly, so the altimeter gate
+    # below would pass unchanged against a spherical radius and could not
+    # detect an implementation that never applied the ellipsoid. Inclining
+    # carries the ground track off the equator within the 60 s window, where
+    # the two altitudes differ by tens of metres against a 0.5 m sigma.
+    "v_mps = [0.0, 7546.0, 0.0]",
+    "v_mps = [0.0, 5335.827770833687, 5335.827770833687]",
 ) + """
 [sensors.navfix]
 sample_rate_hz = 5
@@ -595,7 +605,17 @@ def test_star_tracker_statistic_passes_the_reference_gate(statistics_run):
 
 
 def test_sun_sensor_statistic_passes_the_reference_gate(statistics_run):
-    """Exit criterion 6, sun sensor, re-gated against the blind reference."""
+    """Exit criterion 6, sun sensor, re-gated against the blind reference.
+
+    Sensitivity note, established by mutation: this gate is a statement about
+    the noise model ONLY. At the configured 2 mrad sigma the 1e-4 rad
+    aberration displaces the statistic by (beta/sigma)**2 = 0.0025 against a
+    sampling standard error of 0.115, so feeding the reference the
+    UNABERRATED true direction still passes. Do not read a green result here
+    as corroborating the aberration path; the star tracker above does that,
+    with a sigma an order of magnitude below the displacement, and exit
+    criterion 9 gates it directly.
+    """
     import sensor_stats as stats
     from star_reacher import _core
 
