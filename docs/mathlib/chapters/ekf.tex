@@ -536,10 +536,79 @@ Binding implementation notes for the Phase~6 module:
 \section{Validation evidence}
 \label{sec:ekf:validation}
 
-This chapter precedes its module; the validation-evidence table with
-machine-checked test identifiers is added by the implementing change.
-The planned gates, mirroring Phase~6 exit criterion~3 (with criteria
-5 and~6 adjacent):
+This chapter specifies two separable pieces, and only the second has
+landed. The reference error-state filter of
+Sections~\ref{sec:ekf:purpose}--\ref{sec:ekf:implementation} is
+\emph{not} yet implemented; its gates remain a plan and are listed after
+the table. The consistency statistics of
+Section~\ref{sec:ekf:consistency} --- equations~\eqref{eq:ekf:nees},
+\eqref{eq:ekf:nis}, \eqref{eq:ekf:ensemble}, and~\eqref{eq:ekf:wh} ---
+are implemented in \texttt{python/star\_reacher/consistency.py} (with the
+quantile evaluator in \texttt{chi2.py}) and are covered by
+Table~\ref{tab:ekf:validation-py}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the consistency statistics and their
+    chi-square gates (pytest, \texttt{tests/python/test\_consistency.py}).}
+  \label{tab:ekf:validation-py}
+  \begin{tabular}{lp{7.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{test_chi2_ppf_matches_published_tables} &
+      The quantile evaluator matches published chi-square table values
+      across the used $(p, k)$ set, and each reference digit is
+      independently cross-checked against the Wilson--Hilferty
+      form~\eqref{eq:ekf:wh}, so a mistranscribed table value cannot
+      silently anchor the suite. \\
+    \testid{test_chi2_ppf_wilson_hilferty_agreement_at_large_dof} &
+      The exact evaluator and the Wilson--Hilferty
+      approximation~\eqref{eq:ekf:wh} agree to the stated relative bound
+      at large degrees of freedom, the regime the ensemble gate uses. \\
+    \testid{test_nees_matches_explicit_inverse} &
+      The Cholesky-solve NEES engine reproduces
+      equation~\eqref{eq:ekf:nees} computed through an explicit matrix
+      inverse to $10^{-10}$ relative --- two paths sharing nothing beyond
+      their inputs. \\
+    \testid{test_packed_triangle_order_is_row_major_upper} &
+      The packed covariance interchange order is row-major upper
+      triangular, fixing the convention the logged \texttt{nav} covariance
+      channels and the engine share. \\
+    \testid{test_consistent_ensemble_nees_gate_passes} &
+      A 100-run, 200-epoch consistent ensemble passes the
+      gate~\eqref{eq:ekf:ensemble}: pooled statistic inside its bounds and
+      at least 95\,\% of epochs inside, with the per-run time-averaged
+      diagnostic holding for about 95\,\% of runs. \\
+    \testid{test_miscalibrated_covariance_fails_nees_gate} &
+      The gate is shown able to fail, in the correct direction: covariance
+      reported at $0.7\times$ truth fails high (overconfident) and
+      $1.4\times$ fails low, with the pooled mean outside the corresponding
+      bound. \\
+    \testid{test_consistent_ensemble_nis_gate_passes} &
+      The same ensemble construction applied to innovations passes the
+      NIS gate of equation~\eqref{eq:ekf:nis}. \\
+    \testid{test_miscalibrated_covariance_fails_nis_gate} &
+      The NIS gate likewise fails, directionally, under a miscalibrated
+      innovation covariance. \\
+    \testid{test_gate_functions_are_deterministic} &
+      Repeated evaluation reproduces every statistic exactly; the engine
+      draws no random numbers (FR-21). \\
+    \testid{test_cli_single_run_overconfident_fails} &
+      FR-26 at the command level: \texttt{star consistency} on a run whose
+      covariance is logged at half its true value reports
+      \texttt{CONSISTENCY: FAIL} and exits nonzero, naming the failure as
+      overconfident. \\
+    \testid{test_cli_ensemble_over_directory} &
+      The command evaluates an ensemble over a directory of runs, the form
+      the exit-criterion-3 driver will invoke. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The gates below specify the reference filter and remain outstanding until
+its module lands; they mirror Phase~6 exit criterion~3 (with criteria 5
+and~6 adjacent):
 \begin{itemize}
   \item \textbf{Ensemble NEES/NIS (exit criterion 3).} On the reference
     consistency scenario (point-mass truth environment, turn-on biases
@@ -564,16 +633,9 @@ The planned gates, mirroring Phase~6 exit criterion~3 (with criteria
   \item \textbf{Covariance hygiene.} Long-run propagation preserves
     symmetry to rounding and positive semi-definiteness (smallest
     eigenvalue bounded) under alternating updates and outages.
-  \item \textbf{Quantile evaluator.} The Wilson--Hilferty values of
-    equation~\eqref{eq:ekf:wh} match tabulated exact quantiles to the
-    stated $5\times10^{-5}$ relative bound across the used $(p, k)$
-    set.
   \item \textbf{Innovation logging (FR-26).} Logged \texttt{nav.innov}
     channels round-trip through the loader and reproduce the
-    filter-internal values exactly; \texttt{star consistency} on a
-    single run reports the per-run diagnostics and exits nonzero when
-    fed an inconsistent (deliberately mistuned) run --- the gate is
-    shown able to fail.
+    filter-internal values exactly.
 \end{itemize}
 
 \section{References}

@@ -120,3 +120,18 @@ label = "ch:aero"
 module = "cpp/src/models/vehicle6dof.cpp"
 chapter = "docs/mathlib/chapters/vehicle6dof.tex"
 label = "ch:vehicle6dof"
+
+[[chapter]]
+module = "cpp/src/sensors/imu_ideal.cpp"
+chapter = "docs/mathlib/chapters/sensors_imu.tex"
+label = "ch:sensors-imu"
+
+[[chapter]]
+module = "cpp/src/gnc/builtin.cpp"
+chapter = "docs/mathlib/chapters/gnc_builtin.tex"
+label = "ch:gnc-builtin"
+
+[[chapter]]
+module = "python/star_reacher/consistency.py"
+chapter = "docs/mathlib/chapters/ekf.tex"
+label = "ch:ekf"

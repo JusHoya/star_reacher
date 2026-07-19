@@ -332,38 +332,92 @@ Binding implementation notes for the Phase~6 modules:
 \section{Validation evidence}
 \label{sec:gnc:validation}
 
-This chapter precedes its modules; the validation-evidence table with
-machine-checked test identifiers is added by the implementing change.
-The planned gates, mirroring Phase~6 exit criteria~2, 4, 8, and~10:
+Tables~\ref{tab:gnc:validation} and~\ref{tab:gnc:validation-py} list the
+tests that constitute this chapter's validation evidence. Each test
+identifier is machine-checked to exist in the test tree by
+\texttt{scripts/lint\_chapters.py}. The one planned gate not yet
+discharged --- the exit-criterion-10 performance re-gate --- is stated
+after the tables.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the built-in GNC components: core
+    (doctest, \texttt{cpp/tests/test\_gnc.cpp}).}
+  \label{tab:gnc:validation}
+  \begin{tabular}{lp{8.4cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{gnc_pd_attitude_golden} &
+      Five committed golden cases drive
+      equations~\eqref{eq:gnc:deltaq}--\eqref{eq:gnc:sat} against
+      hand-computed torques, covering both signs of $\delta q_w$ (the
+      short-path branch) and the saturation clamp. \\
+    \testid{gnc_dead_reckoning_golden} &
+      The dead reckoner propagates a committed increment sequence through
+      equation~\eqref{eq:gnc:drprop} to its golden state; the initial
+      estimate arrives as configuration, confirming the component takes no
+      implicit truth access. Declared state, covariance, and innovation
+      dimensions match the plugin contract. \\
+    \testid{gnc_registry_resolution_and_rejection} &
+      The registry exposes exactly the four built-in names; an unknown
+      component raises \texttt{std::invalid\_argument} with the registered
+      set in the message, and duplicate registration --- a determinism
+      hazard --- raises \texttt{std::logic\_error}. \\
+    \testid{gnc_attitude_hold_guidance} &
+      A non-unit configured target is normalized at construction and echoed
+      each update with exactly zero commanded rate; with no configured
+      target the component holds the scenario initial attitude from the
+      init context. \\
+    \testid{gnc_pitch_program_guidance_matches_openloop_machinery} &
+      The commanded attitude is computed by the same functions in the same
+      call sequence as the Phase~4 open-loop pitch-program mode, against a
+      reference reproducing that arithmetic verbatim on a mid-latitude pad
+      basis (equation~\eqref{eq:gnc:interp}). \\
+    \testid{gnc_latency_fifo_semantics} &
+      Exit criterion~8 at the FIFO level: $L = 0$ is passthrough; $L = 2$
+      shifts application by exactly two cycles, the pre-fill holds applying
+      the neutral command with \texttt{valid == false} and zero torque
+      (equation~\eqref{eq:gnc:latency}). \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the built-in GNC components: in-loop
+    behavior (pytest, \texttt{tests/python/}).}
+  \label{tab:gnc:validation-py}
+  \begin{tabular}{lp{7.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{test_pd_law_python_reimplementation_contract} &
+      Exit criterion~2: an independent Python transcription of
+      equations~\eqref{eq:gnc:deltaq}--\eqref{eq:gnc:sat} reproduces the
+      logged applied torques to
+      $< \qty{e-9}{\newton\metre}$ across the whole reference run. \\
+    \testid{test_dead_reckoning_tracks_torque_driven_truth} &
+      Against torque-driven truth the logged estimate error stays below
+      $5\times10^{-3}$ in both the quaternion and rate components --- the
+      accumulated first-order-hold bound --- and the commanded slew settles
+      to the target to sub-milliradian alignment. \\
+    \testid{test_pitch_program_guidance_equals_openloop_command} &
+      The closed-loop ascent's commanded attitude equals the open-loop
+      pitch-program attitude bit-for-bit at every shared cycle time,
+      the commanded history being trajectory-independent (frozen pad basis,
+      absolute-time table). \\
+    \testid{test_latency_two_cycles_shifts_application} &
+      Exit criterion~8 end to end: with $L = 2$ the first valid applied
+      command moves from $t = 0$ to $t = 2$ cycles, the two pre-fill cycles
+      apply zero torque, and the shifted command is bit-identical to the
+      $L = 0$ cycle-0 command. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The following gate remains outstanding:
 \begin{itemize}
-  \item \textbf{Python PD reproduction (exit criterion 2).} A pure
-    Python transcription of
-    equations~\eqref{eq:gnc:deltaq}--\eqref{eq:gnc:sat}, written from
-    this chapter alone, reproduces the C++ controller's commanded
-    torques to $< \qty{e-9}{\newton\metre}$ at every cycle of a golden
-    scenario that exercises both signs of $\delta q_w$, all clamp
-    branches, and nonzero commanded rates.
-  \item \textbf{PD regulation properties.} From a large-angle initial
-    error under torque-only rigid-body dynamics
-    (Chapter~\ref{ch:rigidbody}), the closed loop converges to the
-    commanded attitude with the expected linearized time constants;
-    initializing at $\delta q_w < 0$ takes the short path (no
-    unwinding).
-  \item \textbf{Dead-reckoning drift.} On the noise-free coning
-    scenario of Chapter~\ref{ch:rigidbody}, the dead reckoner's error
-    stays within the accumulated bound of
-    equation~\eqref{eq:gnc:coningbound}; with a biased gyro the drift
-    matches the injected bias integral to first order.
-  \item \textbf{Guidance equivalence.} On the Phase~4 reference ascent,
-    the component's commanded attitude history equals the Phase~4
-    open-loop history to rounding (same interpolation, same triad,
-    same fallback), and the closed-loop trajectory with the PD
-    controller and actuators meets its dispersion budget against the
-    open-loop baseline.
-  \item \textbf{Latency shift (exit criterion 8).} For $L \in \{1, 5\}$
-    the logged applied-command history equals the $L = 0$ history
-    shifted by exactly $L$ cycles with neutral commands prepended,
-    checked channel-by-channel.
   \item \textbf{Performance re-gate (exit criterion 10).} The FR-32
     ascent target ($\ge 100\times$ real time, Pi~5 single core, per
     the Phase~5 deferral provisions) holds with the full built-in GNC

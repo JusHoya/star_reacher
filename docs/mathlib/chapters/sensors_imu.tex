@@ -503,9 +503,67 @@ Binding implementation notes for the Phase~6 module:
 \section{Validation evidence}
 \label{sec:imu:validation}
 
-This chapter precedes its module; the validation-evidence table with
-machine-checked test identifiers is added by the implementing change.
-The planned gates, mirroring Phase~6 exit criterion~1:
+The module implementing this chapter has landed in part. The zero-error
+special case of the measurement model --- the increment interface, its
+trapezoidal quadrature~\eqref{eq:imu:quadrature}, and the sample-and-reset
+semantics --- is implemented in \texttt{cpp/src/sensors/imu\_ideal.cpp} and
+is covered by the tables below. The error chain of
+equations~\eqref{eq:imu:gyro}--\eqref{eq:imu:quant} and the Allan machinery
+of Section~\ref{sec:imu:recovery} are \emph{not} yet implemented; their
+gates remain a plan and are listed separately at the end of this section,
+so the tables state only evidence that exists.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the ideal (zero-error) IMU: core
+    (doctest, \texttt{cpp/tests/test\_sensors.cpp},
+    \texttt{cpp/tests/test\_gnc\_cycle.cpp}).}
+  \label{tab:imu:validation}
+  \begin{tabular}{lp{8.4cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{sensors_ideal_imu_trapezoidal_accumulation_and_reset} &
+      Two cycles of held endpoint kinematics, with $\Delta t$ and endpoint
+      values chosen exactly representable in binary64, accumulate to the
+      trapezoidal sums of equation~\eqref{eq:imu:quadrature} under bit
+      equality (not a tolerance); \texttt{sample()} then resets the
+      accumulators, so the following interval integrates only its own
+      cycle. \\
+    \testid{sensors_factory_kind_vocabulary} &
+      The factory constructs the \texttt{imu} kind at its configured rate
+      and rejects both an unimplemented sensor kind and a zero sample rate
+      by \texttt{std::invalid\_argument} --- refusal by name rather than a
+      stub, so an unimplemented FR-23 kind cannot silently enter a run. \\
+    \testid{gnc_cycle_double_run_is_byte_identical} &
+      Exit criterion~1 bit identity at the whole-file level: two runs of
+      the same seeded GNC scenario on the same binary produce
+      byte-identical logs, covering the sensor channels. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the ideal (zero-error) IMU: in-loop
+    increments (pytest, \texttt{tests/python/}).}
+  \label{tab:imu:validation-py}
+  \begin{tabular}{lp{7.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{test_ideal_imu_increments_bit_exact} &
+      On a logged free-flyer run the emitted $\Delta\vv{\theta}$ equals the
+      quadrature~\eqref{eq:imu:quadrature} of the logged truth rate over
+      the preceding cycle under array bit equality, and $\Delta\vv{v}$ is
+      exactly zero --- an accelerometer in free fall reads zero
+      (equation~\eqref{eq:imu:specificforce}). \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The gates below specify the error-chain model and remain outstanding until
+its module lands; they mirror Phase~6 exit criterion~1:
 \begin{itemize}
   \item \textbf{Golden increments.} Deterministic error chain
     (all noise coefficients zero; fixed $\mat{M}$, biases, quantum)
@@ -528,8 +586,6 @@ The planned gates, mirroring Phase~6 exit criterion~1:
     match the analytic integral of the body rate to the quadrature
     bound of equation~\eqref{eq:imu:quaderr}, and are measurably
     distinct from point-sampled $\vv{\omega}(t_k)\Delta t_s$.
-  \item \textbf{Bit identity.} Two runs of the same seeded scenario
-    produce byte-identical sensor channels (exit criterion~1).
 \end{itemize}
 
 \section{References}
