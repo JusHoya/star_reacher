@@ -151,7 +151,13 @@ RAW_FIELDS = {
 
 
 def run_variant(
-    name: str, spec: dict, n_runs: int, n_raw: int, outdir: Path, workdir: Path
+    name: str,
+    spec: dict,
+    n_runs: int,
+    n_raw: int,
+    outdir: Path,
+    workdir: Path,
+    slim: bool = False,
 ) -> None:
     base = driver.MISSION.read_text()
     workdir.mkdir(parents=True, exist_ok=True)
@@ -176,14 +182,24 @@ def run_variant(
             e15 = driver.reduce_error(run.groups["nav.err"]["e"])
             p_packed = run.groups["nav.est"]["P"]
             nees_runs.append(nees(e15, p_packed))
-            block_runs.append(block_nees(e15, p_packed))
             t_s = run.groups["nav.err"]["t_s"]
+            # NIS stays even in slim mode: criterion 3 gates on the three
+            # per-sensor NIS statistics as well as NEES, so a pass-probability
+            # ensemble that omitted them would answer a narrower question than
+            # the one being asked.
             for sensor_id, (y, s) in driver._per_sensor_innovations(
                 run.groups["nav.innov"]
             ).items():
                 nis_runs.setdefault(sensor_id, []).append(nis(y, s))
-            if index < n_raw:
+            if not slim:
+                block_runs.append(block_nees(e15, p_packed))
+            if index < n_raw and not slim:
+                # A variant that drops a sensor has no group for it; the raw
+                # cache records what the run actually produced rather than
+                # insisting on the full reference channel set.
                 for group, fields in RAW_FIELDS.items():
+                    if group not in run.groups:
+                        continue
                     for field in fields:
                         raw["raw%02d_%s_%s" % (index, group, field)] = run.groups[
                             group
@@ -195,13 +211,22 @@ def run_variant(
 
     payload = {
         "nees": np.stack(nees_runs),
-        "block_nees": np.stack(block_runs),
         "t_s": np.asarray(t_s),
         "n_runs": np.asarray(n_runs),
     }
     for sensor_id, arrays in nis_runs.items():
         payload["nis_%d" % sensor_id] = np.stack(arrays)
-    payload.update(raw)
+    if slim:
+        # A pass-probability ensemble is thousands of runs; single precision
+        # is far below the sampling spread being measured and keeps the cache
+        # a tenth the size.
+        payload["nees"] = payload["nees"].astype(np.float32)
+        for sensor_id in nis_runs:
+            key = "nis_%d" % sensor_id
+            payload[key] = payload[key].astype(np.float32)
+    else:
+        payload["block_nees"] = np.stack(block_runs)
+        payload.update(raw)
     path = outdir / ("%s.npz" % name)
     np.savez_compressed(path, **payload)
     grand = payload["nees"].mean()
@@ -281,6 +306,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-runs", type=int, default=1000)
     parser.add_argument("--raw", type=int, default=3)
     parser.add_argument("--only", nargs="*", default=None)
+    parser.add_argument(
+        "--slim",
+        action="store_true",
+        help="cache only the NEES statistic, for large pass-probability "
+        "ensembles",
+    )
+    parser.add_argument("--name", default=None)
     args = parser.parse_args(argv)
 
     outdir = Path(args.out)
@@ -294,7 +326,13 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("unknown variant %r" % name)
         n_runs = args.base_runs if name == "base" else args.runs
         run_variant(
-            name, VARIANTS[name], n_runs, args.raw, outdir, workdir / name
+            args.name or name,
+            VARIANTS[name],
+            n_runs,
+            args.raw,
+            outdir,
+            workdir / name,
+            slim=args.slim,
         )
     return 0
 
