@@ -9,8 +9,10 @@ performance gates it carries the two other Phase 5 exit-criterion clauses
 that name literal Pi 5 hardware — the headless quicklook-plot render (exit
 criterion 1) and the viewer-in-Chromium check (exit criterion 2) — so
 every Pi 5 clause in the phase has exactly one manual home (steps 6
-and 7). It is registered as item 1 of the pre-release checklist
-(`docs/release_checklist.md`). Steps 1–3 also serve as the Pi 5 bring-up
+and 7). From the Phase 6 close it additionally carries that phase's exit
+criterion 10, the ascent target re-gated with the built-in C++ GNC stack in
+the loop, which rides along in step 4 as a fourth metric. It is registered
+as item 1 of the pre-release checklist (`docs/release_checklist.md`). Steps 1–3 also serve as the Pi 5 bring-up
 procedure for any downstream deployment of the simulator: they take a bare
 Raspberry Pi OS image to an installed, verified `star` CLI using only the
 project's standard from-source install (toolchain, clone, `pip install .`,
@@ -82,9 +84,18 @@ to one core with `taskset`; child processes inherit the affinity mask.
    ```
 
    The harness prints one line per metric and `PERF: PASS` or `PERF: FAIL`,
-   and exits nonzero on any failed gate. The three gates are the Phase 5
-   exit criterion 4 absolutes: Mission A wall < 60 s, ascent real-time
-   factor >= 100x, sustained SRLOG write >= 50 MB/s.
+   and exits nonzero on any failed gate. Four gates are measured. Three are
+   the Phase 5 exit criterion 4 absolutes: Mission A wall < 60 s, ascent
+   real-time factor >= 100x, sustained SRLOG write >= 50 MB/s. The fourth,
+   `ascent_gnc_rt_factor`, is **Phase 6 exit criterion 10**: the same >= 100x
+   ascent target re-measured on `missions/ascent_leo_gnc.toml`, which flies
+   the same profile with the built-in C++ GNC chain closing the attitude loop
+   instead of an open-loop pitch-program sequence action. It needs no
+   separate command — the default metric set already includes it.
+
+   Report both ascent factors in the results entry, not just the closed-loop
+   one. Their ratio is the per-cycle cost of the GNC chain on Pi 5 silicon,
+   which is the number a reader wants and which no proxy runner can supply.
 
 5. Repeat step 4 twice more (three runs total, sequential, same command).
    Thermal throttling or SD-card garbage collection shows up as run-to-run
@@ -137,5 +148,5 @@ Record the step 6 file listing and the step 7 PASS/FAIL + Chromium version
 in the same README entry.
 
 A release is qualified against the Pi 5 clauses of Phase 5 exit criteria
-1, 2, and 4 only by this checklist; a green nightly proxy leg is necessary
-but not sufficient.
+1, 2, and 4 and of Phase 6 exit criterion 10 only by this checklist; a
+green nightly proxy leg is necessary but not sufficient.

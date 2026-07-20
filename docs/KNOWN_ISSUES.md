@@ -119,3 +119,39 @@ What the gate does resolve decisively is first-order structure: a sign error on
 first-order equation it names is the one implemented. The limitation is
 recorded so that the 1 mas figure is not read as bounding the second-order
 modelling error, which `ch:sensors-optical` assumption 2 bounds separately.
+
+## KNOWN-ISSUE-P6-3 — the ascent pitch table steps 89.922 degrees at t = 10 s
+
+The pitch table shared by `missions/ascent_leo.toml` and
+`missions/ascent_leo_gnc.toml` holds pitch at exactly 90 degrees — the local
+vertical — from t = 0 to t = 10 s. The pitch-program axis is degenerate there:
+with the commanded body axis along the local vertical, the azimuth cannot be
+resolved. The moment pitch leaves 90 degrees the azimuth resolves and the
+commanded attitude steps **89.922 degrees between two consecutive 0.1 s
+cycles**, against 0.100 degrees for every other cycle in the run.
+
+Open-loop flight never revealed this. The open-loop mission's
+`pitch_program` sequence action sets attitude kinematically, so the true
+attitude simply teleports through the step and the trajectory is unaffected —
+the discontinuity is present in `ascent_leo.toml`'s own logged `truth.q_i2b`
+and has been since Phase 4. Closing the loop is what exposes it: a vehicle
+driven by torque must physically slew through the step. On the closed-loop
+mission the controller saturates briefly and takes roughly 120 s to bleed the
+transient out, which is the whole of the atmospheric phase; tracking error
+peaks at 89.7 degrees at t = 10.1 s and settles to a 0.0083 degree median
+after t = 140 s.
+
+The table is deliberately **not** smoothed. Holding it bit-identical between
+the two missions is what makes
+`tests/python/test_gnc_missions.py::test_pitch_program_guidance_equals_openloop_command`
+meaningful, and changing it would move the Phase 4 ascent goldens and the
+EC-11 3DOF cross-check for a reason unrelated to either.
+
+**Exit-criterion impact: none for criterion 10**, which gates throughput
+rather than tracking accuracy, and the closed-loop mission still reaches
+orbit insertion (180.7 x 3356.1 km, against the open-loop 181 x 3444 km).
+It is recorded because the transient is visible in every plot of the
+closed-loop ascent and would otherwise read as a controller defect, and
+because a smoothed pitch table is the obvious remediation if a future phase
+wants the closed-loop ascent to be a tracking benchmark rather than a
+throughput benchmark.

@@ -25,7 +25,11 @@ register always states what has and has not been run.
 
 - **Carries:** the Pi 5 hardware clauses of Phase 5 exit criteria 1, 2, and 4
   (headless quicklook plots on a Pi 5; viewer in Pi 5 Chromium; the three
-  single-core performance absolutes on real Pi 5 silicon).
+  single-core performance absolutes on real Pi 5 silicon), and the Pi 5
+  hardware clause of **Phase 6 exit criterion 10** (the FR-32 ascent target
+  holding with the built-in C++ GNC stack in the loop). Criterion 10 adds no
+  new step: it is a fourth metric, `ascent_gnc_rt_factor`, measured by the
+  same harness invocation in step 4 and gated at the same >= 100x.
 - **Procedure:** [`docs/perf/pi5_checklist.md`](perf/pi5_checklist.md). Steps
   1–3 of that document double as the generic Pi 5 bring-up procedure
   (toolchain, source build into a fresh venv, `star verify --quick`) for any
@@ -33,8 +37,15 @@ register always states what has and has not been run.
 - **Records to:** `docs/perf/results/` (measurement JSONs plus a README
   entry), per that checklist.
 - **Status:** pending — no Pi 5 hardware is available to the maintainer.
-  Deferred at Phase 5 close (2026-07-07). The nightly `ubuntu-24.04-arm` leg
-  is the interim aarch64 proxy and is never reported as a Pi 5 measurement.
+  Deferred at Phase 5 close (2026-07-07); extended at Phase 6 close
+  (2026-07-19) to carry exit criterion 10 on the same provision. The nightly
+  `ubuntu-24.04-arm` leg is the interim aarch64 proxy and is never reported
+  as a Pi 5 measurement. For the record, the closed-loop GNC ascent measures
+  10,096x real time (median of three) on the maintainer's x86-64 Windows
+  development host against 14,301x for the open-loop ascent on the same
+  host and in the same runs — the GNC chain costs about 1.4x the wall time
+  per simulated second. Neither number is a Pi 5 number and neither
+  discharges this item.
 
 ## 2. MATLAB `parquetread` transcript
 
