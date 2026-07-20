@@ -1,0 +1,269 @@
+# GNC in the loop: the `Sim` stepping API and `--gnc-plugin`
+
+How to drive a mission one control period at a time (FR-24) and how to fly a
+guidance, navigation, or control component you wrote in Python (FR-25).
+
+Both surfaces sit on the same seam. The core's vehicle loop is a cycle object
+advanced one control period per call, and a batch `star run` is literally a
+loop over it — so a stepped run and a batch run of one scenario produce
+byte-identical logs, and a Python component is called by the same registry the
+built-in C++ components come from.
+
+- [1. The stepping API](#1-the-stepping-api)
+- [2. Writing a GNC plugin](#2-writing-a-gnc-plugin)
+- [3. Naming a plugin from a mission file](#3-naming-a-plugin-from-a-mission-file)
+- [4. Running it](#4-running-it)
+- [5. The determinism contract](#5-the-determinism-contract)
+- [6. The trust boundary](#6-the-trust-boundary)
+- [7. The privileged-truth boundary](#7-the-privileged-truth-boundary)
+
+## 1. The stepping API
+
+```python
+from star_reacher.sim import Sim
+
+sim = Sim("missions/leo_attitude_gnc.toml", "out/stepped")
+obs, info = sim.reset()
+while not sim.done():
+    obs = sim.step()
+print(sim.summary())
+```
+
+| Call | Returns | Notes |
+| --- | --- | --- |
+| `reset(seed=None, overrides=None)` | `(obs, info)` | Opens a fresh run and writes the log header. `info` carries `config_sha256`, `srlog_path`, `seed`, `duration_s`, `has_external_command`. |
+| `step(commands=None)` | `obs` | Advances exactly one control period (D-5). |
+| `observe()` | `obs` | The stored snapshot of the most recent cycle. Pure. |
+| `truth()` | `dict` | **Privileged.** The true state at the instant `observe()` describes. |
+| `time()` / `cycle()` | `float` / `int` | The next cycle to be processed. |
+| `done()` | `bool` | True once the run ended and the log is closed. |
+| `summary()` | `dict` | Final state and record tallies; valid once `done()`. |
+| `run_to_completion()` | `dict` | Steps to the end and returns the summary. |
+
+`observe()` is idempotent: it runs no component, draws no random number,
+consumes no sensor sample, and returns fresh dicts rather than views into core
+buffers, so two calls without an intervening `step()` are equal. `truth()` is
+a deliberately separate call, so an observation handed to an agent can never
+contain truth by accident.
+
+### Commanding a run
+
+`step(commands)` addresses the `external` component, which a mission selects
+in its guidance or control slot:
+
+```toml
+[gnc.control]
+component = "external"
+```
+
+```python
+sim.step({"torque_b_nm": [0.0, 0.0, 0.02]})   # command
+sim.step()                                     # hold: the command persists
+```
+
+`commands` accepts `torque_b_nm`, `omega_b_radps`, `q_i2b` (scalar-first
+`(w, x, y, z)`), and `valid`. **Unknown keys raise** — a silently dropped
+command is indistinguishable from a vehicle that refused to manoeuvre.
+**Missing keys hold** (D-5 zero-order hold) **and are logged**: `gnc.cmd`
+carries the command as applied on every control cycle, so a held field is
+written out again rather than leaving a gap the reader must guess at.
+
+Commanding a mission whose slots are all autonomous raises. A batch
+`star run` of an `external` mission is legal and flies the initial hold —
+zero torque, the activation attitude, the valid flag clear — which is the
+honest reading of "nobody is commanding".
+
+### `reset(overrides=...)`
+
+An override key is a dotted path into the resolved mission; an integer
+segment indexes a list:
+
+```python
+sim.reset(overrides={
+    "mission.duration_s": 120.0,
+    "gnc.control.kp_nm_per_rad": [0.5, 0.5, 0.5],
+    "sequence.0.t_s": 3.0,
+})
+```
+
+`duration_s` and `latency_cycles` remain accepted as bare shorthands.
+Overrides are applied **before** the configuration is hashed, so an overridden
+run carries its own `config_sha256` and is individually reproducible.
+
+What is refused, and why:
+
+- **A path the mission does not already set.** Inventing a key would produce a
+  configuration the validator never saw.
+- **Strings and whole tables.** Those select *structure* — a component name, a
+  frame, a file path — whose consequences the mission validator checked and
+  this path cannot recheck.
+- **A value that does not match the leaf in kind and length.** An integer leaf
+  takes an integer, so a count cannot silently become fractional and change
+  the canonical config bytes without changing the run.
+
+Numeric **range** is not rechecked. The core's construction checks are the
+backstop and fail with a named reason, so an override can produce a loud
+failure but never a run whose configuration was never validated at all.
+
+## 2. Writing a GNC plugin
+
+A plugin is a Python file declaring a module-level `STAR_GNC_COMPONENTS`
+mapping bare names to factories. A factory is called with the slot's
+`GncComponentCfg` and returns an `IGncComponent` subclass instance — a class
+with a one-argument `__init__` is such a callable.
+
+```python
+from star_reacher.sim import GncOutput, IGncComponent
+
+
+class MyControl(IGncComponent):
+    def __init__(self, cfg):
+        super().__init__()               # required by the pybind11 trampoline
+        self.kp = [float(x) for x in cfg.vectors["kp_nm_per_rad"]]
+
+    def init(self, ctx):
+        """One-time setup. ctx carries t0, q0, the pad basis when the mission
+        is a geodetic launch, the central-body constants, and the run's
+        configured sensor model."""
+
+    def update(self, inp):
+        """Called once per control cycle, in the fixed order nav -> guidance
+        -> control. Return a GncOutput; valid = False means hold."""
+        out = GncOutput()
+        out.valid = True
+        out.torque_b_nm = [0.0, 0.0, 0.0]
+        return out
+
+
+STAR_GNC_COMPONENTS = {"my_control": MyControl}
+```
+
+An estimator additionally overrides `state_dim()` and `state()`, and may
+override `cov_dim()` / `covariance_upper()`, `innov_max_dim()` /
+`innovations()`, and `error_state(truth)`. Those hooks are what let the loop
+log `nav.est`, `nav.err`, and `nav.innov` generically for any estimator
+dimension. A wrong-length return raises rather than being silently truncated.
+
+A worked example — the built-in `pd_attitude` law reimplemented in Python and
+validated against it — is at
+[`examples/gnc_plugins/pd_attitude.py`](../examples/gnc_plugins/pd_attitude.py).
+
+## 3. Naming a plugin from a mission file
+
+A mission selects a plugin component in the reserved `python:` namespace, in
+any of the three chain slots:
+
+```toml
+[gnc.control]
+component = "python:my_control"
+kp_nm_per_rad = [0.4, 0.4, 0.4]
+```
+
+The prefix earns its place three times over:
+
+- **The validator stays strict.** Mission validation works without a compiled
+  core and without the plugin, so it cannot check a plugin name against a
+  registry. It checks the grammar instead — and because an unprefixed name is
+  still matched against the built-in vocabulary, a misspelt built-in like
+  `dead_reckonning` remains a hard error rather than being waved through as
+  "probably a plugin". That the name matches something the plugin really
+  declares is checked once the file is loaded, naming the slot if it does not.
+- **A plugin cannot shadow a built-in.** `python:pd_attitude` and
+  `pd_attitude` are different registry keys. Which one flies is decided by the
+  mission file, visibly, and never by load order.
+- **The mission states its own dependency.** A reader can see the run needs a
+  plugin, and running without one fails naming the slot.
+
+Parameter **keys** in a plugin slot are the plugin's contract, not the
+validator's — it cannot know them. Their **values** are still held to the rule
+`GncComponentCfg` imposes: a finite number, or a non-empty array of finite
+numbers. A parameter the plugin does not recognize is the plugin's to reject.
+
+## 4. Running it
+
+```console
+$ star run missions/leo_attitude_gnc_plugin.toml \
+      --gnc-plugin examples/gnc_plugins/pd_attitude.py
+```
+
+`--gnc-plugin` is repeatable, so a navigation plugin and a control plugin may
+come from separate files. Two files declaring one name is an error, because
+the flown component would otherwise depend on flag order.
+
+`meta.json` records each plugin file's path and SHA-256. The resolved-config
+hash covers the mission, not the plugin source, so without that record two
+runs of one mission against two revisions of a plugin would be
+indistinguishable in their artifacts.
+
+The same mission is steppable:
+
+```python
+Sim(mission, outdir, gnc_plugins=["examples/gnc_plugins/pd_attitude.py"])
+```
+
+## 5. The determinism contract
+
+A plugin component runs **inside** the deterministic time loop. The core's
+guarantee — same inputs on the same binary give bit-identical outputs — then
+holds only as far as the plugin's Python does. The core cannot enforce this,
+so it is a contract, restated by the CLI whenever `--gnc-plugin` is used:
+
+- **No clock.** The core never reads wall time and the log carries no host
+  data; a component that does breaks reproducibility and leaks host state.
+- **No I/O and no network.**
+- **No unseeded randomness.** Seed a private generator from data the run
+  already fixes; never draw from a global generator another component could
+  also advance.
+- **No iteration over `set` or `frozenset`.** String hash values vary per
+  process unless `PYTHONHASHSEED` is fixed. Sort first, or use a list.
+- **No mutable global state** between components or across runs, and no
+  dependence on garbage-collection timing or `id()`.
+
+Arithmetic is fine: Python floats are IEEE-754 doubles and NumPy `float64`
+operations are deterministic for a fixed library version. Reductions over very
+large arrays may differ between NumPy builds that change the pairwise
+summation order.
+
+What *is* guaranteed regardless: the core calls a component exactly once per
+stage per control cycle, in the fixed order nav → guidance → control, with
+inputs that depend only on the configuration and the seed.
+
+## 6. The trust boundary
+
+**Loading a plugin executes that file's code with the full privileges of the
+process running `star`.** That is inherent in the requirement — a plugin is a
+program, not data — and nothing here sandboxes it.
+
+What is guaranteed is that this is the *only* path by which a run executes a
+file the mission did not already name:
+
+- plugins load only from paths given explicitly on the command line;
+- they are never fetched over a network;
+- they are never discovered by scanning the working directory.
+
+A mission TOML alone can therefore never cause code execution. Naming
+`python:something` in a mission produces an *error* without the flag, never an
+implicit search. It takes a second, explicit act by the person running the
+command.
+
+## 7. The privileged-truth boundary
+
+Truth does not appear in `GncInput`. A component sees the true state only
+through `GncInput.oracle`, and only when the scenario sets `oracle = true` —
+a debug flag stamped into the log header, so a run that used it cannot be
+mistaken for one that did not. `Sim.truth()` is a separate, privileged
+accessor that no component can reach.
+
+One channel is contractual rather than mechanical, and is called out here
+because reading the loop would not reveal it. `IGncComponent.error_state(truth)`
+exists so the loop can log `nav.err` — truth minus estimate in the estimator's
+own state convention, which only the estimator can compute. It is therefore
+called for **every** estimator on every cycle, regardless of the oracle flag,
+and it is handed the real truth state. An implementation is told not to retain
+that argument, and nothing enforces it.
+
+The exposure is bounded to estimators: `error_state()` is called only when
+`state_dim() > 0`, so a guidance or control plugin is never offered truth.
+Closing it mechanically would mean giving up `nav.err` for plugin estimators,
+a trade this project has not made. A plugin estimator that cheats produces an
+implausibly good `nav.err`, which is what a reviewer should look at.

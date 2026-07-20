@@ -261,5 +261,11 @@ def test_component_vocabulary_matches_core_registry():
     core_side = sorted(
         name for name in _core.gnc_component_names()
         if not name.startswith("test_")  # doctest probe registrations
+        # FR-25 plugin components live in a namespace disjoint from the
+        # built-in vocabulary by design: mission.py validates them by grammar
+        # because it cannot see a plugin, and the loader proves them real
+        # against the file. Including them here would assert that the static
+        # mirror knows names that only exist once a --gnc-plugin was passed.
+        and not name.startswith(mission._GNC_PLUGIN_PREFIX)
     )
     assert python_side == core_side

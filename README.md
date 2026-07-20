@@ -126,6 +126,35 @@ run.events                         # structured array of (t_s, code, detail)
 
 `star export` writes CSV (one file per channel group, floats via `repr` so every value round-trips to full stored precision), NPZ (one pickle-free archive holding every group, the events, and the header — the bit-exact ML-training interchange), and Parquet (one file per group, behind the `pyarrow` extra) — the flags combine freely. Format contracts live in [`docs/formats/`](docs/formats/).
 
+## GNC in the loop
+
+Two surfaces sit on the same seam, and the full guide is [`docs/gnc_plugins.md`](docs/gnc_plugins.md).
+
+**Step a mission one control period at a time.** The core's vehicle loop is a cycle object advanced one period per call, and a batch `star run` is literally a loop over it — so a stepped run and a batch run of one scenario produce byte-identical logs by construction, not by a comparison test.
+
+```python
+from star_reacher.sim import Sim
+
+sim = Sim("missions/leo_attitude_gnc.toml", "out/stepped")
+obs, info = sim.reset()                        # -> (observation, {config_sha256, seed, ...})
+while not sim.done():
+    obs = sim.step()                           # one control period; ZOH commands
+sim.truth()                                    # privileged: never reaches a GNC component
+```
+
+`observe()` is pure — two reads without an intervening `step()` are equal. `step(commands)` drives a mission whose guidance or control slot is the `external` component: unknown command keys raise, and missing keys hold and are logged to `gnc.cmd` on every cycle.
+
+**Fly a component you wrote in Python, with no recompilation.** A plugin file declares `STAR_GNC_COMPONENTS = {"my_control": MyControl}`; a mission names it in the reserved `python:` namespace; `--gnc-plugin` loads it.
+
+```console
+$ star run missions/leo_attitude_gnc_plugin.toml \
+      --gnc-plugin examples/gnc_plugins/pd_attitude.py
+```
+
+The prefix keeps validation strict without a core or a plugin present — a misspelt built-in is still a hard error, not a presumed plugin — and makes a plugin unable to shadow a built-in, since the namespaces are disjoint. The shipped [example](examples/gnc_plugins/pd_attitude.py) reimplements the built-in `pd_attitude` law and commands torques identical to it on the reference mission, which is what makes it a check on the seam rather than a demonstration that some Python ran.
+
+Two caveats, stated plainly. Loading a plugin **executes its code** with the privileges of the process running `star`; plugins are never fetched over a network and never auto-discovered, so a mission file alone can never cause code execution. And a plugin runs *inside* the deterministic time loop, so bit-identical reruns hold only as far as the plugin's own code does — no clock, no I/O, no unseeded RNG, no set iteration, no mutable global state. The CLI restates that contract every time the flag is used.
+
 ## How to cite
 
 Citation metadata lives in [`CITATION.cff`](CITATION.cff) (validated by `cffconvert` in CI); a CI check (`scripts/check_citation.py`) keeps the BibTeX block below consistent with it field for field. The math-library PDF and the scientific-report PDF both carry the author byline **Melvin Hoyer III** and are built by `star docs`.
