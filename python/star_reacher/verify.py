@@ -21,19 +21,23 @@ scrub-extreme epochs, the decimation bound, and byte-identical
 regeneration), and V021 the Phase 5 plot pipeline (element array
 preparation against a closed-form circular orbit, a headless Agg PNG
 render, and byte-identical re-rendering), as a quick variant of the full
-golden suite in ``tests/python/test_plot_golden.py``. V022-V028 cover the
+golden suite in ``tests/python/test_plot_golden.py``. V022-V027 cover the
 Phase 6 exit-criterion battery: the stepped/batch agreement of criterion 4,
 the v1.2 schema and oracle header of criterion 5, version coherence, the PD
 reimplementation contract of criterion 2, the aberration recomputation of
 criterion 9, and the EKF ensemble consistency of criterion 3.
 
-TIERS. Every check runs in both tiers except criterion 3's ensemble, whose
-cost forces a split: the full tier runs V027 at the criterion's own R = 100,
-and ``--quick`` runs V028 at R = 28. That is the only difference, it is
-announced on the tier line rather than left implicit, and V028's registered
-title states what the reduced ensemble cannot resolve. A quick tier that
-covered part of a criterion without saying so is how the criterion-4 blind
-spot survived a whole phase.
+TIERS. Every registered check runs in both tiers, criterion 3's ensemble
+(V027) included, at the criterion's own R = 100. Criterion 3 was once split
+into a full-strength and a reduced-strength variant on the premise that the
+100-run ensemble was too costly for ``--quick``; measured, it costs 7.4 s
+against a 60 s budget, so the premise was wrong by an order of magnitude and
+the reduced variant only bought a check whose green meant less than its name
+suggested. One gate, one meaning. The tier machinery below is retained
+because a genuinely expensive check will eventually need it, and whichever
+tier runs, the runner announces on its first line whether any registered
+check is being left out: a quick tier that covered part of a criterion
+without saying so is how the criterion-4 blind spot survived a whole phase.
 """
 
 from __future__ import annotations
@@ -1305,7 +1309,7 @@ def _check_v021(ctx: dict) -> None:
 # would launder a known-weak check into a green line. What lands in this
 # tranche is criteria 4 and 5, which the audit found solid, plus the version
 # coherence that the 0.6.0 bump makes checkable from a bare wheel. Criteria
-# 2, 3 and 9 were remediated afterwards and are wired below as V025-V028,
+# 2, 3 and 9 were remediated afterwards and are wired below as V025-V027,
 # each demonstrated able to fail under mutation before it was registered.
 # Criterion 7's intrinsics clause still has no channel to gate at all and
 # remains listed as a gap in the Phase 6 roadmap entry.
@@ -1618,7 +1622,7 @@ def _check_v024(ctx: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-# Phase 6 checks (V025-V028): the three remediated exit criteria.
+# Phase 6 checks (V025-V027): the three remediated exit criteria.
 #
 # Criteria 2, 3 and 9 were each found by the Phase 6 evidence audit
 # (docs/audit/phase6_evidence_audit.md) to have a gate that passed while
@@ -2335,16 +2339,14 @@ def _check_v026(ctx: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-# V027 / V028: Phase 6 exit criterion 3, at full and at reduced strength.
+# V027: Phase 6 exit criterion 3.
 #
 # The criterion is a conjunction: an R-run seeded ensemble of the reference
 # EKF mission passes ensemble NEES and per-sensor NIS against the
 # eq:ekf:ensemble chi-square bounds, AND re-executing the ensemble reproduces
-# every run's SRLOG SHA-256 bit for bit. V027 runs it at the criterion's
-# R = 100 for the full tier; V028 runs the identical scenario at R = 28 for
-# the quick tier. R is the ONLY difference between them, which is what makes
-# the reduced variant's weakness a single quantified statement rather than an
-# open question - see _V028_RUNS for the derivation and the numbers.
+# every run's SRLOG SHA-256 bit for bit. R = 100 is the criterion's own
+# ensemble size and the only size this check runs at - see _V027_RUNS for why
+# that number, and not a cheaper one, is what the gate needs.
 #
 # The verdict is taken through star_reacher.consistency.ensemble_gate, the
 # FR-26 acceptance instrument, rather than re-derived here. NEES is gated on
@@ -2644,11 +2646,52 @@ def _p6_criterion3(runs: int) -> None:
         )
 
 
+# WHY R = 100 AND NOT A CHEAPER ENSEMBLE. R is the criterion's own figure,
+# but it is also the figure the detection power argues for, and that argument
+# is recorded here so a future cost pressure meets a number rather than a
+# preference.
+#
+# A filter reporting a covariance mis-scaled by a factor f has a per-epoch
+# statistic (1/f) times the consistent one, so the ensemble NEES headline
+# sits at n/f and the gate fires when n/f leaves the eq:ekf:ensemble interval
+# [chi2_0.025(Rn)/R, chi2_0.975(Rn)/R]. That crossing is the 50 %-power
+# point. How much further a mis-scale has to go for reliable detection is set
+# by the headline's own sampling spread: the per-run time-averaged NEES has a
+# measured standard deviation of 3.838 across the 100 runs - against 0.223 if
+# the 601 epochs within a run were independent, so a run carries only about
+# 2.0 effectively independent epochs - which gives the headline a standard
+# deviation of 3.838/sqrt(R).
+#
+# Both the interval half-width and that standard deviation scale as
+# 1/sqrt(R). Two consequences follow, and they are the whole case for the
+# ensemble size. First, the false-failure rate is 0.5 % at EVERY R, so
+# shrinking the ensemble buys no robustness - it costs power and nothing
+# else. Second, the detection thresholds, computed from the project's own
+# exact chi-square evaluator:
+#
+#                      50 % power            90 % power
+#     R = 100     +7.6 % / -6.8 %     +11.1 % / -9.8 %
+#     R =  28    +15.0 % / -12.3 %    +22.2 % / -17.7 %
+#
+# A quarter-sized ensemble is roughly half as sensitive, and a defect that
+# mis-scales the reported covariance by 10 % - well inside the range a real
+# tuning or linearization error produces - is resolved at R = 100 and missed
+# at R = 28. That is the resolution the criterion is worth running at.
+#
+# The three NIS statistics are weaker even here, and gate a different failure
+# (an innovation covariance that does not match the residuals) rather than
+# adding power to the NEES statement: their 50 %-power thresholds at R = 100
+# are +12.4 % (navfix, dim 6), +18.2 % (startracker, dim 3) and +34.7 %
+# (altimeter, dim 1).
+#
+# The gate is not fragile at this size. Every prefix R = 2..100 of this
+# ensemble passes all four gates, and the R = 100 NEES headline sits 43.4 %
+# of the interval width above the lower bound.
 _V027_RUNS = 100  # the criterion's own ensemble size
 
 
 def _check_v027(ctx: dict) -> None:
-    """Phase 6 exit criterion 3 at FULL strength: the 100-run ensemble.
+    """Phase 6 exit criterion 3: the criterion's own 100-run EKF ensemble.
 
     Measured on this fixture at R = 100: ensemble NEES headline 14.8776
     inside [13.9456, 16.0923] with 599 of 601 epochs inside (diagnostic,
@@ -2660,82 +2703,23 @@ def _check_v027(ctx: dict) -> None:
     which is what establishes that the inline fixture here is the same
     scenario.
 
-    Detection power, derived rather than asserted. A filter reporting a
-    covariance mis-scaled by a factor f has per-epoch statistic (1/f) times
-    the consistent one, so the headline sits at n/f and the gate fires when
-    n/f leaves [chi2_0.025(Rn)/R, chi2_0.975(Rn)/R]. That is 50 % power. The
-    headline's own sampling spread sets the rest: the per-run time-averaged
-    NEES has a measured standard deviation of 3.838 across the 100 runs
-    (against 0.223 if the 601 epochs within a run were independent, so about
-    2.0 effectively independent epochs per run), giving the headline a
-    standard deviation of 3.838/sqrt(R). At R = 100 that yields
-    90 % power against a mis-scale of +11.1 % or -9.8 %, 99 % power against
-    +14.0 % or -12.3 %, and a false-failure rate of 0.5 %.
+    The gate was shown able to fail rather than assumed able to: scaling the
+    reported covariance flips this ensemble red at f = 1.0668 and at
+    f = 0.9245. Those realized flip points are seed artifacts of where this
+    ensemble's headline happens to sit inside its band; the population
+    thresholds derived at _V027_RUNS - 90 % power against +11.1 % or -9.8 %,
+    99 % power against +14.0 % or -12.3 %, at a 0.5 % false-failure rate -
+    are the figures to design against.
     """
     _p6_criterion3(_V027_RUNS)
 
 
-# R = 28 is the smallest ensemble whose NEES detection threshold stays within
-# a factor of two of the full R = 100 gate's, which is the design rule this
-# number comes from rather than a round figure. The thresholds are the
-# 50 %-power points derived above, computed from the project's own exact
-# chi-square evaluator:
-#
-#     R = 100: detects f >= 1.0756 (+7.6 %) or f <= 0.9321 (-6.8 %)
-#     R =  28: detects f >= 1.1503 (+15.0 %) or f <= 0.8774 (-12.3 %)
-#     R =  27: detects f >= 1.1534 (+15.3 %), a ratio of 2.03 - outside
-#
-# and at 90 % power, which is the figure the registered title carries:
-#
-#     R = 100: +11.1 % / -9.8 %
-#     R =  28: +22.2 % / -17.7 %
-#
-# The false-failure rate is 0.5 % at both sizes: the interval half-width and
-# the headline's standard deviation both scale as 1/sqrt(R), so reducing R
-# costs power and nothing else. Every prefix R = 2..100 of this ensemble
-# passes all four gates, so R = 28 is not a fragile pick; its NEES headline
-# of 13.7021 sits 16.3 % of the interval width above the lower bound, against
-# 43.4 % at R = 100.
-_V028_RUNS = 28
-
-
-def _check_v028(ctx: dict) -> None:
-    """Phase 6 exit criterion 3 at REDUCED strength for the quick tier.
-
-    WHAT THIS DOES NOT ESTABLISH. A pass here is NOT the criterion. The
-    scenario, the statistics, the gating rules and the bit-identical rerun
-    are identical to V027's; the ensemble is 28 runs instead of 100, and the
-    only consequence is statistical power. Concretely, this variant is blind
-    to a reported-covariance mis-scale smaller than about 15 % where the full
-    gate resolves 7.6 %, and it reaches 90 % power only at +22.2 % / -17.7 %
-    where the full gate reaches it at +11.1 % / -9.8 %. A defect that shifts
-    the covariance by 10 % passes here and fails V027. Read a quick-tier
-    green as "no gross inconsistency", never as the criterion closed. The
-    derivation of R and of both power figures is at _V028_RUNS.
-
-    The three NIS statistics are weaker still, and were weaker at full
-    strength too: their 50 %-power thresholds at R = 28 are +25.4 % (navfix,
-    dim 6), +38.8 % (startracker, dim 3) and +82.9 % (altimeter, dim 1),
-    against +12.4 %, +18.2 % and +34.7 % at R = 100. They gate a different
-    failure - an innovation covariance that does not match the residuals -
-    rather than adding power to the NEES statement.
-
-    Measured at R = 28: ensemble NEES headline 13.7021 inside
-    [13.0397, 17.0955]; NIS headlines 3.0216, 5.9896 and 0.9943 with 57, 60
-    and 58 of 60 epochs inside against a threshold of 51; every SRLOG
-    SHA-256 reproduced on the rerun. The gate was shown able to fail by
-    scaling the reported covariance until it fired: on this pinned ensemble
-    it flips at f = 1.0508 and f = 0.8015, against f = 1.0668 and f = 0.9245
-    for V027. Those realized flip points are seed artifacts of where each
-    ensemble's headline happens to sit inside its band; the derived
-    population thresholds above are the figures to design against.
-    """
-    _p6_criterion3(_V028_RUNS)
-
-
 # Tier membership. BOTH runs in the full tier and in --quick; FULL and QUICK
-# are the two strengths of exit criterion 3, which is the only check whose
-# cost forces a split. Everything else is budgeted for the < 60 s quick gate.
+# restrict a check to one tier. No check currently uses them: every gate,
+# criterion 3's 100-run ensemble included, fits inside the < 60 s quick
+# budget, so both tiers run the same set and a green means the same thing
+# either way. The mechanism is kept for the check that eventually does not
+# fit, and run_checks states on its first line which case holds.
 TIER_BOTH = "both"
 TIER_FULL = "full"
 TIER_QUICK = "quick"
@@ -2767,8 +2751,7 @@ _CHECKS = [
     ("V024", TIER_BOTH, "package, compiled core, and log header report one version", _check_v024),
     ("V025", TIER_BOTH, "P6 EC-2: Python PD law reproduces core torques < 1e-9 N*m, scenario non-degenerate", _check_v025),
     ("V026", TIER_BOTH, "P6 EC-9: logged Sun direction vs independent aberration + DCM < 1e-5 mas", _check_v026),
-    ("V027", TIER_FULL, "P6 EC-3 full (R=100): ensemble NEES/NIS gates + bit-identical rerun", _check_v027),
-    ("V028", TIER_QUICK, "P6 EC-3 REDUCED (R=28): NOT the criterion - blind below ~15 % covariance mis-scale (full gate: 7.6 %)", _check_v028),
+    ("V027", TIER_BOTH, "P6 EC-3 (R=100): ensemble NEES/NIS gates + bit-identical rerun", _check_v027),
 ]
 
 
@@ -2789,16 +2772,15 @@ def checks_for_tier(quick: bool):
 def run_checks(quick: bool = False) -> int:
     """Run the requested tier's checks, print one line each, return the exit code.
 
-    The two tiers differ in exactly one check. ``--quick`` runs V028, a
-    28-run variant of the Phase 6 exit-criterion-3 ensemble; the full tier
-    runs V027, the criterion's own 100-run ensemble. Every other check is
-    budgeted for the < 60 s quick gate and runs in both.
+    Both tiers currently run every registered check, criterion 3's 100-run
+    ensemble included, because every gate fits inside the < 60 s quick
+    budget.
 
-    The split is announced rather than left implicit. A quick tier that
-    silently covered part of a criterion is how criterion 4's blind spot
-    survived a whole phase, so the reduced check carries its limitation in
-    its registered title and prints alongside a line naming the tier and the
-    checks the other tier would have run.
+    Whether that holds is stated rather than left to be inferred. A quick
+    tier that silently covered part of a criterion is how criterion 4's
+    blind spot survived a whole phase, so the first line always reports the
+    tier and either names the registered checks this tier is leaving out or
+    says plainly that it leaves out none.
     """
     selected = checks_for_tier(quick)
     tier_name = TIER_QUICK if quick else TIER_FULL
@@ -2806,10 +2788,13 @@ def run_checks(quick: bool = False) -> int:
     skipped = sorted(
         check_id for check_id, _tier, _title, _fn in _CHECKS if check_id not in ran
     )
+    coverage = (
+        f"not run in this tier: {', '.join(skipped)}"
+        if skipped
+        else "every registered check runs in this tier"
+    )
     print(
-        f"VERIFY: tier {tier_name} ({len(selected)} checks"
-        + (f"; not run in this tier: {', '.join(skipped)}" if skipped else "")
-        + ")",
+        f"VERIFY: tier {tier_name} ({len(selected)} checks; {coverage})",
         flush=True,
     )
     ctx: dict = {}

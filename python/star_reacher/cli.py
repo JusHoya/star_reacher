@@ -84,25 +84,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_verify = sub.add_parser(
         "verify",
-        help="run the acceptance check suite (V001-V028)",
+        help="run the acceptance check suite (V001-V027)",
         description=(
             "Self-contained acceptance runner: a tier line, then one line per "
             "check, ending in 'VERIFY: PASS (N/N)' or 'VERIFY: FAIL (k/N)' plus "
-            "the failing check IDs; nonzero exit on any failure. The tiers "
-            "differ in exactly one check, the Phase 6 exit-criterion-3 EKF "
-            "ensemble: the full tier runs it at the criterion's R = 100 (V027) "
-            "and --quick at R = 28 (V028), which is blind to a reported-"
-            "covariance mis-scale below about 15 percent where the full gate "
-            "resolves 7.6 percent. The tier line names the checks the other "
-            "tier would have run."
+            "the failing check IDs; nonzero exit on any failure. Both tiers "
+            "currently run every registered check, the Phase 6 "
+            "exit-criterion-3 EKF ensemble (V027) included, at the criterion's "
+            "own R = 100: every gate fits inside the 60 second quick budget, "
+            "so a green means the same thing whichever tier produced it. The "
+            "tier line says which case holds - it names any registered check "
+            "the running tier leaves out, or states that it leaves out none."
         ),
     )
     p_verify.add_argument(
         "--quick",
         action="store_true",
         help=(
-            "run the smoke tier: the full check set with the criterion-3 "
-            "ensemble reduced from 100 runs to 28 (V028 in place of V027)"
+            "run the smoke tier, budgeted for under 60 seconds; it presently "
+            "runs the identical check set, as the tier line reports"
         ),
     )
 

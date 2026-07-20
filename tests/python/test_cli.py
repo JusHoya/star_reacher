@@ -215,12 +215,15 @@ def test_verify_output_contract(tmp_path):
         assert any(re.match(rf"{check_id} (PASS|FAIL) ", ln) for ln in lines), (
             f"missing line for {check_id}:\n{proc.stdout}"
         )
-    # A check the quick tier does not run must not report a result, and must
-    # be named on the tier line instead: silent partial coverage is the
-    # failure mode the tier split exists to prevent.
+    # Whatever the tier contains, the first line must account for the whole
+    # registry: a check the quick tier does not run must not report a result
+    # and must be named there instead, and a tier that excludes nothing must
+    # say so. Silent partial coverage is the failure mode this contract
+    # exists to prevent, and an empty exclusion list reads the same as an
+    # unexamined one.
     ran = {check_id for check_id, _title, _fn in selected}
     absent = [c for c, _t, _ti, _f in _CHECKS if c not in ran]
-    assert absent, "the tier split collapsed; --quick now runs every check"
+    assert lines[0].startswith("VERIFY: tier quick "), lines[0]
     for check_id in absent:
         assert not any(re.match(rf"{check_id} (PASS|FAIL) ", ln) for ln in lines), (
             f"{check_id} is not in the quick tier but reported a result"
@@ -229,7 +232,11 @@ def test_verify_output_contract(tmp_path):
             f"{check_id} is skipped in --quick without being named on the "
             f"tier line: {lines[0]!r}"
         )
-    assert lines[0].startswith("VERIFY: tier quick "), lines[0]
+    if not absent:
+        assert "every registered check runs in this tier" in lines[0], (
+            f"--quick runs the whole registry but the tier line does not say "
+            f"so: {lines[0]!r}"
+        )
     final = lines[-1]
     assert re.fullmatch(
         rf"VERIFY: PASS \({total}/{total}\)"
@@ -262,18 +269,21 @@ def test_docs_mutually_exclusive_flags_exit_2():
 
 
 def test_verify_help_documents_what_quick_gives_up():
-    """The help must state the tier difference, not merely that one exists.
+    """The help must state what ``--quick`` costs, not merely that it exists.
 
-    ``--quick`` reduces the exit-criterion-3 ensemble from 100 runs to 28,
-    which costs statistical power and nothing else. A user reading the help
-    has to be able to learn that a quick pass is not the criterion, so the
-    help names both check IDs and the mis-scale the reduced ensemble cannot
-    resolve.
+    It currently costs nothing: both tiers run the whole registry, the
+    exit-criterion-3 ensemble included, at the criterion's own R = 100. A
+    user reading the help has to be able to learn that, because the previous
+    answer was different - ``--quick`` once ran a reduced 28-run variant of
+    that ensemble - and a stale help would let a quick pass be read as a
+    weaker statement than it is.
     """
     proc = _run_cli("verify", "--help")
     assert proc.returncode == 0
     # argparse rewraps the description to the terminal width, so a phrase can
     # be split across lines; compare against whitespace-collapsed text.
     text = " ".join(proc.stdout.split())
-    for token in ("V027", "V028", "R = 100", "R = 28", "blind"):
+    for token in ("V027", "R = 100", "every registered check"):
         assert token in text, f"{token!r} missing from the verify help"
+    # The retired reduced variant must not linger in user-facing text.
+    assert "V028" not in text, "the verify help still advertises the retired V028"
