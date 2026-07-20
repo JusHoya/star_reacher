@@ -460,8 +460,12 @@ after the tables.
     \testid{gnc_pd_attitude_golden} &
       Five committed golden cases drive
       equations~\eqref{eq:gnc:deltaq}--\eqref{eq:gnc:sat} against
-      hand-computed torques, covering both signs of $\delta q_w$ (the
-      short-path branch) and the saturation clamp. \\
+      \texttt{tests/golden/gnc/pd\_attitude.toml}, whose expected torques
+      are a 60-digit \texttt{mpmath} evaluation of the normative law on
+      bit-identical inputs rather than a hand computation by either
+      implementation. The set covers both signs of $\delta q_w$, the
+      $\delta q_w = 0$ case that pins $\mathrm{sgn}(0) = +1$, and a case that
+      clamps some axes while leaving others unclamped. \\
     \testid{gnc_dead_reckoning_golden} &
       The dead reckoner propagates a committed increment sequence through
       equation~\eqref{eq:gnc:drprop} to its golden state; the initial
@@ -502,13 +506,44 @@ after the tables.
     Test ID & Acceptance basis \\
     \midrule
     \testid{test_pd_law_python_reimplementation_contract} &
-      Exit criterion~2: an independent Python transcription of the PD law
-      --- importing only \texttt{numpy} and \texttt{tomllib}, and
+      Exit criterion~2, mission half: an independent Python transcription of
+      the PD law --- importing only \texttt{numpy} and \texttt{tomllib}, and
       re-deriving the Hamilton product, the sign branch, the error DCM, and
-      the clamp by hand --- reproduces the logged applied torques to
-      $< \qty{e-9}{\newton\metre}$ across the whole reference run. Which
-      equations this resolves and which it cannot is scoped immediately
-      below; the row should not be cited as covering the PD law entire. \\
+      the clamp by hand --- reproduces the compiled built-in's logged
+      applied torques across all 601 cycles of the criterion-2 scenario.
+      Measured worst residual \qty{1.3878e-17}{\newton\metre} against the
+      criterion's \qty{e-9}{\newton\metre}. \\
+    \testid{test_python_pd_law_matches_the_mpmath_golden} &
+      Exit criterion~2, golden half: the same Python transcription
+      evaluated against the committed \texttt{mpmath} goldens, one
+      parametrization per case, to the golden manifest's
+      $\max(5\times10^{-15}\lvert\tau\rvert, 10^{-18})$ bound, with the
+      criterion's own \qty{e-9}{\newton\metre} asserted alongside. The two
+      halves together are the criterion's conjunction: the Python
+      controller matches the specification's extended-precision answer, and
+      the compiled controller matches the Python controller in the loop.
+      Requires no compiled core, so this half is gated even on a core-less
+      checkout. \\
+    \testid{test_golden_cases_cover_every_branch} &
+      Non-vacuity of the golden half. Asserts from the file itself that the
+      committed set contains a case with $\delta q_w < 0$, one with
+      $\delta q_w$ exactly zero, one with $\delta q_w > 0$, one clamping
+      some axes but not all (without which
+      equation~\eqref{eq:gnc:sat} would be indistinguishable from an
+      unsaturated law), and one combining a non-zero commanded rate with a
+      non-identity error DCM (without which
+      equation~\eqref{eq:gnc:werr}'s rotation would be untested), so a
+      regenerated golden set that quietly lost a branch fails here rather
+      than silently weakening the gate. \\
+    \testid{test_pd_scenario_exercises_every_equation} &
+      Non-vacuity of the mission half, asserted on the measured log rather
+      than assumed from the fixture's construction: commanded rate up to
+      \qty{0.0133}{\radian\per\second}; error DCM reaching \num{0.71} from
+      the identity and \num{1.24} from its own transpose, so neither the
+      rotation nor a transposition of it is invisible; 300 of 601 cycles on
+      the $\delta q_w < 0$ branch and 301 on the other; the clamp catching
+      on 92 cycles; and every body axis carrying torque, so no per-axis
+      gain path is multiplied by zero. \\
     \testid{test_dead_reckoning_tracks_torque_driven_truth} &
       Against torque-driven truth the logged estimate error stays below
       $5\times10^{-3}$ in both the quaternion and rate components --- the
@@ -528,40 +563,57 @@ after the tables.
   \end{tabular}
 \end{table}
 
-\paragraph{Scope of the criterion-2 row.} The reference mission that row
-runs is degenerate against three of the five equations of the PD law, and
-the degeneracy is a property of the fixture rather than of the tolerance.
-Measured over all 601 cycles of that run: the commanded rate
-$\vv{\omega}_{\mathrm{cmd}}$ is identically zero, so
-equation~\eqref{eq:gnc:werr} is multiplied by zero; $\delta q_w$ stays in
-$[0.996195, 0.999998]$ and never goes negative, so the short-path branch of
-equation~\eqref{eq:gnc:sign} is never taken; and no cycle reaches the
-clamp, so equation~\eqref{eq:gnc:sat} is never exercised. Mutating the
-reference confirms this is exact rather than merely weak --- dropping the
-sign branch, dropping the error-DCM rotation of
-$\vv{\omega}_{\mathrm{cmd}}$, and transposing the error DCM each change the
-worst residual by exactly \qty{0}{\newton\metre}, so no tolerance could
-separate them. What the row does resolve is
-equations~\eqref{eq:gnc:deltaq} and~\eqref{eq:gnc:pd} on the $z$ axis: a
-\qty{0.1}{\percent} error in $k_p$ is caught at
-\qty{3.4862e-5}{\newton\metre}. The $x$ and $y$ gain paths are multiplied
-by zero on this fixture as well.
+\paragraph{Scope of the criterion-2 rows, and the degeneracy they were
+built to escape.} The committed reference mission --- an attitude hold ---
+is degenerate against three of the five equations of the PD law, and the
+degeneracy is a property of the fixture rather than of the tolerance. On
+that mission the commanded rate $\vv{\omega}_{\mathrm{cmd}}$ is identically
+zero, so equation~\eqref{eq:gnc:werr} has nothing to rotate; the tracking
+error stays well inside a half turn, so the short-path branch of
+equation~\eqref{eq:gnc:sign} is never taken; and the \qty{10}{\degree}
+transient never reaches $\vv{\tau}_{\max}$, so equation~\eqref{eq:gnc:sat}
+never clamps. That is exact rather than merely weak: a Python reference
+that dropped any of the three reproduced the logged torques identically,
+so no tolerance could have separated it.
 
-The equations the row cannot reach are covered on the core side by
-\testid{gnc_pd_attitude_golden}, whose five committed cases do exercise
-both signs of $\delta q_w$ and the clamp, and whose expected torques come
-from a 60-digit \texttt{mpmath} evaluation of the specification rather than
-from the implementation under test. The gap exit criterion~2 leaves open is
-therefore not that the law is unpinned, but that its \emph{Python}
-transcription is never evaluated against those goldens: the criterion's
-conjunction --- an independent Python controller, the C++ controller, a
-golden scenario, and \qty{e-9}{\newton\metre} --- is not met by any single
-committed test as of this commit. Closing it means pointing the
-transcription at \texttt{tests/golden/gnc/pd\_attitude.toml}, and adding a
-slewing case with nonzero $\vv{\omega}_{\mathrm{cmd}}$ and a saturating
-transient so the mission-level comparison stops being blind to three of the
-five equations. Both are in progress; this paragraph records the state at
-the time of writing and should be re-measured before it is relied upon.
+Criterion~2 therefore runs on a scenario built to escape each of those
+three, driving the FR-24 external-guidance seam so the commanded attitude
+and rate are the driver's to choose while the compiled built-in still
+computes every torque. It carries a constant non-zero commanded rate about
+one axis; an initial commanded attitude offset of \qty{60}{\degree} about a
+\emph{different} axis, since parallel axes would leave
+$\mat{C}(\delta\quat{q})\,\vv{\omega}_{\mathrm{cmd}} =
+\vv{\omega}_{\mathrm{cmd}}$ and make both the rotation and its transpose
+invisible; the commanded quaternion expressed antipodally for the first
+half of the run, so that a controller honouring
+equation~\eqref{eq:gnc:sign} produces the same torque from both physically
+identical representations while one omitting the branch reverses it; and a
+\qty{60}{\degree} offset against \qty{0.4}{\newton\metre\per\radian} gains
+with \qty{0.05}{\newton\metre} of authority, so the opening transient
+saturates every axis. \testid{test_pd_scenario_exercises_every_equation}
+asserts each property on the measured log, so the gate cannot quietly
+return to being degenerate.
+
+The criterion's conjunction --- an independent Python controller, the
+compiled controller, a golden scenario, and \qty{e-9}{\newton\metre} --- is
+met by the pair of rows above rather than by either alone.
+\testid{test_python_pd_law_matches_the_mpmath_golden} evaluates the Python
+transcription against \texttt{tests/golden/gnc/pd\_attitude.toml}, the same
+file \testid{gnc_pd_attitude_golden} drives the C++ component with and
+whose expected torques come from a 60-digit \texttt{mpmath} evaluation of
+the specification rather than from either implementation;
+\testid{test_pd_law_python_reimplementation_contract} evaluates that same
+function against the torques the compiled component logs in the loop. The
+four mutations the earlier fixture could not separate are each rejected by
+both rows: dropping the sign branch moves the mission-side worst residual
+to \qty{0.1}{\newton\metre}, dropping the error-DCM rotation of
+$\vv{\omega}_{\mathrm{cmd}}$ to \qty{4.7340e-2}{\newton\metre}, transposing
+that DCM to \qty{5.1548e-2}{\newton\metre}, and dropping the clamp to
+\qty{0.1526}{\newton\metre} --- each at least seven orders above the
+criterion's \qty{e-9}{\newton\metre}, against an unmutated
+\qty{1.3878e-17}{\newton\metre}. On the golden side the same four exceed
+the manifest bound by factors between $2.3\times10^{13}$ and
+$4.0\times10^{14}$.
 
 One clause of exit criterion~10 is deferred rather than outstanding, and
 the distinction matters:
