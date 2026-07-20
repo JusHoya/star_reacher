@@ -623,7 +623,11 @@ def _assert_gate(result):
 
 
 def test_star_tracker_statistic_passes_the_reference_gate(statistics_run):
-    """Exit criterion 6, star tracker, re-gated against the blind reference.
+    """Exit criterion 1, star tracker, re-gated against the blind reference.
+
+    The star tracker's chi-square clause belongs to criterion 1, not to
+    criterion 6 -- criterion 6 names the external nav fix and the altimeter,
+    which are re-gated further down this module.
 
     The C++ suite closed this criterion with its own statistics. Recomputing
     the per-sample chi2(3) through ``tests/refs/sensor_stats`` is stronger
@@ -664,7 +668,12 @@ def test_star_tracker_statistic_passes_the_reference_gate(statistics_run):
 
 
 def test_sun_sensor_statistic_passes_the_reference_gate(statistics_run):
-    """Exit criterion 6, sun sensor, re-gated against the blind reference.
+    """Sun sensor, re-gated against the blind reference. SUPPLEMENTARY.
+
+    No exit criterion requires this one: criterion 1 names the star tracker
+    and criterion 6 the external nav fix and the altimeter. It is kept as
+    supplementary coverage of the sun-sensor noise model, and the docstring
+    says so rather than borrowing a criterion number it does not close.
 
     Sensitivity note, established by mutation: this gate is a statement about
     the noise model ONLY. At the configured 2 mrad sigma the 1e-4 rad
