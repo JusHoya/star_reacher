@@ -343,9 +343,16 @@ def _print_ensemble_gate(label: str, gate: EnsembleGate, dim_label: str) -> list
         f"{label} ensemble headline", gate.headline, f"dof {gate.dof}, {dim_label}"
     )
     epochs = gate.epoch_mean.shape[0]
+    # Name the direction here too: a reader who sees only counts has to
+    # re-derive which way the covariance is wrong before they can act.
+    lean = (
+        "covariance too small / overconfident"
+        if gate.fraction_above > gate.fraction_below
+        else "covariance too large / underconfident"
+    )
     spread = (
         f"{100.0 * gate.fraction_below:.1f} % of epochs below, "
-        f"{100.0 * gate.fraction_above:.1f} % above"
+        f"{100.0 * gate.fraction_above:.1f} % above: {lean}"
     )
     if not gate.coverage_gated:
         # Reported without PASS/FAIL: this statistic's epochs are serially
