@@ -348,6 +348,18 @@ class IGncComponent {
   virtual void init(const GncInitContext& ctx) = 0;
   virtual GncOutput update(const GncInput& input) = 0;
 
+  // CONSTANCY CONTRACT for the three declared dimensions below. Each is
+  // queried once, at GNC activation, and the loop sizes its fixed nav.est /
+  // nav.err / nav.innov buffers from what it got; the SRLOG header records
+  // the same values as the file's fixed record strides. Nothing resizes
+  // either afterwards, so a component MUST return the same value from every
+  // later call. An estimator that wants to augment its state mid-run
+  // declares the augmented dimension up front. This is enforced, not merely
+  // requested, for Python components (bindings/module.cpp pins each on first
+  // query and refuses a later divergence), because there the declaration and
+  // the payload come from the same mutable object and a divergence would
+  // otherwise write past a buffer sized at construction.
+  //
   // Estimator state dimension n for nav.est logging; 0 = not an estimator.
   virtual int state_dim() const { return 0; }
   // Covariance dimension m for nav.est's packed P (m(m+1)/2 doubles);

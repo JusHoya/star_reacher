@@ -455,10 +455,14 @@ std::array<double, 4> quat_arr(const Eigen::Quaterniond& q) {
 // returns the wrong length is a configuration error the loop must not
 // absorb: writing short would leave stale values in the log and writing long
 // would corrupt memory, so both are refused by name.
-void copy_fixed(const py::object& value, const char* method, int n,
+//
+// `n` is std::size_t rather than int because its two call sites derive it
+// from a pinned dimension m as m(m+1)/2, which overflows a 32-bit int for an
+// m the interface never bounds.
+void copy_fixed(const py::object& value, const char* method, std::size_t n,
                 double* out) {
   const std::vector<double> v = value.cast<std::vector<double>>();
-  if (static_cast<int>(v.size()) != n) {
+  if (v.size() != n) {
     throw std::length_error(
         std::string("gnc component method ") + method + " returned " +
         std::to_string(v.size()) + " values; the declared dimension requires " +
@@ -496,23 +500,27 @@ class PyGncComponent : public star::gnc::IGncComponent {
   // the -Werror Linux job.
   int state_dim() const override {
     int v = 0;
-    if (int_override("state_dim", &v)) return v;
-    return star::gnc::IGncComponent::state_dim();
+    if (!int_override("state_dim", &v)) v = star::gnc::IGncComponent::state_dim();
+    return pin("state_dim", &state_dim_, v);
   }
 
   int cov_dim() const override {
     int v = 0;
-    if (int_override("cov_dim", &v)) return v;
-    // The base default is state_dim(), which dispatches back into Python:
-    // a subclass that declares only state_dim() gets a square covariance of
-    // that dimension without writing a second method.
-    return star::gnc::IGncComponent::cov_dim();
+    if (!int_override("cov_dim", &v)) {
+      // The base default is state_dim(), which dispatches back into Python:
+      // a subclass that declares only state_dim() gets a square covariance of
+      // that dimension without writing a second method.
+      v = star::gnc::IGncComponent::cov_dim();
+    }
+    return pin("cov_dim", &cov_dim_, v);
   }
 
   int innov_max_dim() const override {
     int v = 0;
-    if (int_override("innov_max_dim", &v)) return v;
-    return star::gnc::IGncComponent::innov_max_dim();
+    if (!int_override("innov_max_dim", &v)) {
+      v = star::gnc::IGncComponent::innov_max_dim();
+    }
+    return pin("innov_max_dim", &innov_max_dim_, v);
   }
 
   const std::vector<star::gnc::InnovationSample>& innovations() const override {
@@ -529,14 +537,17 @@ class PyGncComponent : public star::gnc::IGncComponent {
     py::gil_scoped_acquire gil;
     const py::function ov = py::get_override(this, "state");
     if (!ov) return star::gnc::IGncComponent::state(x_hat);
-    copy_fixed(ov(), "state", state_dim(), x_hat);
+    copy_fixed(ov(), "state", static_cast<std::size_t>(state_dim()), x_hat);
   }
 
   void covariance_upper(double* p) const override {
     py::gil_scoped_acquire gil;
     const py::function ov = py::get_override(this, "covariance_upper");
     if (!ov) return star::gnc::IGncComponent::covariance_upper(p);
-    const int m = cov_dim();
+    // Widened before multiplying: pin() has already refused a negative m, so
+    // the product is well defined, but m(m+1)/2 overflows a 32-bit int well
+    // before it exceeds the addressable buffer.
+    const std::size_t m = static_cast<std::size_t>(cov_dim());
     copy_fixed(ov(), "covariance_upper", m * (m + 1) / 2, p);
   }
 
@@ -566,6 +577,45 @@ class PyGncComponent : public star::gnc::IGncComponent {
     return true;
   }
 
+  // Pin a declared dimension to the value of its first query and refuse any
+  // later divergence.
+  //
+  // These three integers are CONSTANTS OF A RUN, not per-cycle queries. The
+  // loop calls each once at GNC activation and sizes the fixed log buffers
+  // from what it got (vehicle_cycle.cpp); nothing resizes those buffers
+  // afterwards. A Python method, though, is re-evaluated on every call, so
+  // an estimator that augments its state mid-run -- exactly the adaptive
+  // filter FR-25 exists to permit -- would return a larger state_dim() on a
+  // later cycle. The length check in copy_fixed() would then compare a
+  // Python-supplied length against a Python-supplied dimension, agree, and
+  // copy past the end of a buffer sized at construction. Pinning makes the
+  // constancy the interface assumes an enforced precondition rather than an
+  // unstated one, and turns a silent heap write into a named exception.
+  int pin(const char* name, int* pinned, int value) const {
+    if (value < 0) {
+      throw std::length_error(
+          std::string("gnc component method ") + name + " returned " +
+          std::to_string(value) +
+          "; a declared dimension must not be negative");
+    }
+    if (*pinned < 0) {
+      *pinned = value;
+    } else if (*pinned != value) {
+      throw std::length_error(
+          std::string("gnc component method ") + name + " returned " +
+          std::to_string(value) + " but returned " + std::to_string(*pinned) +
+          " when the run was configured; a component's declared dimensions "
+          "are fixed for the lifetime of a run, because the loop's log "
+          "buffers are sized once from them");
+    }
+    return *pinned;
+  }
+
+  // Negative marks "not yet queried"; pin() refuses a negative value, so no
+  // legal dimension can be confused with the unset state.
+  mutable int state_dim_ = -1;
+  mutable int cov_dim_ = -1;
+  mutable int innov_max_dim_ = -1;
   mutable std::vector<star::gnc::InnovationSample> innov_cache_;
   mutable std::vector<star::gnc::ErrorBlock> layout_cache_;
 };

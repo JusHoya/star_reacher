@@ -1109,6 +1109,36 @@ struct VehicleCycle::Impl {
     }
     if (innov_mm > 0) {
       for (const gnc::InnovationSample& s : nav->innovations()) {
+        // Bound the copies below against the DESTINATION's own capacity, not
+        // against anything the component reports now. Both buffers were
+        // sized once at activation from innov_max_dim(), and a component --
+        // in particular an FR-25 Python one, which supplies both the
+        // declaration and the payload -- can return a sample wider than the
+        // maximum it declared. Unchecked, that is a heap write past the end
+        // of innov_y_buf on the first aiding update. Every other
+        // variable-length quantity crossing this boundary is length-checked
+        // by name (copy_fixed, validate_error_layout); this closes the gap.
+        const std::size_t y_cap = innov_y_buf.size();
+        if (s.y.size() > y_cap) {
+          throw std::length_error(
+              "gnc component returned an innovation of dimension " +
+              std::to_string(s.y.size()) +
+              "; the maximum it declared through innov_max_dim() is " +
+              std::to_string(y_cap));
+        }
+        // The packed triangle is checked against the sample's OWN dimension:
+        // the embedding loop below reads exactly m(m+1)/2 entries from it, so
+        // a short s_upper is an out-of-bounds read that would otherwise
+        // publish uninitialized heap into the nav.innov channel.
+        const std::size_t s_need = s.y.size() * (s.y.size() + 1) / 2;
+        if (s.s_upper.size() != s_need) {
+          throw std::length_error(
+              "gnc component returned an innovation covariance of " +
+              std::to_string(s.s_upper.size()) + " packed entries for a " +
+              std::to_string(s.y.size()) + "-dimensional innovation; the " +
+              "packed upper triangle requires exactly " +
+              std::to_string(s_need));
+        }
         // Zero-pad each update to the declared maximum dimension (format
         // doc section 3.2 fixed-stride rule).
         std::fill(innov_y_buf.begin(), innov_y_buf.end(), 0.0);

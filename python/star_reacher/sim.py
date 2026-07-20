@@ -4,8 +4,18 @@
 ``star run`` and a stepped ``Sim`` traverse the *same* cycle core --
 ``run_vehicle()`` is literally ``while cycle.step(): pass`` over it -- so the
 two produce byte-identical SRLOG files for one scenario. That equality is
-Phase 6 exit criterion 4, and it is a property of the factoring rather than
-of a comparison test: there is only one implementation to disagree with.
+Phase 6 exit criterion 4.
+
+Sharing the cycle core is necessary for that equality but is *not*
+sufficient, and the criterion is therefore gated by a real comparison rather
+than asserted from the factoring. The two paths also share one configuration
+builder, ``runner.build_run_config``, but they hand it the resolved mission
+in different orders -- the validator's canonical order for ``star run``, the
+``sort_keys=True`` alphabetical order for ``reset()``, which round-trips
+through ``canonical_bytes``. A builder that inherited its input's order would
+therefore configure the two runs differently while both still stepped the
+identical core. ``mission.canonical_sensor_items`` is what closes that gap,
+and the criterion-4 fixture is multi-sensor so the gate can see it reopen.
 
 Typical use::
 

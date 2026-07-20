@@ -334,6 +334,36 @@ _SENSOR_KINDS = (
     "camera",
 )
 
+
+def canonical_sensor_items(sensors: dict) -> list[tuple[str, dict]]:
+    """Order a resolved ``sensors`` table by the canonical FR-23 vocabulary.
+
+    The single source of the sensor order the core is configured in, and the
+    reason it is a function rather than a convention: the core is
+    order-sensitive in three places -- the log header's declared sensor
+    array, the ``sensor_id`` each sensor is labelled with (assigned by list
+    index), and the order the EKF folds its aiding updates in, which
+    ``cpp/src/gnc/ekf.cpp`` documents as normative. A caller that iterated
+    the dict instead would inherit whatever order that dict happened to
+    carry, and the two entry points into ``build_run_config`` carry
+    different ones: the validator emits canonical order, while a resolved
+    config round-tripped through ``canonical_bytes`` (as the stepping API's
+    does) comes back in the ``sort_keys=True`` alphabetical order. Ordering
+    here rather than at either call site is what makes the two agree.
+
+    Raises ``ValueError`` on a kind outside the vocabulary. The validator
+    already rejects one, so this is unreachable from a validated mission;
+    dropping it silently would configure a run without a sensor the mission
+    asked for, which is the one outcome worse than failing.
+    """
+    unknown = [k for k in sensors if k not in _SENSOR_KINDS]
+    if unknown:
+        raise ValueError(
+            f"unknown sensor kind(s) {sorted(unknown)}; the canonical FR-23 "
+            f"vocabulary is: {', '.join(_SENSOR_KINDS)}"
+        )
+    return [(kind, sensors[kind]) for kind in _SENSOR_KINDS if kind in sensors]
+
 # Per-kind model-parameter schema. Each entry maps a TOML key to
 # (units, typical, kind), where kind is "scalar" for a number, an integer for
 # a fixed-length float array, or "flat3" for a flat list whose length must be

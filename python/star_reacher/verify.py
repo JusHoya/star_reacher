@@ -1327,10 +1327,33 @@ axis = [1.0, 0.0, 0.0]
 """
 
 # The closed-loop attitude-acquisition scenario of missions/leo_attitude_gnc
-# .toml, shortened to 20 s: q0 is the exact initial attitude the Phase 4
-# rule assigns to this state ([0, sqrt(1/2), sqrt(1/2), 0]) and q_cmd is that
-# attitude rotated 10 degrees about body +Z, so the run opens with a pure
-# 10-degree tracking error and commands a non-trivial torque from cycle one.
+# .toml, shortened to 20 s, flying the built-in error-state EKF against FOUR
+# aiding sensors. q_cmd is the vehicle's exact initial attitude
+# ([0, sqrt(1/2), sqrt(1/2), 0]) rotated 10 degrees about body +Z, so the run
+# opens with a pure 10-degree tracking error and commands a non-trivial
+# torque from cycle one.
+#
+# MULTI-SENSOR ON PURPOSE. This fixture was IMU-only through the phase, and
+# that is exactly why criterion 4 could not see the defect it exists to
+# catch: with one sensor the canonical FR-23 order and the alphabetical order
+# a sort_keys round trip produces are the same list, so the batch and stepped
+# paths agreed by coincidence rather than by construction. The four kinds
+# below order canonically as (imu, startracker, navfix, altimeter) and
+# alphabetically as (altimeter, imu, navfix, startracker) - two different
+# lists - so any regression that lets the configured order follow the input
+# dict changes the log header's declared sensor array, the sensor_id every
+# nav.innov record is labelled with, and (through the EKF's sequential
+# aiding updates, whose order cpp/src/gnc/ekf.cpp declares normative) the
+# state trajectory itself. All three land in the compared bytes.
+#
+# The estimator is the error-state EKF rather than dead reckoning so the
+# trajectory consequence is exercised and not only the labelling one: dead
+# reckoning folds no measurements, so reordering its sensors would move the
+# header bytes while leaving the numbers alone. The filter's initial belief
+# is the true initial state perturbed by a draw from P0, carried over from
+# missions/leo_ekf_consistency.toml, which keeps the run well-conditioned;
+# criterion 4 gates byte equality, not statistical consistency, so nothing
+# here is a consistency claim.
 _P6_GNC_MISSION = """\
 schema_version = 1
 vehicle = "verify_vehicle.toml"
@@ -1363,8 +1386,17 @@ control_rate_hz = 10
 latency_cycles = 0
 {oracle}
 [gnc.nav]
-component = "dead_reckoning"
-q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+component = "error_state_ekf"
+q0 = [-0.00044626342559570399, 0.70688223269726402, 0.70733106309014382, -0.00027772946007248347]
+v0_mps = [0.060921416592906778, 7545.8006329551154, -0.41793559576109252]
+p0_m = [6999986.8998344773, -13.811525573585669, -86.675748333963583]
+bg0_radps = [0.0, 0.0, 0.0]
+ba0_mps2 = [0.0, 0.0, 0.0]
+p0_sigma_att_rad = [1.0e-3, 1.0e-3, 1.0e-3]
+p0_sigma_vel_mps = [0.5, 0.5, 0.5]
+p0_sigma_pos_m = [50.0, 50.0, 50.0]
+p0_sigma_bg_radps = [1.0759973046695306e-7, 1.0759973046695306e-7, 1.0759973046695306e-7]
+p0_sigma_ba_mps2 = [1.0759973046695306e-5, 1.0759973046695306e-5, 1.0759973046695306e-5]
 
 [gnc.guidance]
 component = "attitude_hold"
@@ -1376,8 +1408,34 @@ kp_nm_per_rad = [0.4, 0.4, 0.4]
 kd_nm_per_radps = [3.6, 3.6, 3.6]
 tau_max_nm = [0.05, 0.05, 0.05]
 
+# Written in a deliberately NON-canonical and non-alphabetical TOML order, so
+# neither the canonical list nor the sort_keys list can be reproduced by
+# accidentally preserving the order the file was parsed in.
+[sensors.altimeter]
+sample_rate_hz = 1
+sigma_noise_m = 20.0
+sigma_bias_m = 0.0
+h_min_m = 0.0
+h_max_m = 0.0
+
 [sensors.imu]
 sample_rate_hz = 10
+gyro_arw_rad_per_sqrt_s = 1.0e-5
+gyro_bias_instability_radps = 1.0e-7
+gyro_bias_tau_s = 100.0
+accel_vrw_mps_per_sqrt_s = 1.0e-4
+accel_bias_instability_mps2 = 1.0e-5
+accel_bias_tau_s = 100.0
+
+[sensors.startracker]
+sample_rate_hz = 1
+boresight_b = [0.0, 0.0, 1.0]
+sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]
+
+[sensors.navfix]
+sample_rate_hz = 1
+sigma_r_m = [10.0, 10.0, 10.0]
+sigma_v_mps = [0.1, 0.1, 0.1]
 """
 
 
@@ -1435,6 +1493,29 @@ def _check_v022(ctx: dict) -> None:
 
         if steps <= 0:
             raise CheckFailure("the stepped run advanced zero cycles")
+
+        # The fixture must be able to SEE an ordering divergence before its
+        # agreement means anything. A single-sensor mission orders the same
+        # canonically and alphabetically, so the two entry points would agree
+        # no matter how either built its sensor list - the degeneracy that
+        # kept this criterion green while `star run` and `Sim` genuinely
+        # disagreed on missions/leo_ekf_consistency.toml. Asserting the
+        # non-degeneracy here means a future edit that shrinks the fixture
+        # fails loudly instead of quietly restoring the blind spot.
+        declared = load(batch.srlog_path).header.get("gnc", {}).get("sensors", [])
+        if len(declared) < 2:
+            raise CheckFailure(
+                f"the fixture declares {len(declared)} sensor(s), so the "
+                f"canonical and alphabetical orders coincide and this check "
+                f"cannot observe a sensor-ordering divergence: {declared}"
+            )
+        if declared == sorted(declared):
+            raise CheckFailure(
+                f"the fixture's canonical sensor order {declared} is already "
+                f"alphabetical, so a builder that inherited its input's order "
+                f"would still agree and this check cannot observe it"
+            )
+
         stepped_sha = hashlib.sha256(
             (tdp / "stepped" / "run.srlog").read_bytes()
         ).hexdigest()

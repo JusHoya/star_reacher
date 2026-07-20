@@ -24,6 +24,7 @@ from star_reacher._corelink import import_core
 from star_reacher.mission import (
     MissionValidationError,
     canonical_bytes,
+    canonical_sensor_items,
     keplerian_to_cartesian,
     validate_mission_file,
 )
@@ -369,7 +370,10 @@ def build_run_config(core, resolved, config_sha, strict=False):
 
         # Phase 6 GNC chain (FR-23/FR-25). The oracle flag comes from [gnc]
         # and is stamped into the log header by the core; sensors ride in
-        # canonical kind order (only "imu" exists this phase).
+        # the canonical FR-23 kind order, imposed here by
+        # canonical_sensor_items() rather than inherited from the resolved
+        # dict, because the two callers of this builder hand it that dict in
+        # different orders and the core is order-sensitive.
         if "gnc" in resolved:
             g = resolved["gnc"]
             gc = core.GncConfig()
@@ -380,7 +384,7 @@ def build_run_config(core, resolved, config_sha, strict=False):
             gc.guidance = _build_gnc_component(core, g["guidance"])
             gc.control = _build_gnc_component(core, g["control"])
             sensor_cfgs = []
-            for kind, spec in resolved["sensors"].items():
+            for kind, spec in canonical_sensor_items(resolved["sensors"]):
                 sc = core.GncSensorCfg()
                 sc.kind = kind
                 sc.sample_rate_hz = spec["sample_rate_hz"]
