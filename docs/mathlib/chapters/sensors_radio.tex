@@ -244,10 +244,8 @@ The module implementing this chapter is
 
 \begin{table}[htbp]
   \centering
-  \caption{Validation evidence for the radio-class sensors (doctest,
-    \texttt{cpp/tests/test\_sensors.cpp}; pytest,
-    \texttt{tests/python/test\_gnc\_missions.py} and
-    \texttt{test\_p6\_optical\_gates.py}).}
+  \caption{Validation evidence for the radio-class sensors: core (doctest,
+    \texttt{cpp/tests/test\_sensors.cpp}).}
   \label{tab:radio:validation}
   \begin{tabular}{lp{8.2cm}}
     \toprule
@@ -274,6 +272,21 @@ The module implementing this chapter is
     \testid{sensors_factory_kind_vocabulary} &
       Both radio kinds construct from the factory at their configured rate
       and report their own \texttt{sensors.*} group names. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the radio-class sensors: in-loop
+    behavior and the blind reference re-gates (pytest,
+    \texttt{tests/python/test\_gnc\_missions.py} and
+    \texttt{test\_p6\_optical\_gates.py}).}
+  \label{tab:radio:validation-py}
+  \begin{tabular}{lp{8.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
     \testid{test_full_sensor_suite_reruns_bit_identical} &
       Exit criterion~1 bit identity, radio half. Two seeded runs of the
       reference mission with all six FR-23 sensor kinds declared --- the

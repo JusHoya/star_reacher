@@ -302,10 +302,8 @@ The module implementing this chapter is
 
 \begin{table}[htbp]
   \centering
-  \caption{Validation evidence for the camera hook (doctest,
-    \texttt{cpp/tests/test\_sensors.cpp}; pytest,
-    \texttt{tests/python/test\_p6\_optical\_gates.py} and
-    \texttt{test\_gnc\_missions.py}).}
+  \caption{Validation evidence for the camera hook: core (doctest,
+    \texttt{cpp/tests/test\_sensors.cpp}).}
   \label{tab:camera:validation}
   \begin{tabular}{lp{8.2cm}}
     \toprule
@@ -328,6 +326,21 @@ The module implementing this chapter is
       The camera kind constructs from the factory at its configured rate
       and reports the \texttt{sensors.camera} group name; non-positive
       intrinsics are refused at construction. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the camera hook: in-loop behavior and
+    the blind pinhole re-gate (pytest,
+    \texttt{tests/python/test\_p6\_optical\_gates.py} and
+    \texttt{test\_gnc\_missions.py}).}
+  \label{tab:camera:validation-py}
+  \begin{tabular}{lp{8.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
     \testid{test_full_sensor_suite_reruns_bit_identical} &
       Exit criterion~1 bit identity, camera half. Two seeded runs of the
       reference mission with all six FR-23 sensor kinds declared agree on
@@ -399,7 +412,7 @@ The following remain outstanding:
     direction of Chapter~\ref{ch:sensors-optical} on one run, confirming
     both resolve the same apparent direction through the shared aberration
     path. No committed test compares the two.
-\end{itemize>
+\end{itemize}
 
 \paragraph{Scope of the implemented hook.} Landmarks are body-fixed points
 on the \emph{central} body, which is the surface-relative
