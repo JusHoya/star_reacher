@@ -146,6 +146,14 @@ module = "cpp/src/gnc/builtin.cpp"
 chapter = "docs/mathlib/chapters/gnc_builtin.tex"
 label = "ch:gnc-builtin"
 
+# The declared error-state layout: the plugin-boundary mechanism by which the
+# loop, rather than the component, forms nav.err. Its arithmetic is derived in
+# the same chapter as the built-in components that declare layouts.
+[[chapter]]
+module = "cpp/src/gnc/component.cpp"
+chapter = "docs/mathlib/chapters/gnc_builtin.tex"
+label = "ch:gnc-builtin"
+
 [[chapter]]
 module = "python/star_reacher/consistency.py"
 chapter = "docs/mathlib/chapters/ekf.tex"

@@ -310,8 +310,16 @@ Hamilton scalar-first, then body rate in rad/s) with P identically zero
 | `e` | `f64[n]` | | | truth minus estimate, in the estimator's own state convention |
 
 `nav.err` exists only alongside `nav.est`, **at the same rate and with the
-state dimension n** — record counts match by construction. This is a
-contract with the `star consistency` tooling, which computes NEES from
+state dimension n** — record counts match by construction. The converse does
+not hold: `nav.est` may be declared without `nav.err`. The error state is
+computed by the loop from the layout the estimator declares for its state
+vector (`gnc::ErrorBlock`, so that the estimator is never handed the true
+state — FR-24), and an estimator that declares no layout is written no
+`nav.err` group rather than a group of zeros, which would be
+indistinguishable from a perfect estimate. A reader must therefore test for
+the group's presence rather than infer it from `nav.est`.
+
+The `nav.err` contract is with the `star consistency` tooling, which computes NEES from
 `nav.err.e` and `nav.est.P` directly when m = n (per-epoch NEES ~
 chi-square(n); ensemble mean over R runs gated against two-sided 95 %
 chi-square(Rn)/R bounds); when the declared covariance dimension m differs

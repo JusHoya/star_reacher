@@ -40,6 +40,13 @@
 // entries are additive truth-minus-estimate. The consistency evaluator
 // reduces this 16-vector to the 15-vector P describes by
 // dtheta = 2 sgn(dq_w) dq_v (docs/formats/srlog_v1.md, nav.err).
+//
+// The filter does not compute that error itself: it DECLARES the layout
+// through error_layout() and the loop differences it against truth, so the
+// true state never reaches this component (FR-24; the descriptor rationale
+// is in gnc/component.hpp and sec:gnc:errlayout). The declared blocks are
+// the multiplicative attitude error at offset 0 followed by velocity,
+// position, gyro-bias, and accel-bias differences at 4, 7, 10, and 13.
 #ifndef STAR_GNC_EKF_HPP
 #define STAR_GNC_EKF_HPP
 

@@ -140,9 +140,39 @@ STAR_GNC_COMPONENTS = {"my_control": MyControl}
 
 An estimator additionally overrides `state_dim()` and `state()`, and may
 override `cov_dim()` / `covariance_upper()`, `innov_max_dim()` /
-`innovations()`, and `error_state(truth)`. Those hooks are what let the loop
-log `nav.est`, `nav.err`, and `nav.innov` generically for any estimator
+`innovations()`, and `error_layout()`. Those hooks are what let the loop log
+`nav.est`, `nav.err`, and `nav.innov` generically for any estimator
 dimension. A wrong-length return raises rather than being silently truncated.
+
+`error_layout()` is how an estimator earns a `nav.err` channel. It returns a
+list of `ErrorBlock`, each naming a truth quantity, the form of the
+difference, and the block's first slot in the state vector:
+
+```python
+def error_layout(self):
+    return [
+        ErrorBlock(ErrorQuantity.ATTITUDE, ErrorForm.QUAT_ERROR_LOCAL, 0),
+        ErrorBlock(ErrorQuantity.VELOCITY, ErrorForm.DIFFERENCE, 4),
+        ErrorBlock(ErrorQuantity.POSITION, ErrorForm.DIFFERENCE, 7),
+    ]
+```
+
+The blocks must tile `[0, state_dim())` exactly — no gaps, no overlaps —
+because a gap would be logged as zero, and zero in an error channel reads as
+"no error" rather than "not known". A partial layout raises at construction;
+declaring none at all is fine and simply means the run writes no `nav.err`.
+
+`ErrorForm` exists for attitude. An attitude error is a rotation difference
+rather than a subtraction, and which side it is composed on and how it is
+parameterized are the estimator's own convention, so the descriptor carries
+`QUAT_ERROR_LOCAL` (`dq = conj(q_est) ⊗ q_true`, resolved in the estimated
+body frame), `QUAT_ERROR_GLOBAL` (`dq = q_true ⊗ conj(q_est)`, resolved in
+the inertial frame), the `ROTATION_VECTOR_*` small-angle reductions
+`2 sgn(dq_w) dq_v` of each, and `QUAT_DIFFERENCE_ALIGNED` for an estimator
+that treats the four quaternion components as ordinary state entries.
+Quaternion forms are sign-canonicalized to the `+w` hemisphere so the double
+cover cannot flip the logged error between neighbouring epochs. Quaternions
+are scalar-first (D-7).
 
 A worked example — the built-in `pd_attitude` law reimplemented in Python and
 validated against it — is at
@@ -252,18 +282,39 @@ Truth does not appear in `GncInput`. A component sees the true state only
 through `GncInput.oracle`, and only when the scenario sets `oracle = true` —
 a debug flag stamped into the log header, so a run that used it cannot be
 mistaken for one that did not. `Sim.truth()` is a separate, privileged
-accessor that no component can reach.
+accessor available to a stepping driver and to no component.
 
-One channel is contractual rather than mechanical, and is called out here
-because reading the loop would not reveal it. `IGncComponent.error_state(truth)`
-exists so the loop can log `nav.err` — truth minus estimate in the estimator's
-own state convention, which only the estimator can compute. It is therefore
-called for **every** estimator on every cycle, regardless of the oracle flag,
-and it is handed the real truth state. An implementation is told not to retain
-that argument, and nothing enforces it.
+The guarantee is **structural**: no method of `IGncComponent` takes the truth
+state as an argument, so there is no override through which a plugin can
+receive it. That is worth stating precisely, because it was not always so.
+The interface used to expose `error_state(truth, e)`, which the loop called
+for every estimator on every cycle regardless of the oracle flag so the
+estimator could compute `nav.err` in its own state convention. An
+implementation was told not to retain the argument and nothing enforced it,
+which made FR-24's "never visible to GNC plugins" a promise rather than a
+property.
 
-The exposure is bounded to estimators: `error_state()` is called only when
-`state_dim() > 0`, so a guidance or control plugin is never offered truth.
-Closing it mechanically would mean giving up `nav.err` for plugin estimators,
-a trade this project has not made. A plugin estimator that cheats produces an
-implausibly good `nav.err`, which is what a reviewer should look at.
+`nav.err` is now computed by the loop. A component declares the layout of its
+state vector through `error_layout()` (section 2) and the loop differences
+that layout against truth itself, using the state vector the component
+already publishes through `state()`. What crosses the plugin boundary is a
+description of the state vector, which carries no information about the
+world, and `nav.err` survives for plugin estimators — which is why this route
+was taken rather than gating the old call on the oracle flag.
+
+What holds this claim up is an adversarial test rather than a reading of the
+loop:
+[`tests/python/test_gnc_python_component.py::test_truth_is_unreachable_from_a_python_component`](../tests/python/test_gnc_python_component.py)
+drives a component that scrapes every float reachable through the factory
+argument, the init context, itself, its garbage-collector referrers, the
+per-cycle input, and every argument of every virtual it can override, and
+requires the harvest to contain none of the evolving true state read from
+`Sim.truth()` on the same cycles.
+
+Two limits are worth stating plainly. A plugin runs in-process with the full
+privileges of the process (section 6), so what is guaranteed is that the
+*interface* hands over no truth — not that arbitrary Python cannot reach it
+by other means, such as the filesystem or the interpreter itself. Nothing
+here sandboxes a plugin, and the determinism contract has the same character.
+And a plugin estimator remains free to be dishonest about its own state; an
+implausibly good `nav.err` is what a reviewer should look at.

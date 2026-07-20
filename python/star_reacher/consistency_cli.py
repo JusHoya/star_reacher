@@ -236,7 +236,9 @@ def _extract_arrays(run: Run, source: str) -> tuple[dict[str, np.ndarray], list[
         problems.append(
             f"{source}: missing channel group 'nav.err' (the estimation "
             f"error vector); this log predates the Phase 6 navigation "
-            f"channels or was produced without an estimator in the loop"
+            f"channels, was produced without an estimator in the loop, or "
+            f"was produced by an estimator that declares no error layout "
+            f"(gnc::ErrorBlock), for which the loop writes no error channel"
         )
     else:
         vectors = _vector_channels(err)

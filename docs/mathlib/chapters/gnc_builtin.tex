@@ -112,6 +112,98 @@ with $\ell$ neutral cycles prepended. Both the computed and the applied
 commands are logged, which is what makes the criterion checkable from
 the log alone.
 
+\subsection{Declared error-state layout}
+\label{sec:gnc:errlayout}
+
+The \texttt{nav.err} channel records truth minus estimate in the
+estimator's own state convention. Forming it needs two things: the true
+state, and a reading of what each slot of the estimator's state vector
+means. Only the component knows the second, and the natural arrangement
+--- hand the component the truth state and let it subtract --- is the one
+this interface deliberately avoids. It would place the true state in the
+hands of every estimator on every cycle whether or not the scenario
+enabled the oracle, contradicting the FR-24 requirement that truth is
+privileged and never visible to GNC plugins, and no signature can prevent
+an implementation from retaining what it is passed.
+
+The dependency is therefore inverted. A component \emph{declares} the
+layout of its state vector; the loop reads the state vector the component
+publishes and performs the differencing itself. What crosses the plugin
+boundary is a description of the state vector, which carries no
+information about the world.
+
+A layout is an ordered set of blocks $\{(q_j, f_j, o_j)\}$, where $q_j$
+names the true quantity the block is compared against, $f_j$ the form of
+the comparison, and $o_j$ the block's first index. The blocks must tile
+$[0, n)$ exactly for a state of dimension $n$: a gap would be logged as
+zero, and zero in an error channel reads as ``no error'' rather than
+``not known''. A component that declares no layout is written no
+\texttt{nav.err} channel at all, for the same reason.
+
+For every quantity other than attitude the comparison is elementwise,
+with $\vv{x}$ the published state vector and $\vv{z}$ the corresponding
+true quantity:
+\begin{equation}
+  e_{o+i} = z_i - x_{o+i}.
+  \label{eq:gnc:errdiff}
+\end{equation}
+
+Attitude is why the form is declared rather than assumed. An attitude
+error is a rotation difference, not a subtraction of quaternion
+components, and both the side on which it is composed and its
+parameterization are conventions the estimator owns. Writing
+$\quat{q}_{\mathrm{est}}$ for the estimate read out of slots
+$o \ldots o+3$ (scalar-first, D-7) and $\quat{q}_{\mathrm{true}}$ for the
+true attitude, the two multiplicative forms are
+\begin{align}
+  \delta\quat{q}^{\mathrm{local}}
+    &= \quat{q}_{\mathrm{est}}^{*} \quatmul \quat{q}_{\mathrm{true}},
+  \label{eq:gnc:errlocal} \\
+  \delta\quat{q}^{\mathrm{global}}
+    &= \quat{q}_{\mathrm{true}} \quatmul \quat{q}_{\mathrm{est}}^{*},
+  \label{eq:gnc:errglobal}
+\end{align}
+the first resolved in the estimated body frame and the second in the
+inertial frame. Both are canonicalized to the $+w$ hemisphere, since
+$\quat{q}$ and $-\quat{q}$ are the same rotation and without the
+convention the four logged components could flip sign between
+neighbouring epochs for no physical reason.
+Equation~\eqref{eq:gnc:errlocal} is exactly the multiplicative error the
+reference filter of Chapter~\ref{ch:ekf} defines
+in~\eqref{eq:ekf:qerr}, which is how that filter's declared layout
+reproduces its previous output unchanged.
+
+Where the estimator's state carries a three-component attitude error
+instead of the quaternion, the same $\delta\quat{q}$ is reduced by the
+small-angle relation
+\begin{equation}
+  \delta\vv{\theta} = 2\,\mathrm{sgn}(\delta q_w)\,\delta\vv{q}_v,
+  \label{eq:gnc:errrotvec}
+\end{equation}
+which is the reduction the consistency evaluator applies to compare an
+attitude error against the covariance it describes.
+
+A fourth form serves an estimator that treats the four quaternion
+components as ordinary state entries, as the dead-reckoning navigator of
+Section~\ref{sec:gnc:deadreckoning} does. Its error is additive, with the
+true quaternion first sign-aligned to the estimate's hemisphere:
+\begin{equation}
+  e_{o+i} =
+  \mathrm{sgn}\!\left(\quat{q}_{\mathrm{true}} \cdot
+    \quat{q}_{\mathrm{est}}\right) q_{\mathrm{true},i}
+  - q_{\mathrm{est},i},
+  \qquad i = 0,\ldots,3,
+  \label{eq:gnc:erradd}
+\end{equation}
+where the sign convention takes $\mathrm{sgn}(0) = +1$ so that an exactly
+orthogonal pair is not flipped. Alignment is what keeps the additive
+difference continuous across the double cover.
+
+The loop differences against the same published state vector it writes to
+\texttt{nav.est} on that cycle, which makes the logged error provably the
+error of the logged estimate rather than of a second, separately read
+state.
+
 \subsection{Quaternion-error PD attitude controller}
 \label{sec:gnc:pd}
 

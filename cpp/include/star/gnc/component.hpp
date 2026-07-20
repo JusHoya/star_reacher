@@ -9,10 +9,14 @@
 // the structs here stay ABI-simple by design: fixed-size Eigen types,
 // doubles, bools - no unions, no variable-length payloads.
 //
-// Privileged-truth boundary (FR-25): `GncInput.oracle` is populated if and
-// only if the scenario sets `oracle = true` (stamped into the log header
+// Privileged-truth boundary (FR-24/FR-25): `GncInput.oracle` is populated if
+// and only if the scenario sets `oracle = true` (stamped into the log header
 // since v1.0). Components must treat `oracle.valid == false` as "truth does
-// not exist"; the loop never fills it otherwise.
+// not exist"; the loop never fills it otherwise. That is the ONLY route by
+// which a component sees the true state: no virtual below takes a TruthState,
+// so the guarantee is structural rather than a rule an implementation is
+// asked to honour. See the error-layout descriptor further down for how
+// nav.err is produced without one.
 //
 // Conventions (ch:notation, D-7): quaternions are Hamilton, scalar-first,
 // q_i2b inertial-to-body; vectors are SI, body frame unless suffixed
