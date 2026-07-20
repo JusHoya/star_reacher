@@ -46,11 +46,15 @@ jobs:
           python-version: '3.12'
       - name: Install package (builds the native core)
         run: pip install .
-      - name: Measure and gate the EC-4 absolutes
+      - name: Measure and gate the performance absolutes
         # perf_gate.py measures sequentially in a single process (D-10
-        # discipline) and exits nonzero if any absolute gate fails
-        # (Mission A < 60 s wall, ascent >= 100x real time, SRLOG sustained
-        # write >= 50 MB/s), so the absolute thresholds are live on every
+        # discipline) and exits nonzero if any absolute gate fails: the three
+        # Phase 5 EC-4 absolutes (Mission A < 60 s wall, open-loop ascent
+        # >= 100x real time, SRLOG sustained write >= 50 MB/s) and the Phase 6
+        # exit criterion 10 re-gate (closed-loop GNC ascent >= 100x real
+        # time). The metric set is perf_gate.py's default, so a criterion
+        # added there is gated here without editing this workflow.
+        # The absolute thresholds are live on every
         # run — including the first, when the median gate below still has no
         # history to compare against.
         run: python scripts/perf_gate.py measure --json perf/current.json
