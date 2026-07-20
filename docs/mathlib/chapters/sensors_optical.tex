@@ -507,8 +507,10 @@ $\vv{u} + \vv{\beta} - (\vv{u}\cdot\vv{\beta})\vv{u}$, a change at second
 order only) moves the residual to \qty{0.4696}{\mas} on this fixture and
 therefore survives. It survives because the tolerance is loose relative to
 the achievable agreement, not because \qty{1}{\mas} is forced by anything
-physical; a tolerance anywhere near the measured residual rejects it by
-four orders of magnitude. Tightening the assertion is accordingly a
+physical: at \qty{e-5}{\mas}, which would still leave roughly
+$400\times$ headroom over the measured residual, the same mutation is
+rejected by a factor of about $4.7\times10^{4}$. Tightening the assertion
+is accordingly a
 tolerance choice available at any time, and is tracked as
 \texttt{KNOWN-ISSUE-P6-2}. As of this commit the committed assertion reads
 \qty{1}{\mas}.
