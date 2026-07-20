@@ -450,12 +450,32 @@ void check_config_vehicle(const RunConfig& cfg) {
   }
 }
 
+// The nav component's declared error-state layout, validated against the run
+// (gnc/component.hpp). Captured ONCE per run: the declaration is fixed for
+// the run, and calling error_layout() once means a component cannot answer
+// the validation call and the per-cycle call differently. An empty result
+// means the component declared no layout and the run writes no nav.err.
+std::vector<gnc::ErrorBlock> capture_error_layout(
+    const RunConfig& cfg, const gnc::IGncComponent* nav) {
+  if (nav == nullptr || nav->state_dim() <= 0) return {};
+  std::vector<gnc::ErrorBlock> layout = nav->error_layout();
+  // The true IMU biases exist only when the run flies an IMU, which is
+  // decidable from the configured sensor list before the sensors are built.
+  bool imu_configured = false;
+  for (const gnc::GncSensorCfg& s : cfg.gnc.sensors) {
+    if (s.kind == "imu") imu_configured = true;
+  }
+  gnc::validate_error_layout(layout, nav->state_dim(), imu_configured);
+  return layout;
+}
+
 // Header declaration shared by the constructor and make_header_fields: a
 // pure function of the config plus the nav component's declared dimensions.
 log::SrlogHeaderFields build_header_fields(const RunConfig& cfg,
                                            int nav_state_dim,
                                            int nav_cov_dim,
-                                           int nav_innov_max_dim) {
+                                           int nav_innov_max_dim,
+                                           bool nav_err_enabled) {
   // Enabled force sources in canonical order; the forces group is declared
   // only when its rate is nonzero (unchanged Phase 4 logic).
   std::vector<std::string> sources;
@@ -507,7 +527,11 @@ log::SrlogHeaderFields build_header_fields(const RunConfig& cfg,
         // writer's default.
         fields.nav_cov_dim = static_cast<std::uint32_t>(nav_cov_dim);
       }
-      fields.nav_err_enabled = true;
+      // nav.err exists only for an estimator that declared how to read its
+      // state vector (gnc::ErrorBlock). An estimator that declares no layout
+      // gets no channel rather than a channel of zeros, which would be
+      // indistinguishable from a perfect estimate.
+      fields.nav_err_enabled = nav_err_enabled;
     }
     if (nav_innov_max_dim > 0) {
       fields.nav_innov_enabled = true;
@@ -558,6 +582,9 @@ struct VehicleCycle::Impl {
   std::unique_ptr<gnc::IGncComponent> nav;
   std::unique_ptr<gnc::IGncComponent> guidance;
   std::unique_ptr<gnc::IGncComponent> control;
+  // Declared before the writer because the header's nav.err declaration
+  // depends on whether this layout is empty.
+  std::vector<gnc::ErrorBlock> nav_layout;
   log::SrlogWriter writer;
 
   models::CentralBody central;
@@ -677,10 +704,12 @@ struct VehicleCycle::Impl {
         guidance(c.gnc.enabled ? gnc::make_component(c.gnc.guidance)
                                : nullptr),
         control(c.gnc.enabled ? gnc::make_component(c.gnc.control) : nullptr),
+        nav_layout(capture_error_layout(c, nav.get())),
         writer(out_path,
                build_header_fields(c, nav ? nav->state_dim() : 0,
                                    nav ? nav->cov_dim() : 0,
-                                   nav ? nav->innov_max_dim() : 0)) {
+                                   nav ? nav->innov_max_dim() : 0,
+                                   !nav_layout.empty())) {
     central = central_body_from_name(cfg.central_body);
     mu = models::central_body_gm(central);
     earth = central == models::CentralBody::kEarth;
@@ -1049,25 +1078,34 @@ struct VehicleCycle::Impl {
       // clause is about the returned value, not just the call).
       obs.nav_x_hat = x_hat_buf;
       obs.nav_p_upper = p_buf;
-      // nav.err is log-side analysis (truth never enters GncInput here);
-      // the estimator defines the truth-minus-estimate convention.
-      gnc::TruthState truth;
-      truth.valid = true;
-      truth.t_s = t;
-      truth.r_i_m = r_m;
-      truth.v_i_mps = v_mps;
-      truth.q_i2b = q;
-      truth.omega_b_radps = omega_b;
-      truth.mass_kg = sp.composite.mass_kg;
-      if (imu != nullptr) {
-        // An estimator carrying bias states needs the true biases to report
-        // a complete error; without an IMU there are none to report.
-        truth.imu_bias_valid = true;
-        truth.b_g_radps = imu->gyro_total_bias_radps();
-        truth.b_a_mps2 = imu->accel_total_bias_mps2();
+      if (!nav_layout.empty()) {
+        // nav.err is computed HERE, by the loop, from the layout the
+        // estimator declared and the state vector it just published - the
+        // truth state below never crosses the plugin boundary (FR-24, and
+        // the descriptor commentary in gnc/component.hpp). Differencing
+        // against x_hat_buf rather than against a second read of the
+        // component also makes nav.err provably the error of the nav.est
+        // record written on the same cycle.
+        gnc::TruthState truth;
+        truth.valid = true;
+        truth.t_s = t;
+        truth.r_i_m = r_m;
+        truth.v_i_mps = v_mps;
+        truth.q_i2b = q;
+        truth.omega_b_radps = omega_b;
+        truth.mass_kg = sp.composite.mass_kg;
+        if (imu != nullptr) {
+          // An estimator carrying bias states needs the true biases to
+          // report a complete error; a layout that declares bias blocks
+          // without a configured IMU was already refused at construction.
+          truth.imu_bias_valid = true;
+          truth.b_g_radps = imu->gyro_total_bias_radps();
+          truth.b_a_mps2 = imu->accel_total_bias_mps2();
+        }
+        gnc::compute_error_state(nav_layout, truth, x_hat_buf.data(),
+                                 e_buf.data());
+        writer.write_nav_err(t, e_buf.data(), e_buf.size());
       }
-      nav->error_state(truth, e_buf.data());
-      writer.write_nav_err(t, e_buf.data(), e_buf.size());
     }
     if (innov_mm > 0) {
       for (const gnc::InnovationSample& s : nav->innovations()) {
@@ -1598,6 +1636,7 @@ log::SrlogHeaderFields VehicleCycle::make_header_fields(const RunConfig& cfg) {
   int nav_n = 0;
   int nav_m = 0;
   int innov_mm = 0;
+  bool nav_err = false;
   if (cfg.gnc.enabled) {
     // A component instance is the source of truth for its declared
     // dimensions; construction is cheap and draw-free by contract.
@@ -1606,8 +1645,9 @@ log::SrlogHeaderFields VehicleCycle::make_header_fields(const RunConfig& cfg) {
     nav_n = tmp->state_dim();
     nav_m = tmp->cov_dim();
     innov_mm = tmp->innov_max_dim();
+    nav_err = !capture_error_layout(cfg, tmp.get()).empty();
   }
-  return build_header_fields(cfg, nav_n, nav_m, innov_mm);
+  return build_header_fields(cfg, nav_n, nav_m, innov_mm, nav_err);
 }
 
 }  // namespace star

@@ -540,12 +540,19 @@ class PyGncComponent : public star::gnc::IGncComponent {
     copy_fixed(ov(), "covariance_upper", m * (m + 1) / 2, p);
   }
 
-  void error_state(const star::gnc::TruthState& truth,
-                   double* e) const override {
+  // The FR-24 boundary in the trampoline: what a Python estimator returns
+  // here is a DESCRIPTION of its state vector, and no argument carries the
+  // state of the world. There is deliberately no truth-bearing virtual for a
+  // subclass to override - the loop computes nav.err itself from this
+  // declaration (gnc/component.hpp).
+  const std::vector<star::gnc::ErrorBlock>& error_layout() const override {
     py::gil_scoped_acquire gil;
-    const py::function ov = py::get_override(this, "error_state");
-    if (!ov) return star::gnc::IGncComponent::error_state(truth, e);
-    copy_fixed(ov(truth), "error_state", state_dim(), e);
+    const py::function ov = py::get_override(this, "error_layout");
+    if (!ov) return star::gnc::IGncComponent::error_layout();
+    // Cached in a member for the same reason as innovations(): the interface
+    // returns a reference, so the converted vector must outlive the call.
+    layout_cache_ = ov().cast<std::vector<star::gnc::ErrorBlock>>();
+    return layout_cache_;
   }
 
  private:
@@ -560,6 +567,7 @@ class PyGncComponent : public star::gnc::IGncComponent {
   }
 
   mutable std::vector<star::gnc::InnovationSample> innov_cache_;
+  mutable std::vector<star::gnc::ErrorBlock> layout_cache_;
 };
 
 // Name -> Python factory table for components registered from Python. It is
@@ -604,8 +612,8 @@ class PythonComponentHandle : public star::gnc::IGncComponent {
   void covariance_upper(double* p) const override {
     impl_->covariance_upper(p);
   }
-  void error_state(const star::gnc::TruthState& t, double* e) const override {
-    impl_->error_state(t, e);
+  const std::vector<star::gnc::ErrorBlock>& error_layout() const override {
+    return impl_->error_layout();
   }
 
  private:
@@ -1111,14 +1119,16 @@ PYBIND11_MODULE(_core, m) {
 
   py::class_<star::gnc::TruthState>(
       m, "TruthState",
-      "Truth kinematics snapshot. Two roles with two trust levels: as "
-      "GncInput.oracle it crosses the FR-25 privileged boundary only under "
-      "the scenario oracle flag; as the argument of error_state() it feeds "
-      "the nav.err log channel, which is analysis output rather than "
-      "component input. b_g_radps/b_a_mps2 are the true in-run IMU biases, "
-      "valid only when the run configures an IMU, so a bias-carrying "
-      "estimator reports a complete error instead of logging zeros that read "
-      "as 'no error'.")
+      "Truth kinematics snapshot: privileged data (FR-24). It reaches a GNC "
+      "component on exactly one path, GncInput.oracle, and only when the "
+      "scenario sets oracle = true; the loop's own use of it to compute "
+      "nav.err never crosses the plugin boundary, because the loop does that "
+      "arithmetic itself from the component's declared error_layout(). "
+      "Sim.truth() is the separate privileged accessor, available to a "
+      "stepping driver rather than to a component. b_g_radps/b_a_mps2 are "
+      "the true in-run IMU biases, valid only when the run configures an "
+      "IMU, so a bias-carrying estimator reports a complete error instead of "
+      "logging zeros that read as 'no error'.")
       .def(py::init<>())
       .def_readwrite("valid", &star::gnc::TruthState::valid)
       .def_readwrite("t_s", &star::gnc::TruthState::t_s)
@@ -1246,6 +1256,60 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite("y", &star::gnc::InnovationSample::y)
       .def_readwrite("s_upper", &star::gnc::InnovationSample::s_upper);
 
+  py::enum_<star::gnc::ErrorQuantity>(
+      m, "ErrorQuantity",
+      "Which truth quantity a block of an estimator's state vector is "
+      "compared against when the loop computes nav.err. Each names a "
+      "quantity the simulator knows truly; a state with no truth counterpart "
+      "cannot be declared.")
+      .value("POSITION", star::gnc::ErrorQuantity::kPosition)
+      .value("VELOCITY", star::gnc::ErrorQuantity::kVelocity)
+      .value("ATTITUDE", star::gnc::ErrorQuantity::kAttitude)
+      .value("ANGULAR_RATE", star::gnc::ErrorQuantity::kAngularRate)
+      .value("GYRO_BIAS", star::gnc::ErrorQuantity::kGyroBias)
+      .value("ACCEL_BIAS", star::gnc::ErrorQuantity::kAccelBias)
+      .value("MASS", star::gnc::ErrorQuantity::kMass);
+
+  py::enum_<star::gnc::ErrorForm>(
+      m, "ErrorForm",
+      "How the error in a declared quantity is formed. DIFFERENCE is "
+      "elementwise truth minus estimate and is the only form for every "
+      "quantity except ATTITUDE. An attitude error is a rotation difference: "
+      "QUAT_ERROR_LOCAL is dq = conj(q_est) (x) q_true (4 slots, resolved in "
+      "the estimated body frame), QUAT_ERROR_GLOBAL is dq = q_true (x) "
+      "conj(q_est) (4 slots, resolved in the inertial frame), and the "
+      "ROTATION_VECTOR forms are the small-angle reduction 2 sgn(dq_w) dq_v "
+      "of the respective dq (3 slots). Every quaternion form is sign "
+      "canonicalized to the +w hemisphere. Quaternions are scalar-first "
+      "(D-7).")
+      .value("DIFFERENCE", star::gnc::ErrorForm::kDifference)
+      .value("QUAT_ERROR_LOCAL", star::gnc::ErrorForm::kQuatErrorLocal)
+      .value("QUAT_ERROR_GLOBAL", star::gnc::ErrorForm::kQuatErrorGlobal)
+      .value("ROTATION_VECTOR_LOCAL",
+             star::gnc::ErrorForm::kRotationVectorLocal)
+      .value("ROTATION_VECTOR_GLOBAL",
+             star::gnc::ErrorForm::kRotationVectorGlobal);
+
+  py::class_<star::gnc::ErrorBlock>(
+      m, "ErrorBlock",
+      "One contiguous run of an estimator's state vector, and how its error "
+      "is formed. offset is the index of the block's first slot, shared by "
+      "the state vector and the error vector. The blocks a component returns "
+      "from error_layout() must tile [0, state_dim()) exactly.")
+      .def(py::init<>())
+      .def(py::init([](star::gnc::ErrorQuantity q, star::gnc::ErrorForm f,
+                       int offset) {
+             star::gnc::ErrorBlock b;
+             b.quantity = q;
+             b.form = f;
+             b.offset = offset;
+             return b;
+           }),
+           py::arg("quantity"), py::arg("form"), py::arg("offset"))
+      .def_readwrite("quantity", &star::gnc::ErrorBlock::quantity)
+      .def_readwrite("form", &star::gnc::ErrorBlock::form)
+      .def_readwrite("offset", &star::gnc::ErrorBlock::offset);
+
   py::class_<star::gnc::IGncComponent, PyGncComponent>(
       m, "IGncComponent",
       "The FR-25 GNC plugin base. Subclass it in Python and override "
@@ -1254,10 +1318,16 @@ PYBIND11_MODULE(_core, m) {
       "file by that name.\n\n"
       "An estimator additionally overrides state_dim() and state(), and may "
       "override cov_dim()/covariance_upper(), innov_max_dim()/innovations(), "
-      "and error_state(truth). state() returns state_dim() floats, "
+      "and error_layout(). state() returns state_dim() floats and "
       "covariance_upper() returns cov_dim()*(cov_dim()+1)/2 floats (packed "
-      "row-major upper triangle), and error_state() returns state_dim() "
-      "floats; a wrong length raises rather than being silently truncated.\n\n"
+      "row-major upper triangle); a wrong length raises rather than being "
+      "silently truncated.\n\n"
+      "error_layout() returns a list of ErrorBlock describing what each slot "
+      "of the state vector means. The loop uses it to compute nav.err "
+      "itself: no method of this class is ever handed the true state, which "
+      "is what makes FR-24's privileged-truth boundary structural rather "
+      "than a promise. An estimator that declares no layout gets no nav.err "
+      "channel.\n\n"
       "DETERMINISM (D-10): update() runs inside the deterministic time loop. "
       "It must not read the clock, perform I/O, or draw from an unseeded "
       "RNG. See star_reacher.sim for the full contract - the core cannot "
@@ -1267,7 +1337,8 @@ PYBIND11_MODULE(_core, m) {
       .def("update", &star::gnc::IGncComponent::update, py::arg("input"))
       .def("state_dim", &star::gnc::IGncComponent::state_dim)
       .def("cov_dim", &star::gnc::IGncComponent::cov_dim)
-      .def("innov_max_dim", &star::gnc::IGncComponent::innov_max_dim);
+      .def("innov_max_dim", &star::gnc::IGncComponent::innov_max_dim)
+      .def("error_layout", &star::gnc::IGncComponent::error_layout);
 
   m.def("register_python_component", &register_python_component,
         py::arg("name"), py::arg("factory"),

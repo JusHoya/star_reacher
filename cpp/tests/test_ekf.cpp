@@ -408,7 +408,21 @@ TEST_CASE("ekf_error_state_reports_the_multiplicative_attitude_error") {
   // The nav.err contract: the leading four entries are the
   // sign-canonicalized error quaternion of eq:ekf:qerr, the rest are
   // additive truth-minus-estimate, including the bias rows.
+  //
+  // The filter no longer computes this itself: it DECLARES the layout of its
+  // state vector and the loop does the arithmetic, so the truth state below
+  // never reaches the component (FR-24; gnc/component.hpp). This exercises
+  // the same path the loop takes - declared layout, published state vector,
+  // compute_error_state.
   std::unique_ptr<IGncComponent> f = make_ekf();
+  const std::vector<star::gnc::ErrorBlock>& layout = f->error_layout();
+  star::gnc::validate_error_layout(layout, f->state_dim(), true);
+  REQUIRE(layout.size() == 5);
+  CHECK(layout[0].quantity == star::gnc::ErrorQuantity::kAttitude);
+  CHECK(layout[0].form == star::gnc::ErrorForm::kQuatErrorLocal);
+  std::vector<double> x_hat(kN, 0.0);
+  f->state(x_hat.data());
+
   star::gnc::TruthState truth;
   truth.valid = true;
   truth.r_i_m = kPos + Eigen::Vector3d(1.0, 2.0, 3.0);
@@ -424,7 +438,7 @@ TEST_CASE("ekf_error_state_reports_the_multiplicative_attitude_error") {
   truth.b_a_mps2 = Eigen::Vector3d(1.0e-6, -2.0e-6, 3.0e-6);
 
   std::vector<double> e(kN, 0.0);
-  f->error_state(truth, e.data());
+  star::gnc::compute_error_state(layout, truth, x_hat.data(), e.data());
   // Estimate is identity, so the error quaternion is the truth quaternion,
   // already in the +w hemisphere.
   CHECK(e[0] == doctest::Approx(truth.q_i2b.w()));
@@ -438,7 +452,7 @@ TEST_CASE("ekf_error_state_reports_the_multiplicative_attitude_error") {
     truth.q_i2b = Eigen::Quaterniond(-truth.q_i2b.w(), -truth.q_i2b.x(),
                                      -truth.q_i2b.y(), -truth.q_i2b.z());
     std::vector<double> e2(kN, 0.0);
-    f->error_state(truth, e2.data());
+    star::gnc::compute_error_state(layout, truth, x_hat.data(), e2.data());
     CHECK(e2[0] > 0.0);
     CHECK(e2[1] == doctest::Approx(e[1]));
   }

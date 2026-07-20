@@ -45,11 +45,13 @@ struct ImuSample {
   Eigen::Vector3d dv_b_mps = Eigen::Vector3d::Zero();
 };
 
-// Truth kinematics/dynamics snapshot. Used in two distinct roles with two
-// distinct trust levels: as GncInput.oracle it crosses the FR-25 privileged
-// boundary only under the scenario oracle flag; as the argument of
-// IGncComponent::error_state it feeds the nav.err log channel, which is
-// analysis output, not component input.
+// Truth kinematics/dynamics snapshot. It is privileged data (FR-24) and
+// exists on two paths only, neither of which reaches a component
+// unconditionally: as GncInput.oracle it crosses the FR-25 boundary if and
+// only if the scenario sets oracle = true, and inside the loop it is an
+// argument to compute_error_state(), which the LOOP calls to write nav.err.
+// No virtual on IGncComponent takes it, so a component cannot receive it by
+// overriding anything.
 struct TruthState {
   bool valid = false;
   double t_s = 0.0;
@@ -224,6 +226,111 @@ struct InnovationSample {
   std::vector<double> s_upper;
 };
 
+// --- declared error-state layout (FR-24/FR-25) ----------------------------
+//
+// nav.err is truth minus estimate expressed in the estimator's own state
+// convention, so computing it needs two things: the truth state, and a
+// reading of what each slot of the estimator's state vector means. Only the
+// component knows the second. The obvious arrangement - hand the component
+// the truth state and let it subtract - is the one this interface
+// deliberately does NOT use, because it would put the real truth state in
+// the hands of every estimator on every cycle whether or not the scenario
+// enabled the oracle, which is precisely what FR-24 ("privileged; never
+// visible to GNC plugins") and FR-25 ("truth never appears in GncInput")
+// exist to forbid. A component that retained the argument would have truth
+// available to its next update(), and no signature can prevent that.
+//
+// So the direction is inverted. The component DECLARES its layout, once,
+// through error_layout(); the loop reads the state vector the component
+// already publishes through state() and does the differencing itself. What
+// crosses the plugin boundary is a description of the state vector, which
+// carries no information about the world. nav.err survives for plugin
+// estimators - that is the point of the descriptor - and the privileged
+// boundary becomes structural instead of contractual.
+
+// Which truth quantity a block of the state vector is compared against. Each
+// names a member of TruthState; a quantity with no truth counterpart cannot
+// be declared, which is what bounds the mechanism.
+enum class ErrorQuantity {
+  kPosition,     // TruthState::r_i_m, 3 slots
+  kVelocity,     // TruthState::v_i_mps, 3 slots
+  kAttitude,     // TruthState::q_i2b, 4 or 3 slots depending on the form
+  kAngularRate,  // TruthState::omega_b_radps, 3 slots
+  kGyroBias,     // TruthState::b_g_radps, 3 slots (needs a configured IMU)
+  kAccelBias,    // TruthState::b_a_mps2, 3 slots (needs a configured IMU)
+  kMass,         // TruthState::mass_kg, 1 slot
+};
+
+// How the error in that quantity is formed from truth and the estimate.
+// Attitude is the reason this enum exists: an attitude error is a rotation
+// difference, not a subtraction, and which side it is composed on and how it
+// is parameterized are conventions the component owns. Declaring the
+// convention lets the loop reproduce the component's own arithmetic exactly
+// rather than imposing one.
+enum class ErrorForm {
+  // Elementwise truth minus estimate. The only admissible form for every
+  // quantity except kAttitude, and inadmissible for kAttitude.
+  kDifference,
+  // 4 slots, quaternion: dq = conj(q_est) (x) q_true, the error resolved in
+  // the ESTIMATED body frame (a "local" or right-multiplied error), sign
+  // canonicalized to the +w hemisphere so the double cover cannot flip the
+  // logged value between neighbouring epochs. This is eq:ekf:qerr, the form
+  // the built-in error_state_ekf declares.
+  kQuatErrorLocal,
+  // 4 slots, quaternion: dq = q_true (x) conj(q_est), the error resolved in
+  // the inertial frame (a "global" or left-multiplied error), likewise sign
+  // canonicalized.
+  kQuatErrorGlobal,
+  // 3 slots: the small-angle vector 2 sgn(dq_w) dq_v of the local dq above,
+  // for an estimator whose state carries a three-component attitude error
+  // rather than the quaternion itself.
+  kRotationVectorLocal,
+  // 3 slots: the same reduction of the global dq.
+  kRotationVectorGlobal,
+  // 4 slots: the plain componentwise difference q_true - q_est, with q_true
+  // first sign-aligned to the estimate's hemisphere (q and -q are the same
+  // attitude, and alignment is what keeps the difference continuous). This
+  // is an ADDITIVE quaternion error rather than a rotation, appropriate to
+  // an estimator that treats the four quaternion components as ordinary
+  // state entries; the built-in dead_reckoning navigator declares it.
+  kQuatDifferenceAligned,
+};
+
+// One contiguous run of the state vector, and how its error is formed.
+// `offset` is the index of the block's first slot, shared by the state
+// vector and the error vector - they have the same layout, which is what
+// nav.err's "same dimension as the state" contract already implies.
+struct ErrorBlock {
+  ErrorQuantity quantity = ErrorQuantity::kPosition;
+  ErrorForm form = ErrorForm::kDifference;
+  int offset = 0;
+};
+
+// Slots a block occupies. Throws std::invalid_argument for a
+// quantity/form pairing that has no meaning (an attitude subtraction, or a
+// rotation error of a position).
+int error_block_size(ErrorQuantity quantity, ErrorForm form);
+
+// Check a declared layout against the state dimension it describes and
+// against what the run can supply, throwing std::invalid_argument naming the
+// offending block otherwise. The layout must TILE [0, state_dim) exactly:
+// no gaps, no overlaps, nothing past the end. A partial layout is refused
+// rather than zero-filled, because a zero in nav.err reads as "no error"
+// when the truth is "not known" - the same distinction TruthState draws with
+// imu_bias_valid. imu_bias_available reports whether the run configures an
+// IMU, without which the bias quantities have no truth to difference.
+void validate_error_layout(const std::vector<ErrorBlock>& layout,
+                           int state_dim, bool imu_bias_available);
+
+// Write truth minus estimate into e[0..state_dim) from the estimate x_hat
+// (the component's own state vector, as returned by state()) and the truth
+// state, following `layout`. Preconditions are those validate_error_layout
+// checks; the loop validates once at run construction and calls this per
+// cycle.
+void compute_error_state(const std::vector<ErrorBlock>& layout,
+                         const TruthState& truth, const double* x_hat,
+                         double* e);
+
 // The FR-25 abstract base. update() runs once per control cycle in chain
 // order and must be deterministic (D-10): no clock, no I/O, no global
 // state. The state/covariance/error introspection exists so the loop can
@@ -260,12 +367,13 @@ class IGncComponent {
   // Covariance packed row-major upper triangle into p[0..m(m+1)/2),
   // m = cov_dim(). Called only when state_dim() > 0.
   virtual void covariance_upper(double* p) const;
-  // Truth-minus-estimate error in the estimator's own state convention,
-  // into e[0..n) (nav.err contract: same dimension as the state). The
-  // truth argument is log-side analysis data, not component input - it is
-  // supplied by the loop for every run regardless of the oracle flag, and
-  // implementations must not retain it.
-  virtual void error_state(const TruthState& truth, double* e) const;
+  // This estimator's state layout, block by block, from which the loop
+  // computes nav.err (see the descriptor commentary above). The default is
+  // an empty layout: the component declares none, and the run then writes
+  // no nav.err channel at all rather than a channel of zeros that would be
+  // indistinguishable from a perfect estimate. Called once per run, at
+  // construction, so the declaration is fixed for the run.
+  virtual const std::vector<ErrorBlock>& error_layout() const;
 };
 
 // --- registry (FR-25: built-ins selected by config string) ----------------

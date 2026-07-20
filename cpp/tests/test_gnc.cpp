@@ -207,16 +207,27 @@ TEST_CASE("gnc_dead_reckoning_golden") {
   nav->covariance_upper(p);
   for (double v : p) CHECK(v == 0.0);
 
-  // error_state sign-aligns the truth quaternion: -q_hat encodes the same
-  // attitude as q_hat, so the attitude error must vanish for both signs.
+  // The declared error layout (FR-24): the loop, not the component, forms
+  // nav.err. The attitude block is the sign-aligned additive form, so -q_hat
+  // encodes the same attitude as q_hat and the error must vanish for both
+  // signs.
   double x[7];
   nav->state(x);
+  const std::vector<star::gnc::ErrorBlock>& layout = nav->error_layout();
+  REQUIRE(layout.size() == 2);
+  CHECK(layout[0].quantity == star::gnc::ErrorQuantity::kAttitude);
+  CHECK(layout[0].form == star::gnc::ErrorForm::kQuatDifferenceAligned);
+  CHECK(layout[0].offset == 0);
+  CHECK(layout[1].quantity == star::gnc::ErrorQuantity::kAngularRate);
+  CHECK(layout[1].offset == 4);
+  star::gnc::validate_error_layout(layout, nav->state_dim(), false);
+
   star::gnc::TruthState truth;
   truth.valid = true;
   truth.q_i2b = Eigen::Quaterniond(-x[0], -x[1], -x[2], -x[3]);
   truth.omega_b_radps = Eigen::Vector3d(x[4], x[5], x[6]);
   double e[7];
-  nav->error_state(truth, e);
+  star::gnc::compute_error_state(layout, truth, x, e);
   for (int i = 0; i < 7; ++i) CHECK(e[i] == 0.0);
 }
 

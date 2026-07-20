@@ -146,23 +146,25 @@ class DeadReckoningNav final : public IGncComponent {
     for (int i = 0; i < 7 * (7 + 1) / 2; ++i) p[i] = 0.0;
   }
 
-  void error_state(const TruthState& truth, double* e) const override {
-    // Truth minus estimate in the state convention, with the truth
-    // quaternion sign-aligned to the estimate first (q and -q encode the
-    // same attitude; alignment keeps e continuous).
-    Eigen::Quaterniond qt = truth.q_i2b;
-    const double dot = qt.w() * q_hat_.w() + qt.x() * q_hat_.x() +
-                       qt.y() * q_hat_.y() + qt.z() * q_hat_.z();
-    if (dot < 0.0) {
-      qt = Eigen::Quaterniond(-qt.w(), -qt.x(), -qt.y(), -qt.z());
-    }
-    e[0] = qt.w() - q_hat_.w();
-    e[1] = qt.x() - q_hat_.x();
-    e[2] = qt.y() - q_hat_.y();
-    e[3] = qt.z() - q_hat_.z();
-    e[4] = truth.omega_b_radps[0] - omega_hat_[0];
-    e[5] = truth.omega_b_radps[1] - omega_hat_[1];
-    e[6] = truth.omega_b_radps[2] - omega_hat_[2];
+  const std::vector<ErrorBlock>& error_layout() const override {
+    // How the loop reads this navigator's state vector to form nav.err
+    // without ever handing the component the truth state (FR-24; the
+    // descriptor commentary is in gnc/component.hpp). The state is the
+    // attitude quaternion followed by the body rate, so the layout is those
+    // two blocks in that order.
+    //
+    // The attitude block declares kQuatDifferenceAligned: this navigator
+    // treats the four quaternion components as ordinary state entries and
+    // reports their plain difference, with the truth quaternion sign-aligned
+    // to the estimate first (q and -q encode the same attitude, and
+    // alignment is what keeps the error continuous). That is deliberately
+    // NOT the multiplicative convention the reference EKF uses - the point
+    // of a declared layout is that each estimator keeps its own.
+    static const std::vector<ErrorBlock> kLayout = {
+        {ErrorQuantity::kAttitude, ErrorForm::kQuatDifferenceAligned, 0},
+        {ErrorQuantity::kAngularRate, ErrorForm::kDifference, 4},
+    };
+    return kLayout;
   }
 
  private:

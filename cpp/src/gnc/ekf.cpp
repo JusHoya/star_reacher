@@ -228,36 +228,30 @@ class ErrorStateEkf final : public IGncComponent {
 
   void covariance_upper(double* p) const override { pack_upper(p_, p); }
 
-  void error_state(const TruthState& truth, double* e) const override {
-    // The attitude entry is the MULTIPLICATIVE error of eq:ekf:qerr,
-    // dq = q_hat^-1 (x) q_true, sign-canonicalized to the +w hemisphere so
-    // the double cover cannot flip e between neighbouring epochs. The
-    // consistency evaluator reduces it to the three-component dtheta the
-    // covariance describes by dtheta = 2 sgn(dq_w) dq_v.
-    Eigen::Quaterniond dq = rotation::quat_multiply(
-        rotation::quat_conjugate(q_hat_), truth.q_i2b);
-    if (dq.w() < 0.0) {
-      dq = Eigen::Quaterniond(-dq.w(), -dq.x(), -dq.y(), -dq.z());
-    }
-    e[0] = dq.w();
-    e[1] = dq.x();
-    e[2] = dq.y();
-    e[3] = dq.z();
-    for (int i = 0; i < 3; ++i) {
-      e[4 + i] = truth.v_i_mps[i] - v_hat_[i];
-      e[7 + i] = truth.r_i_m[i] - p_hat_[i];
-    }
-    // The truth bias states exist only when the run configures an IMU; the
-    // loop always supplies them for this filter (init() rejects a run
-    // without one), so the guard is a contract check, not a fallback.
-    const Eigen::Vector3d bg_true =
-        truth.imu_bias_valid ? truth.b_g_radps : Eigen::Vector3d::Zero();
-    const Eigen::Vector3d ba_true =
-        truth.imu_bias_valid ? truth.b_a_mps2 : Eigen::Vector3d::Zero();
-    for (int i = 0; i < 3; ++i) {
-      e[10 + i] = bg_true[i] - bg_hat_[i];
-      e[13 + i] = ba_true[i] - ba_hat_[i];
-    }
+  const std::vector<ErrorBlock>& error_layout() const override {
+    // The state vector this filter publishes through state(), read block by
+    // block, so the loop can form nav.err without this component ever
+    // holding the truth state (the FR-24 boundary; see the descriptor
+    // commentary in gnc/component.hpp). The blocks tile x_hat in the
+    // eq:ekf:staterr ordering, quaternion-led.
+    //
+    // The attitude block declares kQuatErrorLocal, which is the
+    // MULTIPLICATIVE error of eq:ekf:qerr, dq = q_hat^-1 (x) q_true,
+    // sign-canonicalized to the +w hemisphere so the double cover cannot
+    // flip the logged error between neighbouring epochs. The consistency
+    // evaluator reduces it to the three-component dtheta the covariance
+    // describes by dtheta = 2 sgn(dq_w) dq_v.
+    //
+    // The bias blocks are why init() rejects a run without an IMU: without
+    // one there is no true bias to difference and the layout is refused.
+    static const std::vector<ErrorBlock> kLayout = {
+        {ErrorQuantity::kAttitude, ErrorForm::kQuatErrorLocal, 0},
+        {ErrorQuantity::kVelocity, ErrorForm::kDifference, 4},
+        {ErrorQuantity::kPosition, ErrorForm::kDifference, 7},
+        {ErrorQuantity::kGyroBias, ErrorForm::kDifference, 10},
+        {ErrorQuantity::kAccelBias, ErrorForm::kDifference, 13},
+    };
+    return kLayout;
   }
 
  private:
