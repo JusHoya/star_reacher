@@ -149,15 +149,15 @@ nominal state mechanizes as
     \Delta\hat{\vv{v}}^{I}_k &= \hat{\mat{C}}\Bigl(\Delta\hat{\vv{v}}_k
         + \tfrac{1}{2}\,\Delta\hat{\vv{\theta}}_k \times
           \Delta\hat{\vv{v}}_k\Bigr),\\
-    \tilde{\vv{v}}_{k} &= \hat{\vv{v}}_{k-1} + \Delta\hat{\vv{v}}^{I}_k
+    \bar{\vv{v}}_{k} &= \hat{\vv{v}}_{k-1} + \Delta\hat{\vv{v}}^{I}_k
       + \hat{\vv{g}}(\hat{\vv{p}}_{k-1})\,\Delta t,
     \qquad
-    \tilde{\vv{p}}_{k} = \hat{\vv{p}}_{k-1}
+    \bar{\vv{p}}_{k} = \hat{\vv{p}}_{k-1}
       + \tfrac{1}{2}\bigl(\hat{\vv{v}}_{k-1}
-        + \tilde{\vv{v}}_{k}\bigr)\,\Delta t,\\
+        + \bar{\vv{v}}_{k}\bigr)\,\Delta t,\\
     \hat{\vv{v}}_{k} &= \hat{\vv{v}}_{k-1} + \Delta\hat{\vv{v}}^{I}_k
       + \tfrac{1}{2}\bigl(\hat{\vv{g}}(\hat{\vv{p}}_{k-1})
-        + \hat{\vv{g}}(\tilde{\vv{p}}_{k})\bigr)\,\Delta t,\\
+        + \hat{\vv{g}}(\bar{\vv{p}}_{k})\bigr)\,\Delta t,\\
     \hat{\vv{p}}_{k} &= \hat{\vv{p}}_{k-1}
       + \tfrac{1}{2}\bigl(\hat{\vv{v}}_{k-1}
         + \hat{\vv{v}}_{k}\bigr)\,\Delta t,\\
@@ -190,7 +190,7 @@ blind to it. Its contribution is therefore not a measurement the filter
 transcribes but an integral the filter must evaluate itself, and the
 accuracy of that quadrature is the navigator's own responsibility.
 Equation~\eqref{eq:ekf:mech} evaluates it with a predictor-corrector
---- an Euler predictor $(\tilde{\vv{v}}_k, \tilde{\vv{p}}_k)$, then the
+--- an Euler predictor $(\bar{\vv{v}}_k, \bar{\vv{p}}_k)$, then the
 trapezoidal rule on $\hat{\vv{g}}$ between the endpoints --- which is
 Heun's method on the gravitational part of the dynamics (Hairer,
 N\o{}rsett, and Wanner~\cite{hairer1993}), of local order
