@@ -994,3 +994,196 @@ def test_stack_walking_reaches_truth_under_a_python_stepping_driver(tmp_path):
     # It is the real, evolving state, not a stale or placeholder value.
     assert len({tuple(r) for r in reached}) > 100
     assert reached[-1] in truth_r
+
+
+# --- the plugin boundary as a memory-safety perimeter ----------------------
+#
+# Everything a Python component returns crosses into fixed-size C++ buffers
+# that were sized ONCE, at GNC activation, from the dimensions the component
+# declared then. Nothing resizes them afterwards. A Python method, though, is
+# re-evaluated on every call, so a component can report one dimension at
+# construction and a different one later - and each of the copies below was
+# bounded by a value the component controls rather than by the destination.
+# These are the reachable-from-pure-Python heap overruns of the Phase 6
+# review (findings 2 and 3); each must now be a named exception.
+
+
+def test_a_growing_state_dim_is_refused_rather_than_overrunning(tmp_path):
+    """An estimator whose declared state dimension changes mid-run raises.
+
+    The shape the review found: copy_fixed() compared the length Python
+    returned against state_dim(), which it re-queried from Python on the
+    same call, so both moved together and the check passed while the
+    destination stayed the six doubles it was allocated at construction.
+    An augmented or adaptive filter - exactly what FR-25 exists to allow -
+    is the realistic way to write this by accident.
+    """
+    core = _core_or_fail()
+
+    class GrowingNav(core.IGncComponent):
+        def __init__(self, cfg):
+            super().__init__()
+            self.n = 7
+            self.cycles = 0
+
+        def init(self, ctx):
+            pass
+
+        def update(self, inp):
+            self.cycles += 1
+            if self.cycles > 3:
+                self.n = 12  # the state augments mid-run
+            out = core.GncOutput()
+            out.valid = True
+            return out
+
+        def state_dim(self):
+            return self.n
+
+        def cov_dim(self):
+            return 7  # pinned, so only state_dim diverges
+
+        def state(self):
+            return [0.0] * self.n
+
+        def covariance_upper(self):
+            return [0.0] * (7 * 8 // 2)
+
+    name = _register(core, GrowingNav, "growing_nav")
+    cfg = _swap_component(core, _run_config(core, EKF_MISSION), "nav", name)
+    with pytest.raises(Exception) as excinfo:
+        _drive(core, cfg, tmp_path / "growing.srlog")
+    message = str(excinfo.value)
+    # Names the method, both dimensions, and why they must agree.
+    assert "state_dim" in message
+    assert "12" in message and "7" in message
+    assert "fixed for the lifetime of a run" in message
+
+
+def test_a_negative_declared_dimension_is_refused(tmp_path):
+    """A negative dimension would make the length check vacuously true."""
+    core = _core_or_fail()
+
+    class NegativeNav(core.IGncComponent):
+        def __init__(self, cfg):
+            super().__init__()
+
+        def init(self, ctx):
+            pass
+
+        def update(self, inp):
+            out = core.GncOutput()
+            out.valid = True
+            return out
+
+        def state_dim(self):
+            return -1
+
+    name = _register(core, NegativeNav, "negative_nav")
+    cfg = _swap_component(core, _run_config(core, EKF_MISSION), "nav", name)
+    with pytest.raises(Exception) as excinfo:
+        core.Sim(cfg, str(tmp_path / "negative.srlog"))
+    assert "must not be negative" in str(excinfo.value)
+
+
+def _innovating_nav(core, y_len, s_len, declared_max):
+    """A minimal estimator returning one innovation of a stated shape."""
+
+    class InnovNav(core.IGncComponent):
+        def __init__(self, cfg):
+            super().__init__()
+            self.samples = []
+
+        def init(self, ctx):
+            pass
+
+        def update(self, inp):
+            s = core.InnovationSample()
+            s.sensor_id = 0
+            s.y = [1.0] * y_len
+            s.s_upper = [1.0] * s_len
+            self.samples = [s]
+            out = core.GncOutput()
+            out.valid = True
+            return out
+
+        def state_dim(self):
+            return 4
+
+        def cov_dim(self):
+            return 4
+
+        def innov_max_dim(self):
+            return declared_max
+
+        def state(self):
+            return [1.0, 0.0, 0.0, 0.0]
+
+        def covariance_upper(self):
+            return [0.0] * 10
+
+        def innovations(self):
+            return self.samples
+
+    return InnovNav
+
+
+def test_an_innovation_wider_than_declared_is_refused(tmp_path):
+    """y longer than innov_max_dim() was a write past the end of the buffer.
+
+    The review's reproduction: declare 1, return 6, and the copy runs 40
+    bytes past a one-element vector on the first aiding update. The bound is
+    now the destination buffer's own capacity, fixed at activation.
+    """
+    core = _core_or_fail()
+    cls = _innovating_nav(core, y_len=6, s_len=21, declared_max=1)
+    name = _register(core, cls, "wide_innov")
+    cfg = _swap_component(core, _run_config(core, EKF_MISSION), "nav", name)
+    with pytest.raises(Exception) as excinfo:
+        _drive(core, cfg, tmp_path / "wide.srlog")
+    message = str(excinfo.value)
+    assert "innov_max_dim" in message
+    assert "6" in message and "1" in message
+
+
+def test_a_short_innovation_covariance_is_refused(tmp_path):
+    """A short s_upper was an out-of-bounds READ of uninitialised heap.
+
+    The mirror of the case above, and the more dangerous one: it wrote
+    whatever the heap happened to hold into the nav.innov channel, where it
+    would have been read as a covariance.
+    """
+    core = _core_or_fail()
+    # y of 6 needs 21 packed entries; supply 10.
+    cls = _innovating_nav(core, y_len=6, s_len=10, declared_max=6)
+    name = _register(core, cls, "short_cov")
+    cfg = _swap_component(core, _run_config(core, EKF_MISSION), "nav", name)
+    with pytest.raises(Exception) as excinfo:
+        _drive(core, cfg, tmp_path / "short.srlog")
+    message = str(excinfo.value)
+    assert "packed upper triangle" in message
+    assert "21" in message and "10" in message
+
+
+def test_a_well_formed_innovation_still_logs(tmp_path):
+    """The bound checks must not refuse the legitimate case.
+
+    A gate that rejects everything is as useless as one that accepts
+    everything, so the same probe is driven with a consistent declaration
+    and must produce a readable nav.innov channel.
+    """
+    core = _core_or_fail()
+    from star_reacher import load
+
+    cls = _innovating_nav(core, y_len=3, s_len=6, declared_max=6)
+    name = _register(core, cls, "good_innov")
+    cfg = _swap_component(core, _run_config(core, EKF_MISSION), "nav", name)
+    log_path = tmp_path / "good.srlog"
+    _drive(core, cfg, log_path)
+
+    innov = load(log_path).groups["nav.innov"]
+    assert len(innov) > 0
+    assert innov["y"].shape[1] == 6  # zero-padded to the declared maximum
+    assert set(int(m) for m in innov["m"]) == {3}
+    # The padding is structural: the 3-wide block sits in the leading corner.
+    assert (innov["y"][:, 3:] == 0.0).all()

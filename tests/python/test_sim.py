@@ -558,3 +558,235 @@ def test_held_command_keys_are_logged_every_cycle(tmp_path):
     assert tau[1] == pytest.approx(first, abs=0.0), "the full hold was not logged"
     assert tau[2] == pytest.approx(second, abs=0.0)
     assert tau[3] == pytest.approx(second, abs=0.0), "the partial hold was not logged"
+
+
+# --- lifetime: the log handle, and the episode loop ------------------------
+
+
+def test_close_releases_the_log_of_an_abandoned_run(tmp_path):
+    """A run stopped part way must be able to release its log on request.
+
+    Windows refuses to unlink or reopen a file another handle holds, so an
+    abandoned Sim whose C++ object is still alive - pinned by a traceback, by
+    a reference cycle, or simply by refcount timing - turns an unrelated
+    teardown into PermissionError. That is a real failure already seen in
+    this phase, and the remedy is that the file's lifetime is something a
+    driver can state rather than something it has to infer.
+    """
+    _core_or_fail()
+    from star_reacher.sim import Sim
+
+    outdir = tmp_path / "abandoned"
+    sim = Sim(MISSION, outdir, force=True)
+    with _in_repo_root():
+        sim.reset()
+        sim.step()
+        sim.step()
+    log = outdir / "run.srlog"
+    assert log.exists() and log.stat().st_size > 0
+
+    sim.close()
+    # The handle is gone: on Windows this is what an open handle would refuse.
+    log.unlink()
+    assert not log.exists()
+    sim.close()  # idempotent
+
+
+def test_sim_is_a_context_manager(tmp_path):
+    """__exit__ closes even when an exception escapes the body."""
+    _core_or_fail()
+    from star_reacher.sim import Sim, SimError
+
+    outdir = tmp_path / "ctx"
+    with pytest.raises(RuntimeError, match="driver gave up"):
+        with Sim(MISSION, outdir, force=True) as sim:
+            with _in_repo_root():
+                sim.reset()
+                sim.step()
+            raise RuntimeError("driver gave up")
+
+    (outdir / "run.srlog").unlink()  # would raise on Windows if still open
+
+    # And the closed Sim says so rather than reporting it was never reset.
+    with pytest.raises(SimError, match="was closed"):
+        sim.step()
+
+
+def test_step_after_close_raises_in_the_core(tmp_path):
+    """The core refuses to write to a released log rather than failing later.
+
+    Checked against the core object directly, because the Python wrapper
+    drops its reference on close() and would report the wrapper's own
+    message; the guarantee being asserted is the core's.
+    """
+    core = _core_or_fail()
+    from star_reacher.mission import canonical_bytes, validate_mission_file
+    from star_reacher.runner import build_run_config
+
+    with _in_repo_root():
+        resolved, errors = validate_mission_file(MISSION)
+        assert not errors
+        cfg, _, _ = build_run_config(
+            core, resolved, hashlib.sha256(canonical_bytes(resolved)).hexdigest()
+        )
+        sim = core.Sim(cfg, str(tmp_path / "closed.srlog"))
+        sim.step()
+        sim.close()
+        sim.close()  # idempotent
+        with pytest.raises(Exception, match="after close"):
+            sim.step()
+
+
+def test_reset_twice_starts_a_new_run_at_the_default_force(tmp_path):
+    """The FR-24 episode loop works without force=True.
+
+    ``for ep in range(N): sim.reset()`` is the documented usage, and the
+    docstring promises a second reset starts a new run over the same path.
+    The force guard exists to protect an output this Sim did NOT write; once
+    it has opened that path itself, overwriting its own previous run is the
+    documented behaviour rather than an accident.
+    """
+    _core_or_fail()
+    from star_reacher.sim import Sim
+
+    outdir = tmp_path / "episodes"
+    sim = Sim(MISSION, outdir, force=False)
+    with _in_repo_root():
+        hashes = []
+        for episode in range(3):
+            _obs, info = sim.reset(seed=1000 + episode)
+            sim.step()
+            hashes.append(info["config_sha256"])
+        sim.close()
+    # Each episode really was a different run, not the same one re-reported.
+    assert len(set(hashes)) == 3
+
+
+def test_reset_still_refuses_an_output_this_sim_did_not_write(tmp_path):
+    """The force guard is not disarmed by the episode-loop fix."""
+    _core_or_fail()
+    from star_reacher.runner import RunnerError
+    from star_reacher.sim import Sim
+
+    outdir = tmp_path / "occupied"
+    outdir.mkdir()
+    (outdir / "run.srlog").write_bytes(b"someone else's run")
+
+    sim = Sim(MISSION, outdir, force=False)
+    with _in_repo_root():
+        with pytest.raises(RunnerError, match="already exists"):
+            sim.reset()
+
+
+@pytest.mark.parametrize(
+    "overrides, seed, fragment",
+    [
+        ({"gnc.latency_cycles": 2.7}, None, "would be truncated"),
+        ({"gnc.control_rate_hz": 10.5}, None, "would be truncated"),
+        (None, 3.9, "would be truncated"),
+    ],
+)
+def test_a_fractional_value_for_an_integer_leaf_is_refused(
+    tmp_path, overrides, seed, fragment
+):
+    """Truncating is worse than refusing: the run is reproducible and wrong.
+
+    ``latency_cycles = 2.7`` silently became 2, and config_sha256 recorded
+    2, so the run was perfectly reproducible and was not the run the driver
+    asked for. The docstring already promised the leaf's kind is preserved;
+    it is now enforced instead of approximated by int().
+    """
+    _core_or_fail()
+    from star_reacher.sim import Sim, SimError
+
+    sim = Sim(MISSION, tmp_path / "fractional", force=True)
+    with _in_repo_root():
+        with pytest.raises(SimError, match=fragment):
+            sim.reset(seed=seed, overrides=overrides)
+
+
+def test_an_integral_float_is_still_accepted_for_an_integer_leaf(tmp_path):
+    """The refusal must not reject 2.0, which is the integer 2."""
+    _core_or_fail()
+    from star_reacher.sim import Sim
+
+    sim = Sim(MISSION, tmp_path / "integral", force=True)
+    with _in_repo_root():
+        _, from_int = sim.reset(overrides={"gnc.latency_cycles": 2})
+        _, from_float = sim.reset(overrides={"gnc.latency_cycles": 2.0})
+    assert from_int["config_sha256"] == from_float["config_sha256"]
+
+
+# --- criterion 4 on a MULTI-SENSOR mission ---------------------------------
+#
+# The criterion-4 fixtures were single-sensor throughout the phase, and a
+# single sensor is a degenerate case: the canonical FR-23 order and the
+# alphabetical order a sort_keys round trip produces are then the same list,
+# so batch and stepped agreed no matter how either built its sensor
+# configuration. The two paths genuinely disagreed on the mission below,
+# whose four kinds order canonically as (imu, startracker, navfix,
+# altimeter) and alphabetically as (altimeter, imu, navfix, startracker).
+
+
+EKF_MISSION = REPO_ROOT / "missions" / "leo_ekf_consistency.toml"
+
+
+def test_the_two_entry_points_are_fed_the_same_order(tmp_path):
+    """The builder imposes the canonical order on both of its inputs.
+
+    Asserted at the source rather than only through the hash, because this
+    is the property that has to hold: `star run` hands the builder the
+    validator's canonical dict and `Sim.reset` hands it one round-tripped
+    through canonical_bytes, and the builder must not inherit either.
+    """
+    import json
+
+    from star_reacher.mission import (
+        canonical_bytes,
+        canonical_sensor_items,
+        validate_mission_file,
+    )
+
+    with _in_repo_root():
+        resolved, errors = validate_mission_file(EKF_MISSION)
+    assert not errors
+    round_tripped = json.loads(canonical_bytes(resolved).decode("utf-8"))
+
+    # The premise: the two inputs really are ordered differently.
+    assert list(resolved["sensors"]) != list(round_tripped["sensors"])
+    canonical = ["imu", "startracker", "navfix", "altimeter"]
+    assert [k for k, _ in canonical_sensor_items(resolved["sensors"])] == canonical
+    assert [
+        k for k, _ in canonical_sensor_items(round_tripped["sensors"])
+    ] == canonical
+
+
+def test_multi_sensor_stepped_run_hashes_identically_to_batch(tmp_path):
+    """Criterion 4 on four sensors and a filter that folds their updates."""
+    _core_or_fail()
+    from star_reacher.runner import run_mission
+    from star_reacher.sim import Sim
+    from star_reacher.srlog import load
+
+    with _in_repo_root():
+        batch = run_mission(EKF_MISSION, outdir=str(tmp_path / "batch"), force=True)
+        with Sim(EKF_MISSION, tmp_path / "stepped", force=True) as sim:
+            sim.reset()
+            stepped_summary = sim.run_to_completion()
+
+    stepped_log = tmp_path / "stepped" / "run.srlog"
+    batch_hash = _sha256(batch.srlog_path)
+    stepped_hash = _sha256(stepped_log)
+    assert stepped_hash == batch_hash, (
+        f"stepped and batch logs differ on a multi-sensor mission:\n"
+        f"  batch   sha256={batch_hash}\n"
+        f"  stepped sha256={stepped_hash}"
+    )
+    assert stepped_summary["steps"] == batch.summary["steps"]
+
+    # Non-vacuous: the comparison covers a sensor set whose canonical order
+    # is not its alphabetical order, and a filter that actually aided.
+    declared = load(batch.srlog_path).header["gnc"]["sensors"]
+    assert declared == ["imu", "startracker", "navfix", "altimeter"]
+    assert declared != sorted(declared)
+    assert len(load(batch.srlog_path).groups["nav.innov"]) > 0

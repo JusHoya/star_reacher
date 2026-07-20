@@ -714,3 +714,178 @@ def test_cli_ensemble_overconfident_directory_fails(tmp_path):
     assert proc.returncode == 1, proc.stdout
     assert "CONSISTENCY: FAIL (1/3 gates)" in proc.stdout
     assert "overconfident" in proc.stdout
+
+
+# --- the empty innovation channel ------------------------------------------
+#
+# A gate that reports success BECAUSE the thing it measures is broken is the
+# worst shape an acceptance check can take, and `star consistency` had it: a
+# nav.innov group that was present but held zero records produced an empty
+# sensor set, no NIS series at all, and "CONSISTENCY: PASS (1/1 gates)" with
+# exit 0. An estimator whose measurement update never fires - every update
+# gated out, a sensor never sampled, innovations() miswired - passed FR-26
+# precisely because it was broken.
+#
+# The legitimate neighbour has to keep working: an estimator declaring
+# innov_max_dim() == 0 folds no measurements and the loop then declares no
+# nav.innov group at all. The two are distinguished by the header, not by
+# guessing from absence - the v1.2 "gnc" object rides in a file exactly when
+# GNC ran, so a GNC run with no nav.innov group is a positive declaration of
+# "no aiding" while a file with no "gnc" object predates the channels.
+
+
+def _write_nav_log_without_innovations(path, seed, epochs=60, n=4, m=2):
+    """A run whose nav.innov group is DECLARED but carries no records."""
+    rng = Generator(PCG64(seed))
+    header = _nav_header(n, m)
+    a = rng.standard_normal((n, n))
+    P_true = a @ a.T + n * np.eye(n)
+    e = rng.standard_normal((epochs, n)) @ np.linalg.cholesky(P_true).T
+    p_packed = tuple(pack_symmetric(P_true))
+    gi_est = _fixtures.group_index(header, "nav.est")
+    gi_err = _fixtures.group_index(header, "nav.err")
+    records = [_fixtures.truth_record(0.0)]
+    for k in range(epochs):
+        t = 0.1 * k
+        records.append((gi_est, (t, (0.0,) * n, p_packed)))
+        records.append((gi_err, (t, tuple(e[k]))))
+    path.write_bytes(_fixtures.build_srlog(header, records))
+
+
+def _write_non_aiding_log(path, seed, epochs=60, n=4):
+    """A GNC run whose estimator declared innov_max_dim() == 0.
+
+    No nav.innov group is declared at all, and the header carries the v1.2
+    "gnc" object that says GNC ran.
+    """
+    rng = Generator(PCG64(seed))
+    header = _nav_header(n, 2)
+    header["groups"] = [g for g in header["groups"] if g["name"] != "nav.innov"]
+    header["gnc"] = {"cycle_rate_hz": 10, "latency_cycles": 0, "sensors": ["imu"]}
+    a = rng.standard_normal((n, n))
+    P_true = a @ a.T + n * np.eye(n)
+    e = rng.standard_normal((epochs, n)) @ np.linalg.cholesky(P_true).T
+    p_packed = tuple(pack_symmetric(P_true))
+    gi_est = _fixtures.group_index(header, "nav.est")
+    gi_err = _fixtures.group_index(header, "nav.err")
+    records = [_fixtures.truth_record(0.0)]
+    for k in range(epochs):
+        t = 0.1 * k
+        records.append((gi_est, (t, (0.0,) * n, p_packed)))
+        records.append((gi_err, (t, tuple(e[k]))))
+    path.write_bytes(_fixtures.build_srlog(header, records))
+
+
+def _write_v12_nav_log_without_innovations(path, seed, epochs=60, n=4, m=2):
+    """The v1.2 shape: nav.innov declared WITH its sensor_id/m tagging
+    channels and carrying no records, which is what a real Phase 6 run whose
+    update never fires produces."""
+    rng = Generator(PCG64(seed))
+    header = _nav_header(n, m)
+    for group in header["groups"]:
+        if group["name"] == "nav.innov":
+            group["channels"][1:1] = [
+                {"name": "sensor_id", "dtype": "u32", "units": "1", "frame": ""},
+                {"name": "m", "dtype": "u32", "units": "1", "frame": ""},
+            ]
+    header["gnc"] = {"cycle_rate_hz": 10, "latency_cycles": 0, "sensors": ["imu"]}
+    a = rng.standard_normal((n, n))
+    P_true = a @ a.T + n * np.eye(n)
+    e = rng.standard_normal((epochs, n)) @ np.linalg.cholesky(P_true).T
+    p_packed = tuple(pack_symmetric(P_true))
+    gi_est = _fixtures.group_index(header, "nav.est")
+    gi_err = _fixtures.group_index(header, "nav.err")
+    records = [_fixtures.truth_record(0.0)]
+    for k in range(epochs):
+        t = 0.1 * k
+        records.append((gi_est, (t, (0.0,) * n, p_packed)))
+        records.append((gi_err, (t, tuple(e[k]))))
+    path.write_bytes(_fixtures.build_srlog(header, records))
+
+
+def test_cli_declared_but_empty_innovation_channel_fails(tmp_path):
+    """A filter whose update never fired must not pass the FR-26 gate.
+
+    The v1.2 shape: the group is declared with its sensor_id/m tagging
+    channels and holds nothing, so no sensor group is formed at all.
+    """
+    log = tmp_path / "run.srlog"
+    _write_v12_nav_log_without_innovations(log, seed=7)
+    proc = _run_cli("consistency", str(log))
+    assert proc.returncode == 1, (
+        f"an empty innovation channel passed the gate:\n{proc.stdout}"
+    )
+    # The message names the actual problem, not a downstream symptom.
+    assert "carries no records" in proc.stderr
+    assert "no measurement update ever fired" in proc.stderr
+    assert "innov_max_dim" in proc.stderr
+    assert "PASS" not in proc.stdout
+    assert "Traceback" not in proc.stderr
+
+
+def test_cli_an_untagged_empty_innovation_channel_also_fails(tmp_path):
+    """The pre-Phase-6 shape reaches the same verdict by the other branch.
+
+    A nav.innov group without the sensor_id/m channels is read as one
+    untagged update stream, so an empty one forms a single group holding no
+    rows rather than no groups at all. Both routes to "no NIS data" must be
+    refused; only one of them was.
+    """
+    log = tmp_path / "run.srlog"
+    _write_nav_log_without_innovations(log, seed=7)
+    proc = _run_cli("consistency", str(log))
+    assert proc.returncode == 1, (
+        f"an empty innovation channel passed the gate:\n{proc.stdout}"
+    )
+    assert "carries no records for sensor(s)" in proc.stderr
+    assert "PASS" not in proc.stdout
+    assert "Traceback" not in proc.stderr
+
+
+def test_cli_a_non_aiding_estimator_is_not_reported_as_a_failure(tmp_path):
+    """Declaring no aiding is a configuration, not a defect.
+
+    The NEES half is real and is gated; the report says in words that the
+    NIS half does not exist, so "PASS" cannot be misread as the whole of
+    FR-26 having been met.
+    """
+    log = tmp_path / "run.srlog"
+    _write_non_aiding_log(log, seed=11)
+    proc = _run_cli("consistency", str(log))
+    assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+    assert "no NIS gate" in proc.stdout
+    assert "innov_max_dim() == 0" in proc.stdout
+    assert "CONSISTENCY: PASS" in proc.stdout
+    # The NEES gates really ran; this is not a vacuous zero-gate pass.
+    assert "NEES" in proc.stdout
+
+
+def test_cli_a_log_predating_the_nav_channels_is_still_an_error(tmp_path):
+    """Absence of the gnc header object still means "cannot be evaluated"."""
+    log = tmp_path / "run.srlog"
+    _write_nav_log_without_innovations(log, seed=3)
+    # Drop the group entirely, and keep the header free of a "gnc" object.
+    header = _nav_header(4, 2)
+    header["groups"] = [g for g in header["groups"] if g["name"] != "nav.innov"]
+    log.write_bytes(
+        _fixtures.build_srlog(header, [_fixtures.truth_record(0.0)])
+    )
+    proc = _run_cli("consistency", str(log))
+    assert proc.returncode == 1
+    assert "nav.innov" in proc.stderr
+    assert "no 'gnc' header object" in proc.stderr
+
+
+def test_cli_ensemble_dimension_mismatch_is_refused(tmp_path):
+    """Runs at different measurement dimensions must not stack silently.
+
+    nees() and nis() both return a (T,) array whatever dimension formed
+    them, so np.stack succeeds and the whole ensemble would be gated at run
+    0's degrees of freedom - a confident verdict computed at the wrong dof.
+    """
+    _write_nav_log(tmp_path / "a.srlog", seed=1, m=2)
+    _write_nav_log(tmp_path / "b.srlog", seed=2, m=3)
+    proc = _run_cli("consistency", str(tmp_path))
+    assert proc.returncode == 1
+    assert "dimensions differ across runs" in proc.stderr
+    assert "Traceback" not in proc.stderr
