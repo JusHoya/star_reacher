@@ -15,13 +15,18 @@ Source under test: branch `phase-6-gnc-sensors` at
 |---|---|---|
 | CI `cpp-tests` replication (`-Wall -Wextra -Werror`) | Ubuntu 24.04.4, GCC 13.3.0 | **FAIL to build** — 16 errors, one site |
 | Doctest suite, warnings not fatal | Ubuntu 24.04.4, GCC 13.3.0 | **PASS** — 162 cases, 56,537 assertions |
-| `asan` preset | Ubuntu 24.04.4, Clang 18.1.3 | **PASS**, zero sanitizer findings |
-| ASan + UBSan at `-O2` | Ubuntu 24.04.4, GCC 13.3.0 | **PASS**, zero sanitizer findings |
+| `asan` preset | Ubuntu 24.04.4, Clang 18.1.3 | **PASS**, zero findings — but see coverage caveat |
+| ASan + UBSan at `-O2` | Ubuntu 24.04.4, GCC 13.3.0 | **PASS**, zero findings — but see coverage caveat |
 | `ci` preset (`/W4 /WX`) | Windows 11, MSVC 14.44.35207 | **FAIL to build** — 4 warnings, one file |
 | `pi5` preset | not run | no aarch64 target available |
 
 Two legs fail to build. Neither failure is a memory-safety defect; both are
 diagnostics that the MSVC Release-only history could not surface.
+
+The sanitizer legs are clean, but a mutation test performed here shows they
+are clean partly because they do not reach the code that motivated them. The
+coverage findings are the more consequential result of this pass and are
+recorded in full below.
 
 ## Toolchains
 
@@ -278,18 +283,60 @@ would have aborted the process rather than printing and continuing.
 **The prediction held.** No sanitizer finding was produced by any
 configuration, on the suite or on the targeted altimeter probe.
 
-**But it held partly vacuously, and that matters.** As established above,
-`joseph_update<1>` is never executed by the committed suite, so the suite's
-ASan runs could not have observed the one path the `-Werror` leg flagged.
-That gap was closed here only by the scratch probe, which is not committed.
-Once the altimeter test recommended below exists, the suite's own ASan run
-will cover the path and the result will stand without external apparatus.
+**But it held vacuously in two places, and that matters more than the green
+result.** First, `joseph_update<1>` is never executed by the committed
+suite, so the suite's ASan runs could not have observed the one path the
+`-Werror` leg flagged; that gap was closed here only by the scratch probe,
+which is not committed. Second, and more seriously, the nav.innov consumer
+path where the two fixed overruns actually lived is not executed by the C++
+suite either. The mutation test below establishes that by measurement.
 
-**The short-`s_upper` mutation shape was not exercised.** One recorded
-mutation (a short `s_upper` innovation payload) exited 1 without raising —
-a silent out-of-bounds read. Reproducing it requires re-introducing the
-mutation and rebuilding under ASan. That was not done in this pass and is
-listed as unverified below.
+### The short-`s_upper` mutation, and why ASan cannot see it
+
+One recorded mutation — a short `s_upper` innovation payload — exited 1
+without raising, a silent out-of-bounds read. That shape was reproduced here
+and the result changes how the clean ASan runs above should be read.
+
+In the disposable WSL clone only, two mutations were applied together: the
+producer at `cpp/src/gnc/ekf.cpp:424` was made to emit m(m+1)/2 − 1 packed
+entries, and the consumer guard at `cpp/src/vehicle_cycle.cpp:1138` was
+neutralized so it could not reject the short payload. The `asan` preset was
+rebuilt (exactly 2 translation units recompiled) and the suite rerun.
+
+Result: exit 1, 162 cases with 1 failed, 56,537 assertions with 1 failed,
+and **zero AddressSanitizer reports**. The single failure is
+`cpp/tests/test_ekf.cpp:362`, `CHECK( innov[0].s_upper.size() == 21u )` —
+a producer-side unit test asserting the payload length directly. This
+reproduces the recorded shape exactly: exit 1, no raise.
+
+The reason ASan is silent is structural, and `gcov` over the coverage build
+establishes it. In `cpp/src/vehicle_cycle.cpp`, the guard at line 1138, the
+zero-padding at lines 1148-1151, and the embedding loop at lines 1163-1167 —
+the code that performs the read — are all `#####`: **never executed by the
+C++ doctest suite.** The short payload was caught by a producer-side length
+assertion before any consumer ever read it, so no out-of-bounds access
+occurred for ASan to observe.
+
+This has a consequence that must not be understated. The two buffer overruns
+the recent fixes closed lived on this consumer path, and the guard at line
+1138 was itself the fix. That path is exercised only by the Python tier —
+`tests/python/test_ekf_channels.py` drives a real run and asserts on the
+`nav.innov` group including its structural padding — against the installed
+wheel, which is MSVC-built and carries no sanitizer instrumentation. The
+ASan legs in this document were run over the C++ doctest binary, which does
+not reach that code at all.
+
+**Therefore: the "ASan will find nothing" prediction held as a literal
+statement, but the ASan legs as constituted have no reach into the code
+where the defects lived.** The clean ASan result is not evidence that those
+fixes are correct, and not evidence that a recurrence would be caught. The
+gate has been shown, by mutation, to be blind to this defect class.
+
+To give ASan teeth over this path, either add C++ doctest cases that drive
+`VehicleCycle` with a component returning innovations — covering the guard
+and the embedding loop, and closing the coverage hole permanently — or build
+the extension module with ASan and run the Python tier under it. The first is
+cheaper and is the recommended route.
 
 ## Leg 4 — the `ci` preset on Windows
 
@@ -362,29 +409,44 @@ was replicated. The `asan` preset was used under its own name on Linux.
   GCC, with leak detection and stack-use-after-return enabled and with
   UBSan set to abort rather than recover.
 - The altimeter EKF update path (`joseph_update<1>`) is dead at test time.
+- The nav.innov consumer path in `cpp/src/vehicle_cycle.cpp` — the guard at
+  line 1138 and the embedding loop at lines 1163-1167 — is dead at C++ test
+  time, and is reached only through the Python tier against a non-sanitized
+  wheel.
+- The ASan gate is **blind to the short-`s_upper` defect class** as
+  currently constituted. Mutating the payload short and disabling the guard
+  produces exit 1 with zero ASan reports, caught only by a producer-side
+  length assertion.
 - MSVC `/W4 /WX` fails on four name-shadowing warnings in
   `cpp/src/vehicle_cycle.cpp`, all introduced in Phase 6.
 - The CI `cpp-tests` job will fail on this branch as it stands.
 
 ## What remains unverified
 
-- **The short-`s_upper` mutation under ASan.** Whether ASan detects the
-  silent out-of-bounds read that exited 1 without raising is not measured.
-  The experiment is: re-introduce the short `s_upper` payload, rebuild the
-  `asan` preset, run the suite, and record whether a heap-buffer-overflow is
-  reported. Until then the ASan gate's sensitivity to that specific shape is
-  unproven, and a clean ASan run should not be read as evidence that the gate
-  would catch a recurrence.
+- **Whether ASan would catch a consumer-side overrun if the path were
+  executed.** The mutation above shows the C++ suite never reaches the
+  embedding loop, so it measures the gate's coverage, not ASan's detection
+  power on that code. Whether an instrumented run that actually executes the
+  loop with a short payload raises a heap-buffer-overflow is still unmeasured.
+  The experiment is: add a C++ test driving `VehicleCycle` with a component
+  returning innovations, then repeat the mutation under the `asan` preset.
+  Note that `std::vector` overruns within the allocation's capacity are
+  invisible to ASan without libstdc++ container annotations, so this
+  experiment may return a negative result and should be run before relying on
+  ASan for this defect class at all.
 - **The `pi5` preset and any aarch64 leg.** Not run; no target hardware. The
   `-mcpu=cortex-a76` build has never been exercised for Phase 6 code.
 - **MSVC AddressSanitizer.** Not run. The `0xC0000374` heap corruption that
   motivated the fixes was a Windows-side observation; no Windows sanitizer
   pass confirms the fixed state on that platform.
-- **Sanitizer coverage of unexecuted paths.** The ASan results bound only the
-  code the suite actually runs. `joseph_update<1>` is the one gap identified
-  by name here; no systematic per-line coverage audit of the Phase 6 sources
-  was performed, so other unexecuted branches may exist and would be equally
-  outside the sanitizers' reach.
+- **Sanitizer coverage of unexecuted paths generally.** The ASan results
+  bound only the code the C++ suite actually runs. Two gaps were found here
+  by name — `joseph_update<1>` and the nav.innov consumer block — but both
+  were found while chasing specific questions, not by a systematic audit. No
+  per-line coverage review of the Phase 6 sources was performed, so further
+  unexecuted branches may exist and would be equally outside the sanitizers'
+  reach. Given that two of two paths investigated turned out to be dead, such
+  an audit is worth doing before the ASan legs are treated as broad evidence.
 - **Clang warnings-as-errors.** Clang was used only for the `asan` preset,
   which does not set `-Wall -Wextra -Werror`. Clang's warning surface over
   the Phase 6 code is unmeasured.
