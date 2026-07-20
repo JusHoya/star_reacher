@@ -52,6 +52,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 sys.path.insert(0, str(REPO_ROOT / "tests" / "refs"))
 import pinhole  # noqa: E402
+import quaternions  # noqa: E402
 from aberration import (  # noqa: E402
     MAS_PER_RAD,
     aberrate_exact,
@@ -62,9 +63,20 @@ from aberration import (  # noqa: E402
 
 EPHEMERIS = "tests/golden/ephemeris/excerpt_de440s_crosstool.sreph"
 
-# The two exit-criterion tolerances, quoted so the tests assert the real
-# numbers rather than a restatement of them.
-ABERRATION_TOL_MAS = 1.0
+# Exit criterion 9 states a REQUIREMENT of 1 milliarcsecond. That is not the
+# agreement the implementation achieves, and gating at the requirement leaves
+# seven orders of slack in which a wrong formula sits comfortably: the
+# drop-the-transverse-projection mutation (`u + beta` for
+# `u + beta - (u.beta) u`) measures 0.4696 mas on this fixture and passes a
+# 1 mas gate. The gate is therefore set near the achievable agreement
+# instead. The measured worst residual against the independent reference is
+# 4.73e-08 mas, so 1e-5 mas keeps roughly 210x headroom over the observed
+# rounding-order residual while rejecting that mutation by about 4.7e+04.
+# Passing this gate implies the criterion by five orders of magnitude;
+# CRITERION_9_REQUIREMENT_MAS is asserted too so the criterion's own figure
+# appears in the suite rather than only in the PRD.
+ABERRATION_TOL_MAS = 1e-5
+CRITERION_9_REQUIREMENT_MAS = 1.0
 PIXEL_TOL = 1e-6
 
 _CORE_MISSING_MESSAGE = (
@@ -138,7 +150,19 @@ q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
 
 [gnc.guidance]
 component = "attitude_hold"
-q_cmd = [0.0, 0.7660444431189781, 0.6427876096865393, 0.0]
+# A 10-degree slew about the OFF-AXIS body direction [1, 2, -2]/3 rather than
+# about body +Z. The reference mission's +Z slew leaves the attitude in the
+# q_w == 0, q_z == 0 plane for the whole run, and at q_w == 0 the
+# frame-transformation DCM of eq:notation:quat2dcm is exactly symmetric --
+# C - C^T = -4 q_w [q_v x] vanishes identically. Criterion 9's residual is an
+# angular separation, so on such a fixture a TRANSPOSED attitude convention is
+# undetectable by geometry no matter which implementation supplies the DCM.
+# This axis carries |q_w| up to 0.060 and |C - C^T| up to 0.18, which is what
+# gives the independent-DCM substitution below something to detect. It also
+# happens to place all five landmarks on-sensor at every camera sample
+# (300/300 visible against 186/300 for the +Z slew), so criterion 7 gains from
+# it as well.
+q_cmd = [-0.061628416716219346, 0.66333041525861247, 0.74550163754690491, 0.020542805572073115]
 
 [gnc.control]
 component = "pd_attitude"
@@ -308,7 +332,12 @@ def _sun_direction_residuals_mas(run, config):
         geometric = ephemeris.sun_rel_earth(tdb_s) - truth["r_m"][row]
         geometric = geometric / np.linalg.norm(geometric)
         apparent = aberrate_first_order(geometric, beta)
-        c_i2b = np.array(_core.quat_to_dcm(*truth["q_i2b"][row])).reshape(3, 3)
+        # The independent DCM of tests/refs/quaternions, NOT _core.quat_to_dcm.
+        # The logged direction was produced by the core using its own rotation,
+        # and angular separation is invariant under a rotation applied to both
+        # arguments, so putting the core's DCM on this side too would cancel it
+        # exactly and no attitude-convention error could ever be detected here.
+        c_i2b = quaternions.quat_to_dcm(truth["q_i2b"][row])
         logged = sun["sun_b"][j]
         residual_mas[j] = separation_angle(c_i2b @ apparent, logged) * MAS_PER_RAD
         deflection_mas[j] = separation_angle(geometric, apparent) * MAS_PER_RAD
@@ -317,14 +346,17 @@ def _sun_direction_residuals_mas(run, config):
 
 
 def test_aberration_matches_independent_reference(optical_run):
-    """Exit criterion 9: logged apparent directions to < 1 mas of the reference.
+    """Exit criterion 9: logged apparent directions against the reference.
 
     The reference is ``tests/refs/aberration.aberrate_first_order``, the
     normative equation ``eq:optical:aberration``, written blind from the
-    chapter. Agreement at this level is a statement about arithmetic, not
-    about modelling: any convention error (a sign on beta, a missing
-    renormalization, aberration applied in the wrong frame) would appear at
-    the deflection scale, some four orders of magnitude above the gate.
+    chapter, rotated into body axes by the equally independent
+    ``tests/refs/quaternions.quat_to_dcm``. Both sides of the comparison are
+    therefore free of the code under test.
+
+    The gate is ``ABERRATION_TOL_MAS`` (1e-5 mas), not the criterion's 1 mas:
+    see the constant's derivation for why gating at the requirement leaves
+    room for an algebraically wrong formula to pass.
     """
     _, run, config = optical_run
     residual_mas, _, _ = _sun_direction_residuals_mas(run, config)
@@ -333,6 +365,33 @@ def test_aberration_matches_independent_reference(optical_run):
     assert worst < ABERRATION_TOL_MAS, (
         f"worst logged-versus-reference Sun direction residual {worst:.6e} mas "
         f"exceeds the exit-criterion-9 gate of {ABERRATION_TOL_MAS} mas"
+    )
+    # The criterion's own figure, so the suite states the requirement it meets
+    # and not only the tighter bound it is held to.
+    assert worst < CRITERION_9_REQUIREMENT_MAS
+
+
+def test_aberration_fixture_can_see_an_attitude_convention_error(optical_run):
+    """The criterion-9 residual is sensitive to the attitude convention.
+
+    Substituting the independent DCM is necessary but not sufficient: an
+    angular separation is invariant under a rotation applied to both
+    arguments, and at ``q_w == 0`` the DCM of ``eq:notation:quat2dcm`` is
+    exactly symmetric, so on a fixture whose attitude stays in that plane a
+    transposed convention changes nothing at all. This asserts the fixture
+    carries the asymmetry that makes the substitution meaningful; without it
+    the gate would read as convention-aware while remaining blind.
+    """
+    _, run, _ = optical_run
+    truth = run.groups["truth"]
+    worst_asymmetry = 0.0
+    for q in truth["q_i2b"]:
+        c = quaternions.quat_to_dcm(q)
+        worst_asymmetry = max(worst_asymmetry, float(np.abs(c - c.T).max()))
+    assert worst_asymmetry > 0.05, (
+        f"the fixture's attitude keeps C_I2B within {worst_asymmetry:.3e} of "
+        "symmetric, so a transposed attitude convention would be invisible to "
+        "the criterion-9 residual"
     )
 
 

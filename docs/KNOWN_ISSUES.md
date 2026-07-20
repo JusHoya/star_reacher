@@ -93,32 +93,56 @@ mission that wants a working sun sensor.
 missions that enable third bodies, so every optical channel they read is
 ephemeris-backed.
 
-## KNOWN-ISSUE-P6-2 — exit criterion 9's 1 mas budget cannot resolve second-order aberration algebra
+## KNOWN-ISSUE-P6-2 — exit criterion 9's 1 mas figure is a requirement, not a resolution limit
 
-Exit criterion 9 gates the logged optical directions against an independent
-recomputation of `eq:optical:aberration` at 1 milliarcsecond. At the
-barycentric speed the criterion is quoted at, `|beta| ~ 1.02e-4`, terms of
-order `beta**2` are worth up to `beta**2 / 2 ~ 1.08 mas` — comparable to the
-whole budget. Two consequences, both measured rather than argued:
+**Status: remediated 2026-07-19.** The entry is rewritten rather than deleted,
+because its earlier framing is what kept a loose gate in place and that is
+worth recording.
 
-- Algebraically distinct forms that agree to first order are not distinguished.
-  Dropping the transverse projection from the reference (`u + beta` in place of
-  `u + beta - (u . beta) u`, which differs only at second order) leaves the gate
-  green: the difference is 0.470 mas on the criterion-9 fixture geometry, and
-  reaches 1.077 mas only at the worst orientation.
-- This is the same effect that makes the first-order versus exact relativistic
-  choice material at 0.51 mas, which is why `ch:sensors-optical` declares the
-  first-order equation normative and criterion 9 recomputes *that* form rather
-  than the exact one.
+This entry previously described 1 milliarcsecond as a *budget* that "cannot
+resolve second-order aberration algebra". That reasoning conflated two
+different quantities. Terms of order `beta**2` are indeed worth up to
+`beta**2 / 2 ~ 1.08 mas` at `|beta| ~ 1.02e-4`, but that bounds the difference
+between two algebraically distinct *forms* — it says nothing about the
+precision at which either form can be checked. Criterion 9 recomputes the
+normative first-order equation and compares it against an implementation of
+that same equation, and two evaluations of one formula agree to rounding: the
+measured worst residual is `4.73e-08 mas`. Gating at 1 mas therefore carried
+roughly `2.1e+07x` headroom, and 1 mas was only ever the criterion's
+*requirement*.
 
-What the gate does resolve decisively is first-order structure: a sign error on
-`beta` is rejected at 4.11e+04 mas and omitting the correction entirely at
-2.05e+04 mas, four to five orders above the tolerance.
+The cost of the wrong framing was measurable. Dropping the transverse
+projection from the reference (`u + beta` in place of
+`u + beta - (u . beta) u`) changes the answer by `0.4696 mas` on this fixture,
+and **passed** the 1 mas gate.
 
-**Exit-criterion impact: none.** The criterion is met as written, and the
-first-order equation it names is the one implemented. The limitation is
-recorded so that the 1 mas figure is not read as bounding the second-order
-modelling error, which `ch:sensors-optical` assumption 2 bounds separately.
+Two fixes landed in `tests/python/test_p6_optical_gates.py`:
+
+- `ABERRATION_TOL_MAS` is now `1e-5`, which keeps about `210x` headroom over
+  the observed residual while rejecting the drop-transverse mutation by about
+  `4.7e+04`. The criterion's own 1 mas figure is asserted alongside it, so the
+  requirement is still stated in the suite.
+- The reference side now rotates through `tests/refs/quaternions.quat_to_dcm`
+  instead of `_core.quat_to_dcm`. The core's DCM previously appeared on both
+  sides of an angular separation and cancelled exactly, so no attitude-
+  convention error could reach the residual. The fixture's commanded attitude
+  was also moved off the body +Z axis: the old slew held `q_w == 0` for the
+  whole run, where `C - C^T = -4 q_w [q_v x]` vanishes identically, so a
+  transposed convention was undetectable by geometry regardless of which
+  implementation supplied the DCM. With the off-axis slew that mutation is
+  rejected at `4.03e+07 mas`;
+  `test_aberration_fixture_can_see_an_attitude_convention_error` pins the
+  asymmetry so the fixture cannot drift back.
+
+What remains true, and is a modelling choice rather than a gate weakness: the
+first-order versus exact relativistic difference is material at 0.51 mas, which
+is why `ch:sensors-optical` declares the first-order equation normative and
+criterion 9 recomputes *that* form. `test_first_order_versus_exact_gap_is_recorded`
+measures that gap non-normatively; `ch:sensors-optical` assumption 2 bounds it.
+
+**Exit-criterion impact: none.** The criterion was met as written before and is
+met now, but it is now gated by an assertion that has been shown to fail
+against a wrong formula and a wrong convention.
 
 ## KNOWN-ISSUE-P6-3 — the ascent pitch table steps 89.922 degrees at t = 10 s
 

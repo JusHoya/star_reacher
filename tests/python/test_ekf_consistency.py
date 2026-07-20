@@ -14,22 +14,41 @@ from the Wilson--Hilferty numbers quoted in the chapter prose -- those are
 an approximation stated for the reader's cross-check, and gating on them
 would gate on a rounded transcription rather than on the distribution.
 
-Two aggregations documented in the chapter as DIAGNOSTICS are deliberately
-not asserted here, because on real runs they are known to be mis-calibrated
-and asserting them would gate on a statistical artifact rather than on the
-filter:
+The verdict is taken through ``star_reacher.consistency.ensemble_gate``,
+the FR-26 acceptance instrument, rather than re-derived here. An earlier
+version of this driver computed bounds locally and added its own coverage
+rule, ``inside >= 0.95``, which is exactly the rule ``consistency.py``
+documents as invalid: under the consistency hypothesis the count of epochs
+inside a two-sided 95 % interval is Binomial(T, 0.95), so requiring at
+least 95 % tests the count against its own mean. Measured over 4,000
+synthetic null ensembles with INDEPENDENT epochs -- the favourable case --
+it rejected a correct filter 45.65 % of the time, against 0.00 % for the
+headline bound. It was green only because the seeds are pinned, and any
+last-bit perturbation would have flipped it near a coin toss while
+presenting as an EKF defect.
 
-* the per-run time average, whose chi-square bounds assume epochs within a
-  run are independent while a filter's state error is a smooth, strongly
-  serially correlated trajectory (the chapter says so in prose;
-  ``test_per_run_time_average_is_a_diagnostic_not_a_gate`` measures how far
-  off it is);
-* the pooled ensemble statistic, whose bounds at ``dof = R*T*n`` assume the
-  same independence across epochs.
+Which criteria gate, and why they differ between the two statistics:
 
-The ensemble per-epoch average is not affected: at each epoch it averages R
-INDEPENDENT runs, which is exactly the assumption its bounds are derived
-under.
+* **NEES** is gated on the headline alone (``epochs_independent=False``).
+  The state error is a smooth trajectory with an integrated autocorrelation
+  time of about 30 epochs, and averaging across runs does not whiten it, so
+  the count-inside is over-dispersed and no binomial threshold applies to
+  it. The coverage figure is still computed and available for a reader:
+  measured 599 of 601 epochs inside, against the threshold of 553 it is
+  not held to.
+* **NIS** is gated on the headline AND on the binomial coverage threshold
+  (``epochs_independent=True``): a consistent filter's innovation sequence
+  is white, so successive NIS epochs are independent and the threshold is
+  an exact false-failure bound. The aiding sensors update at a lower rate
+  than the filter propagates, so each NIS statistic carries 60 epochs
+  rather than 601, and at the library's default confidence c = 0.999 the
+  threshold is 51 of 60. Measured coverage is 56, 56 and 57 of 60.
+
+The two aggregations the chapter documents as DIAGNOSTICS -- the per-run
+time average and the pooled ensemble statistic, both of whose chi-square
+bounds assume within-run epochs are independent -- remain deliberately
+unasserted; ``test_per_run_time_average_is_a_diagnostic_not_a_gate``
+measures how far off the first one is instead of gating on it.
 """
 
 from __future__ import annotations
@@ -246,34 +265,58 @@ def test_ensemble_has_the_expected_shape(ensemble):
 
 
 def test_ensemble_nees_gate_passes(ensemble):
-    """Exit criterion 3, NEES half (eq:ekf:nees, eq:ekf:ensemble)."""
+    """Exit criterion 3, NEES half (eq:ekf:nees, eq:ekf:ensemble).
+
+    Gated on the headline alone. The coverage criterion is computed but does
+    not contribute to the verdict, because NEES epochs are serially
+    correlated and a binomial threshold applied to them rejects consistent
+    output about half the time -- the declaration is structural, made from
+    what the statistic is, never estimated from the data being judged.
+    """
+    from star_reacher.consistency import ensemble_gate
+
     _, nees_eps, _ = ensemble
+    gate = ensemble_gate(nees_eps, NEES_DIM, epochs_independent=False)
+    # The instrument's interval must be the one this module derives
+    # independently from the chapter, so a change to either is caught here
+    # rather than silently shifting the gate.
     lower, upper = ensemble_bounds(NEES_DIM)
-    epoch_mean = nees_eps.mean(axis=0)
-    headline = float(epoch_mean.mean())
-    assert lower <= headline <= upper, (
-        f"ensemble NEES {headline:.4f} outside [{lower:.4f}, {upper:.4f}] "
-        f"(chi2 95 %, dof {N_RUNS * NEES_DIM})"
+    assert (gate.lower, gate.upper) == pytest.approx((lower, upper), rel=1e-12)
+    assert not gate.coverage_gated, (
+        "NEES coverage must not gate: the state error is a correlated "
+        "trajectory and the binomial premise does not hold for it"
     )
-    # The per-epoch form of the same gate: the ensemble average must sit
-    # inside the bounds at essentially every epoch, not merely on average.
-    inside = np.mean((epoch_mean >= lower) & (epoch_mean <= upper))
-    assert inside >= 0.95, (
-        f"only {100.0 * inside:.1f} % of epochs inside [{lower:.4f}, "
-        f"{upper:.4f}]"
+    assert gate.passed, (
+        f"ensemble NEES {gate.headline.mean:.4f} outside "
+        f"[{gate.lower:.4f}, {gate.upper:.4f}] (chi2 95 %, dof {gate.dof}); "
+        f"coverage {gate.inside_count}/{len(gate.epoch_mean)} epochs inside "
+        f"(diagnostic only)"
     )
 
 
 @pytest.mark.parametrize("sensor_id", sorted(NIS_DIM_BY_SENSOR))
 def test_ensemble_nis_gate_passes(ensemble, sensor_id):
-    """Exit criterion 3, NIS half, per aiding sensor (eq:ekf:nis)."""
+    """Exit criterion 3, NIS half, per aiding sensor (eq:ekf:nis).
+
+    Gated on the headline AND on the binomial coverage threshold: a
+    consistent filter's innovations are white, so successive NIS epochs are
+    independent and ``inside_count_threshold`` is an exact bound on the
+    spurious-failure probability at the library's c = 0.999.
+    """
+    from star_reacher.consistency import ensemble_gate
+
     _, _, nis_eps = ensemble
     dim = NIS_DIM_BY_SENSOR[sensor_id]
+    gate = ensemble_gate(nis_eps[sensor_id], dim, epochs_independent=True)
     lower, upper = ensemble_bounds(dim)
-    headline = float(nis_eps[sensor_id].mean(axis=0).mean())
-    assert lower <= headline <= upper, (
-        f"sensor {sensor_id} ensemble NIS {headline:.4f} outside "
-        f"[{lower:.4f}, {upper:.4f}] (chi2 95 %, dof {N_RUNS * dim})"
+    assert (gate.lower, gate.upper) == pytest.approx((lower, upper), rel=1e-12)
+    assert gate.coverage_gated
+    assert gate.passed, (
+        f"sensor {sensor_id} ensemble NIS {gate.headline.mean:.4f} against "
+        f"[{gate.lower:.4f}, {gate.upper:.4f}] (chi2 95 %, dof {gate.dof}); "
+        f"headline {'passed' if gate.headline.passed else 'FAILED'}, "
+        f"coverage {gate.inside_count}/{len(gate.epoch_mean)} epochs inside "
+        f"against a threshold of {gate.min_inside}"
     )
 
 
