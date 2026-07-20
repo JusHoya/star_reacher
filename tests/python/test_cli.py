@@ -202,15 +202,22 @@ def test_export_synthesized_log_exits_0_and_writes_csvs(tmp_path):
 def test_verify_output_contract(tmp_path):
     proc = _run_cli("verify", "--quick", cwd=str(tmp_path))
     lines = proc.stdout.strip().splitlines()
-    # One line per check, each starting with its ID and PASS/FAIL.
-    for n in range(1, 22):
-        check_id = f"V{n:03d}"
+    # The expected check set is read from the registry rather than pinned to a
+    # literal, so adding a check does not require editing this contract; what
+    # is asserted is the SHAPE of the output and that the verdict tally agrees
+    # with the number of checks that actually ran.
+    from star_reacher.verify import _CHECKS
+
+    total = len(_CHECKS)
+    assert total >= 21, f"the check registry shrank to {total}"
+    for check_id, _title, _fn in _CHECKS:
         assert any(re.match(rf"{check_id} (PASS|FAIL) ", ln) for ln in lines), (
             f"missing line for {check_id}:\n{proc.stdout}"
         )
     final = lines[-1]
     assert re.fullmatch(
-        r"VERIFY: PASS \(21/21\)|VERIFY: FAIL \((\d|1[0-9]|20)/21\) failing: V\d{3}(, V\d{3})*",
+        rf"VERIFY: PASS \({total}/{total}\)"
+        rf"|VERIFY: FAIL \(\d+/{total}\) failing: V\d{{3}}(, V\d{{3}})*",
         final,
     ), final
     # Exit code agrees with the verdict line.
