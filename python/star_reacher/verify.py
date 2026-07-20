@@ -21,7 +21,19 @@ scrub-extreme epochs, the decimation bound, and byte-identical
 regeneration), and V021 the Phase 5 plot pipeline (element array
 preparation against a closed-form circular orbit, a headless Agg PNG
 render, and byte-identical re-rendering), as a quick variant of the full
-golden suite in ``tests/python/test_plot_golden.py``.
+golden suite in ``tests/python/test_plot_golden.py``. V022-V028 cover the
+Phase 6 exit-criterion battery: the stepped/batch agreement of criterion 4,
+the v1.2 schema and oracle header of criterion 5, version coherence, the PD
+reimplementation contract of criterion 2, the aberration recomputation of
+criterion 9, and the EKF ensemble consistency of criterion 3.
+
+TIERS. Every check runs in both tiers except criterion 3's ensemble, whose
+cost forces a split: the full tier runs V027 at the criterion's own R = 100,
+and ``--quick`` runs V028 at R = 28. That is the only difference, it is
+announced on the tier line rather than left implicit, and V028's registered
+title states what the reduced ensemble cannot resolve. A quick tier that
+covered part of a criterion without saying so is how the criterion-4 blind
+spot survived a whole phase.
 """
 
 from __future__ import annotations
@@ -1607,45 +1619,1204 @@ def _check_v024(ctx: dict) -> None:
         )
 
 
+# --------------------------------------------------------------------------
+# Phase 6 checks (V025-V028): the three remediated exit criteria.
+#
+# Criteria 2, 3 and 9 were each found by the Phase 6 evidence audit
+# (docs/audit/phase6_evidence_audit.md) to have a gate that passed while
+# proving little, and each was remediated in the pytest suite before being
+# wired here. What the audit found, and what closed it:
+#
+# * criterion 2's golden scenario was degenerate on three of the PD law's
+#   five equations, so a reference that dropped any of them still reproduced
+#   the logged torques exactly. The scenario below is the non-degenerate one
+#   of tests/python/test_gnc_missions.py, and V025 re-asserts the
+#   non-degeneracy alongside the residual rather than trusting it;
+# * criterion 3's driver added an ``inside >= 0.95`` coverage rule that
+#   star_reacher.consistency documents as invalid - under the consistency
+#   hypothesis the count inside a two-sided 95 % interval is
+#   Binomial(T, 0.95), so the rule tests the count against its own mean. It
+#   now routes through consistency.ensemble_gate, the FR-26 instrument;
+# * criterion 9's gate sat about seven orders above the residual it measures
+#   and its fixture held q_w == 0 throughout, under which the DCM of
+#   eq:notation:quat2dcm is exactly symmetric and a transposed attitude
+#   convention is invisible to an angular separation. V026 gates at 1e-5 mas
+#   on an off-axis fixture and asserts the asymmetry it needs.
+#
+# These are the pytest gates re-expressed for a bare wheel: no missions/,
+# vehicles/, tests/refs/ or tests/golden/ tree is available here, so the
+# fixtures are synthesized in a temp directory, the reference implementations
+# are written out inline from the same chapter equations, and the reference
+# values are measured quantities carried in the docstrings with their
+# provenance. Vehicle and ephemeris references resolve against the process
+# working directory, so each check chdirs into its temp directory and
+# restores unconditionally.
+# --------------------------------------------------------------------------
+
+
+def _p6_quat_mul(p, q):
+    """Hamilton product, scalar-first (D-7), matching star::rotation."""
+    pw, pv = p[0], np.asarray(p[1:], dtype=np.float64)
+    qw, qv = q[0], np.asarray(q[1:], dtype=np.float64)
+    out = np.empty(4)
+    out[0] = pw * qw - float(np.dot(pv, qv))
+    out[1:] = pw * qv + qw * pv + np.cross(pv, qv)
+    return out
+
+
+def _p6_quat_exp(phi):
+    """Exact exponential map of a rotation vector to a unit quaternion.
+
+    ``q = [cos(|phi|/2), sin(|phi|/2) phi/|phi|]``. The zero-rotation limit
+    returns the identity rather than dividing by zero.
+    """
+    angle = float(np.linalg.norm(phi))
+    if angle == 0.0:
+        return np.array([1.0, 0.0, 0.0, 0.0])
+    out = np.empty(4)
+    out[0] = math.cos(0.5 * angle)
+    out[1:] = math.sin(0.5 * angle) * np.asarray(phi, dtype=np.float64) / angle
+    return out
+
+
+def _p6_quat_to_dcm(q):
+    """Frame-transformation DCM C_I2B of ``eq:notation:quat2dcm``.
+
+    Built from the outer-product-plus-skew form, which is the TRANSPOSE of
+    the active rotation matrix Eigen returns for the same quaternion - the
+    convention trap this reference exists to avoid falling into. Used by V026
+    in place of the core's own quat_to_dcm: an angular separation is
+    invariant under a rotation applied to both of its arguments, so taking
+    the DCM from the code under test would cancel exactly and no attitude
+    convention error could ever be detected.
+    """
+    qw, qv = q[0], np.asarray(q[1:], dtype=np.float64)
+    skew = np.array(
+        [
+            [0.0, -qv[2], qv[1]],
+            [qv[2], 0.0, -qv[0]],
+            [-qv[1], qv[0], 0.0],
+        ]
+    )
+    return (
+        (qw * qw - float(np.dot(qv, qv))) * np.eye(3)
+        + 2.0 * np.outer(qv, qv)
+        - 2.0 * qw * skew
+    )
+
+
+# --------------------------------------------------------------------------
+# V025: Phase 6 exit criterion 2.
+# --------------------------------------------------------------------------
+
+# The PD attitude law of Chapter ch:gnc-builtin, restated as the
+# cross-workstream contract in cpp/include/star/gnc/builtin.hpp:
+#
+#     dq    = q_cmd^* (x) q_est                       (eq:gnc:deltaq)
+#     s     = (dq_0 >= 0) ? +1 : -1                   (eq:gnc:sign)
+#     w_err = w_est - C(dq) w_cmd                     (eq:gnc:werr)
+#     tau_i = -kp_i s dq_vec_i - kd_i w_err_i         (eq:gnc:pd)
+#     tau_i = clamp(tau_i, -tau_max_i, +tau_max_i)    (eq:gnc:sat)
+#
+# with NO renormalization of dq - inputs are used as received. This is the
+# same law tests/refs/pd_attitude.py carries for the pytest suite, written
+# out again here because a wheel install has no tests/ tree; the arithmetic
+# is written from the equations, not transcribed from the C++ function body.
+
+
+def _p6_error_quaternion(q_cmd, q_est):
+    """``dq = q_cmd^* (x) q_est`` (eq:gnc:deltaq), on (N, 4) stacks."""
+    cmd = np.atleast_2d(np.asarray(q_cmd, dtype=np.float64))
+    est = np.atleast_2d(np.asarray(q_est, dtype=np.float64))
+    pw, px, py, pz = cmd[:, 0], -cmd[:, 1], -cmd[:, 2], -cmd[:, 3]
+    qw, qx, qy, qz = est[:, 0], est[:, 1], est[:, 2], est[:, 3]
+    dq = np.empty((cmd.shape[0], 4))
+    dq[:, 0] = pw * qw - px * qx - py * qy - pz * qz
+    dq[:, 1] = pw * qx + px * qw + py * qz - pz * qy
+    dq[:, 2] = pw * qy - px * qz + py * qw + pz * qx
+    dq[:, 3] = pw * qz + px * qy - py * qx + pz * qw
+    return dq
+
+
+def _p6_error_dcm(dq):
+    """``C(dq)`` per eq:notation:quat2dcm, element by element on a stack.
+
+    Written out componentwise rather than through _p6_quat_to_dcm's outer
+    product so the two constructions reach the same matrix by visibly
+    different arithmetic, as the pytest references do.
+    """
+    w, x, y, z = dq[:, 0], dq[:, 1], dq[:, 2], dq[:, 3]
+    ww, xx, yy, zz = w * w, x * x, y * y, z * z
+    c = np.empty((dq.shape[0], 3, 3))
+    c[:, 0, 0] = ww + xx - yy - zz
+    c[:, 0, 1] = 2.0 * (x * y + w * z)
+    c[:, 0, 2] = 2.0 * (x * z - w * y)
+    c[:, 1, 0] = 2.0 * (x * y - w * z)
+    c[:, 1, 1] = ww - xx + yy - zz
+    c[:, 1, 2] = 2.0 * (y * z + w * x)
+    c[:, 2, 0] = 2.0 * (x * z + w * y)
+    c[:, 2, 1] = 2.0 * (y * z - w * x)
+    c[:, 2, 2] = ww - xx - yy + zz
+    return c
+
+
+def _p6_pd_torque(q_cmd, q_est, w_cmd, w_est, kp, kd, tau_max):
+    """Commanded body torque, eq:gnc:deltaq through eq:gnc:sat.
+
+    ``tau_max=None`` returns the UNSATURATED torque of eq:gnc:pd alone, which
+    is how V025 counts the cycles on which the clamp of eq:gnc:sat actually
+    caught: a gate that never separates the two is not testing the clamp.
+    """
+    dq = _p6_error_quaternion(q_cmd, q_est)
+    s = np.where(dq[:, 0] >= 0.0, 1.0, -1.0)  # sign(0) = +1
+    w_cmd_b = np.einsum(
+        "kij,kj->ki", _p6_error_dcm(dq), np.atleast_2d(np.asarray(w_cmd, np.float64))
+    )
+    rate = np.atleast_2d(np.asarray(w_est, dtype=np.float64))
+    tau = -np.asarray(kp) * s[:, None] * dq[:, 1:] - np.asarray(kd) * (rate - w_cmd_b)
+    if tau_max is not None:
+        tau = np.clip(tau, -np.asarray(tau_max), np.asarray(tau_max))
+    return tau
+
+
+# The reference attitude mission of missions/leo_attitude_gnc.toml with the
+# guidance slot driven through the FR-24 external seam, so the commanded
+# attitude and rate are the driver's to choose while the compiled built-in
+# pd_attitude component still computes every torque. Dead reckoning rather
+# than the EKF keeps nav.est at the 7-wide (quaternion, rate) layout the
+# controller's inputs are read from.
+_V025_MISSION = """\
+schema_version = 1
+vehicle = "verify_vehicle.toml"
+
+[mission]
+name = "verify-p6-pd"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 60.0
+
+[run]
+seed = 20260601
+
+[integrator]
+type = "rk4"
+dt_s = 0.1
+
+[environment]
+central_body = "earth"
+
+[logging]
+truth_rate_hz = 10
+
+[initial_state.cartesian]
+r_m = [7.0e6, 0.0, 0.0]
+v_mps = [0.0, 7546.0, 0.0]
+frame = "GCRF"
+
+[gnc]
+control_rate_hz = 10
+latency_cycles = 0
+
+[gnc.nav]
+component = "dead_reckoning"
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+
+[gnc.guidance]
+component = "external"
+
+[gnc.control]
+component = "pd_attitude"
+kp_nm_per_rad = [0.4, 0.4, 0.4]
+kd_nm_per_radps = [3.6, 3.6, 3.6]
+tau_max_nm = [0.05, 0.05, 0.05]
+
+[sensors.imu]
+sample_rate_hz = 10
+"""
+
+_V025_KP = np.array([0.4, 0.4, 0.4])
+_V025_KD = np.array([3.6, 3.6, 3.6])
+_V025_TAU_MAX = np.array([0.05, 0.05, 0.05])
+_V025_TOL_NM = 1e-9  # the exit criterion's own figure
+
+# The scenario's shape, and why each element is there. The committed
+# reference mission holds a fixed attitude, and on it three of the five
+# equations are multiplied by zero: attitude_hold commands zero body rate so
+# eq:gnc:werr has nothing to rotate, the tracking error stays well inside a
+# half turn so eq:gnc:sign never takes its short path, and the 10-degree
+# transient never reaches tau_max so eq:gnc:sat never clamps. Each element
+# below gives one of them a measurable effect.
+_V025_CYCLE_S = 0.1
+# A 60-degree opening offset against 0.4 N*m/rad gains and 0.05 N*m of
+# authority saturates every axis through the transient (eq:gnc:sat).
+_V025_OFFSET_AXIS = np.array([1.0, 2.0, -2.0]) / 3.0
+_V025_OFFSET_RAD = math.radians(60.0)
+# A commanded rate about a DIFFERENT axis than the offset, so the error
+# quaternion is not parallel to it: parallel axes leave C(dq) w_cmd == w_cmd
+# and make both the rotation of eq:gnc:werr and its transpose invisible.
+_V025_RATE_AXIS = np.array([2.0, -1.0, -2.0]) / 3.0
+_V025_RATE_RADPS = 0.02
+# The commanded quaternion is expressed ANTIPODALLY before this cycle. The
+# attitude is physically identical either way, so a controller honouring
+# eq:gnc:sign produces the same torque from both representations while one
+# omitting the branch reverses it. Placed mid-run so both branches cover a
+# comparable number of cycles, with the negative branch holding the
+# saturated transient.
+_V025_SIGN_FLIP_CYCLE = 300
+_V025_Q_START = np.array([0.0, 0.7071067811865476, 0.7071067811865476, 0.0])
+
+
+def _v025_command(cycle: int):
+    """Commanded attitude and body rate at one control cycle.
+
+    A pure function of the cycle index, so the run is reproducible without
+    the driver reading any observation back out of the simulation.
+    """
+    q = _p6_quat_mul(
+        _V025_Q_START, _p6_quat_exp(_V025_OFFSET_RAD * _V025_OFFSET_AXIS)
+    )
+    q = _p6_quat_mul(
+        q,
+        _p6_quat_exp(
+            _V025_RATE_RADPS * cycle * _V025_CYCLE_S * _V025_RATE_AXIS
+        ),
+    )
+    if cycle < _V025_SIGN_FLIP_CYCLE:
+        q = -q
+    return q, _V025_RATE_RADPS * _V025_RATE_AXIS
+
+
+def _check_v025(ctx: dict) -> None:
+    """Phase 6 exit criterion 2: the Python PD law reproduces the compiled
+    controller's commanded torques to < 1e-9 N*m on a non-degenerate scenario.
+
+    latency_cycles is 0, so the applied command logged in gnc.cmd IS the
+    cycle's chain output and the comparison needs no shift. Measured worst
+    residual on this fixture: 1.39e-17 N*m, about eight orders inside the
+    criterion's gate.
+
+    The four reference mutations the audit used to establish that this
+    scenario is no longer degenerate, each measured against the same logged
+    torques: dropping the eq:gnc:sign branch moves the residual to
+    1.0000e-01 N*m, dropping the C(dq) rotation of eq:gnc:werr to
+    4.7340e-02 N*m, transposing that C(dq) to 5.1548e-02 N*m, and dropping
+    the eq:gnc:sat clamp to 1.5264e-01 N*m. On the previous attitude-hold
+    fixture all four moved it by exactly 0.0 N*m.
+
+    The non-degeneracy assertions below are part of the gate, not commentary:
+    without them a future edit that shrank the scenario would restore the
+    blind spot silently, which is how this criterion stayed green for a whole
+    phase while unable to see the defects it names.
+    """
+    import os
+
+    from star_reacher.sim import Sim
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        (tdp / "verify_vehicle.toml").write_text(_P6_VEHICLE, encoding="utf-8")
+        mission = tdp / "pd.toml"
+        mission.write_text(_V025_MISSION, encoding="utf-8")
+        cwd = os.getcwd()
+        sim = None
+        os.chdir(tdp)
+        try:
+            sim = Sim(str(mission), str(tdp / "run"))
+            sim.reset()
+            cycle = 0
+            while not sim.done():
+                q_cmd, w_cmd = _v025_command(cycle)
+                sim.step(
+                    {
+                        "q_i2b": list(q_cmd),
+                        "omega_b_radps": list(w_cmd),
+                        "valid": True,
+                    }
+                )
+                cycle += 1
+        finally:
+            # Drop the Sim before the temp tree is removed: an abandoned run
+            # still holds its log open, and on Windows that turns any failure
+            # here into a PermissionError from the cleanup, hiding the
+            # evidence this check exists to report.
+            sim = None
+            os.chdir(cwd)
+        run = load(tdp / "run" / "run.srlog")
+        est = run.groups["nav.est"]["x_hat"]
+        cmd = run.groups["gnc.cmd"]
+        q_est = est[:, :4]
+        w_est = est[:, 4:]
+        q_cmd_log = cmd["q_cmd_i2b"]
+        w_cmd_log = cmd["w_cmd_b_radps"]
+        logged_tau = cmd["tau_b_nm"]
+
+    if len(logged_tau) < 2:
+        raise CheckFailure(f"the scenario logged {len(logged_tau)} command(s)")
+
+    tau = _p6_pd_torque(
+        q_cmd_log, q_est, w_cmd_log, w_est, _V025_KP, _V025_KD, _V025_TAU_MAX
+    )
+    worst = float(np.max(np.abs(tau - logged_tau)))
+    if worst >= _V025_TOL_NM:
+        raise CheckFailure(
+            f"worst Python-versus-core commanded-torque residual {worst:.6e} "
+            f"N*m exceeds the exit-criterion-2 gate of {_V025_TOL_NM} N*m"
+        )
+
+    # Non-degeneracy, one assertion per equation the residual claims to
+    # cover. Thresholds sit well inside the measured values, so a legitimate
+    # model change does not trip them while any return to a degenerate
+    # fixture does.
+    dq = _p6_error_quaternion(q_cmd_log, q_est)
+    dq0 = dq[:, 0]
+    cycles = len(dq0)
+    c = _p6_error_dcm(dq)
+
+    rate_scale = float(np.abs(w_cmd_log).max())
+    if rate_scale <= 1e-3:
+        raise CheckFailure(
+            f"commanded body rate peaks at {rate_scale:.3e} rad/s, so "
+            f"eq:gnc:werr has nothing to rotate and the residual cannot see "
+            f"that term"
+        )
+    # eq:gnc:werr is measured on the term the torque actually consumes,
+    # C(dq) w_cmd, rather than on how far C(dq) sits from the identity or
+    # from symmetric. Those two proxies are what the pytest fixture asserts,
+    # and they are not equivalent: an error rotation about an axis PARALLEL
+    # to w_cmd leaves C(dq) w_cmd == w_cmd however far C(dq) is from either,
+    # so the proxies stay comfortably large while the term is inert. Measured
+    # on the shipped scenario the rotation moves the commanded rate by 125 %
+    # of its own peak and its transpose differs by 173 %; on a
+    # parallel-axis variant the same two quantities collapse to 5.6 % and
+    # 13.1 % while the proxies barely move (0.70 and 1.19 against 0.71 and
+    # 1.24). The 50 % gate below separates them with better than a factor of
+    # two either way.
+    rotated = np.einsum("kij,kj->ki", c, w_cmd_log)
+    transposed = np.einsum("kji,kj->ki", c, w_cmd_log)
+    moved = float(np.abs(rotated - w_cmd_log).max())
+    handed = float(np.abs(rotated - transposed).max())
+    if moved <= 0.5 * rate_scale or handed <= 0.5 * rate_scale:
+        raise CheckFailure(
+            f"C(dq) moves the commanded rate by {moved:.3e} rad/s and differs "
+            f"from its transpose by {handed:.3e} rad/s, against a commanded "
+            f"rate of {rate_scale:.3e} rad/s; eq:gnc:werr's rotation, or its "
+            f"handedness, would be invisible to the residual"
+        )
+    negative = int(np.sum(dq0 < 0.0))
+    if negative <= cycles // 8 or cycles - negative <= cycles // 8:
+        raise CheckFailure(
+            f"eq:gnc:sign takes its short-path branch on {negative} of "
+            f"{cycles} cycles; both branches must carry a substantial run"
+        )
+    unclamped = _p6_pd_torque(
+        q_cmd_log, q_est, w_cmd_log, w_est, _V025_KP, _V025_KD, None
+    )
+    clamped = int(np.any(np.abs(unclamped) > _V025_TAU_MAX, axis=1).sum())
+    if clamped <= cycles // 20:
+        raise CheckFailure(
+            f"eq:gnc:sat clamps on {clamped} of {cycles} cycles; the "
+            f"saturated law would be indistinguishable from the unsaturated one"
+        )
+    per_axis = np.abs(logged_tau).max(axis=0)
+    if not np.all(per_axis > 1e-3):
+        raise CheckFailure(
+            f"per-axis peak torque {per_axis} leaves an eq:gnc:pd gain path "
+            f"multiplied by zero"
+        )
+
+
+# --------------------------------------------------------------------------
+# V026: Phase 6 exit criterion 9.
+# --------------------------------------------------------------------------
+
+# Speed of light in vacuum: exact by the SI definition of the metre (BIPM SI
+# Brochure), so it carries no uncertainty.
+_P6_C_MPS = 299792458.0
+_P6_MAS_PER_RAD = 1000.0 * 648000.0 / math.pi
+_P6_J2000_JD = 2451545.0
+
+# The gate is 1e-5 mas, not the criterion's 1 mas, and the two are asserted
+# separately so the suite states both the requirement it meets and the
+# tighter bound it is held to. Gating at the requirement leaves five orders
+# of slack in which an algebraically wrong formula sits comfortably: the
+# drop-the-transverse-projection mutation measures 0.5401 mas on this
+# fixture and would pass 1 mas untouched. The measured worst residual
+# against the reference here is 3.46e-08 mas, so 1e-5 keeps about 290x
+# headroom over the observed rounding-order residual while rejecting that
+# mutation by about 5.4e+04. This is the same constant, and the same
+# reasoning, as ABERRATION_TOL_MAS in tests/python/test_p6_optical_gates.py.
+_V026_TOL_MAS = 1e-5
+_V026_REQUIREMENT_MAS = 1.0
+
+
+def _p6_aberrate_first_order(u_i, beta):
+    """Apparent direction by eq:optical:aberration (the normative formula).
+
+    ``u' = normalize(u + beta - (u . beta) u)``: the geometric direction plus
+    the component of beta transverse to it, renormalized. ``u`` points FROM
+    the observer TO the source. The comparison this serves is first-order
+    against first-order - ch:sensors-optical declares this equation THE
+    formula and specifies that criterion 9 recomputes IT, so gating against
+    the exact relativistic form would measure a deliberate modelling choice
+    rather than an implementation error.
+    """
+    u = np.asarray(u_i, dtype=np.float64)
+    u = u / np.linalg.norm(u)
+    b = np.asarray(beta, dtype=np.float64)
+    shifted = u + b - float(np.dot(u, b)) * u
+    return shifted / np.linalg.norm(shifted)
+
+
+def _p6_separation_angle(a, b) -> float:
+    """Angle between two vectors [rad], by the atan2 form of eq:optical:gating.
+
+    atan2(|a x b|, a . b) rather than arccos: an aberration residual lives in
+    the nearly-parallel regime, where arccos loses half its significant digits.
+    """
+    x = np.asarray(a, dtype=np.float64)
+    y = np.asarray(b, dtype=np.float64)
+    return math.atan2(float(np.linalg.norm(np.cross(x, y))), float(np.dot(x, y)))
+
+
+# A synthesized heliocentric ephemeris covering the mission epoch. The
+# segment layout matches the DE440 repack (sun and emb SSB-centered, earth
+# and moon EMB-centered, kind 0 in km), and each record carries a linear
+# Chebyshev term so the EMB has a real barycentric VELOCITY: aberration is
+# dominated by that annual term, and a constant-position fixture would leave
+# beta at the vehicle's LEO speed alone and shrink the signal the gate
+# resolves by a factor of four.
+#
+# The EMB sits one astronomical unit along -Y with its velocity along -X, so
+# its position and velocity are orthogonal (circular heliocentric motion) and
+# the Sun lies along +Y as seen from Earth. That places the vehicle's own +Y
+# LEO velocity ALONG the line of sight, which is what keeps the angle between
+# the line of sight and beta away from 90 degrees. It matters: the difference
+# between the normative formula and the dropped-transverse-projection
+# mutation is (beta^2 / 2) sin(2 theta), so at theta = 90 degrees the
+# mutation would be invisible however tight the tolerance. Measured here:
+# theta ~ 76 degrees, |beta| = 1.04e-04, and the mutation measures
+# 0.5401 mas.
+_V026_AU_KM = 1.4959787e8
+_V026_V_EMB_KMPS = 29.78  # Earth's mean heliocentric orbital speed
+_V026_INTLEN_S = 3.0 * 86400.0
+_V026_EPOCH = (2026, 1, 1, 0, 0, 0.0)
+
+_V026_MISSION = """\
+schema_version = 1
+vehicle = "verify_vehicle.toml"
+
+[mission]
+name = "verify-p6-aberration"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 60.0
+
+[run]
+seed = 20260601
+
+[integrator]
+type = "rk4"
+dt_s = 0.1
+
+[environment]
+central_body = "earth"
+# The Sun and Moon third bodies are enabled so the mission validator accepts
+# the ephemeris: its consumer list counts force models only, and the optical
+# sensors that actually require the Sun direction are not among them.
+third_bodies = ["sun", "moon"]
+ephemeris = "{ephemeris}"
+
+[logging]
+truth_rate_hz = 10
+
+[initial_state.cartesian]
+r_m = [7.0e6, 0.0, 0.0]
+v_mps = [0.0, 7546.0, 0.0]
+frame = "GCRF"
+
+[gnc]
+control_rate_hz = 10
+latency_cycles = 0
+
+[gnc.nav]
+component = "dead_reckoning"
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+
+[gnc.guidance]
+component = "attitude_hold"
+# A 10-degree slew about the OFF-AXIS body direction [1, 2, -2]/3 rather than
+# about body +Z. A +Z slew from this initial attitude leaves the attitude in
+# the q_w == 0 plane for the whole run, and at q_w == 0 the DCM of
+# eq:notation:quat2dcm is exactly symmetric - C - C^T = -4 q_w [q_v x]
+# vanishes identically. Criterion 9's residual is an angular separation, so
+# on such a fixture a TRANSPOSED attitude convention is undetectable by
+# geometry no matter which implementation supplies the DCM. This axis carries
+# |q_w| up to 0.060 and |C - C^T| up to 0.18.
+q_cmd = [-0.061628416716219346, 0.66333041525861247, 0.74550163754690491, 0.020542805572073115]
+
+[gnc.control]
+component = "pd_attitude"
+kp_nm_per_rad = [0.4, 0.4, 0.4]
+kd_nm_per_radps = [3.6, 3.6, 3.6]
+tau_max_nm = [0.05, 0.05, 0.05]
+
+[sensors.imu]
+sample_rate_hz = 10
+
+[sensors.sunsensor]
+sample_rate_hz = 5
+boresight_b = [1.0, 0.0, 0.0]
+# Full sphere, so the field-of-view gate never masks a sample, and noise-free
+# so the logged channel carries the aberration transformation alone.
+fov_half_angle_rad = 3.141592653589793
+sigma_rad = 0.0
+"""
+
+
+def _v026_ephemeris(tmpdir: Path) -> Path:
+    core = import_core()
+    day, sec = core.utc_to_tai(*_V026_EPOCH)
+    jd1, jd2 = core.tdb_jd(day, sec)
+    tdb_s = ((jd1 - _P6_J2000_JD) + jd2) * 86400.0
+    init = tdb_s - 86400.0
+    # position(x) = c0 + c1 x with x = 2 (t - t_mid) / intlen, so a constant
+    # velocity v is the single linear coefficient c1 = v intlen / 2.
+    c1 = _V026_V_EMB_KMPS * _V026_INTLEN_S / 2.0
+
+    def const_record(x_km: float, y_km: float, z_km: float) -> list:
+        return [[[x_km, 0.0], [y_km, 0.0], [z_km, 0.0]]]
+
+    segments = [
+        {"name": "sun", "target": 10, "center": 0, "kind": 0,
+         "init_tdb_s": init, "intlen_s": _V026_INTLEN_S,
+         "records": const_record(0.0, 0.0, 0.0)},
+        {"name": "emb", "target": 3, "center": 0, "kind": 0,
+         "init_tdb_s": init, "intlen_s": _V026_INTLEN_S,
+         "records": [[[0.0, -c1], [-_V026_AU_KM, 0.0], [0.0, 0.0]]]},
+        {"name": "earth", "target": 399, "center": 3, "kind": 0,
+         "init_tdb_s": init, "intlen_s": _V026_INTLEN_S,
+         "records": const_record(4671.0, 0.0, 0.0)},
+        {"name": "moon", "target": 301, "center": 3, "kind": 0,
+         "init_tdb_s": init, "intlen_s": _V026_INTLEN_S,
+         "records": const_record(-379700.0, 0.0, 0.0)},
+    ]
+    path = tmpdir / "v026.sreph"
+    path.write_bytes(_fixtures.build_sreph(segments))
+    return path
+
+
+def _check_v026(ctx: dict) -> None:
+    """Phase 6 exit criterion 9: the logged apparent Sun direction matches an
+    independent recomputation of eq:optical:aberration.
+
+    Both sides of the comparison are free of the code under test. The
+    ephemeris is evaluated through star_reacher.data_fetch's pure-Python
+    SREPH reader, not the C++ loader, so the source direction and the
+    observer velocity are not taken from the implementation being gated; the
+    apparent direction is rotated into body axes by _p6_quat_to_dcm rather
+    than by the core's quat_to_dcm, because an angular separation is
+    invariant under a rotation applied to both arguments and the core's own
+    DCM would cancel exactly.
+
+    Measured on this fixture: worst residual 3.46e-08 mas against the
+    1e-5 mas gate, aberration deflection 20.44 to 20.78 arcsec (the
+    eq:optical:abmag scale of beta sin(theta) at Earth's barycentric speed),
+    worst |C - C^T| = 0.1796.
+
+    Both mutations the audit used are rejected: replacing the reference with
+    ``normalize(u + beta)`` - dropping the transverse projection - measures
+    0.5401 mas, which is 5.4e+04 times the gate and yet would pass the
+    criterion's own 1 mas figure untouched; transposing the reference DCM
+    measures 3.34e+07 mas.
+    """
+    import os
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        (tdp / "verify_vehicle.toml").write_text(_P6_VEHICLE, encoding="utf-8")
+        eph_path = _v026_ephemeris(tdp)
+        mission = tdp / "aberration.toml"
+        mission.write_text(
+            _V026_MISSION.format(ephemeris=eph_path.as_posix()), encoding="utf-8"
+        )
+        cwd = os.getcwd()
+        os.chdir(tdp)
+        try:
+            result = run_mission(mission, tdp / "run")
+        finally:
+            os.chdir(cwd)
+        run = load(result.srlog_path)
+
+        from star_reacher.data_fetch import evaluate_segment, read_sreph
+
+        eph = read_sreph(eph_path)
+
+        def state_m(name: str, tdb_s: float):
+            seg = eph.segment_for(name, tdb_s)
+            position_km, rate_km_s = evaluate_segment(seg, tdb_s)
+            return np.array(position_km) * 1000.0, np.array(rate_km_s) * 1000.0
+
+        core = import_core()
+        epoch_tai = core.utc_to_tai(*_V026_EPOCH)
+        truth = run.groups["truth"]
+        sun = run.groups["sensors.sunsensor"]
+        if len(sun) < 2:
+            raise CheckFailure(f"the sun sensor logged {len(sun)} sample(s)")
+        # Both grids are exact multiples of the control cycle, so the integer
+        # cycle index is an exact key rather than a nearest-neighbour search.
+        index = {int(round(t / 0.1)): i for i, t in enumerate(truth["t_s"])}
+        rows = [index[int(round(float(t) / 0.1))] for t in sun["t_s"]]
+
+        worst = 0.0
+        worst_deflection = 0.0
+        least_deflection = math.inf
+        for j, t_s in enumerate(sun["t_s"]):
+            row = rows[j]
+            tai = core.tai_add_seconds(epoch_tai[0], epoch_tai[1], float(t_s))
+            jd1, jd2 = core.tdb_jd(tai[0], tai[1])
+            tdb_s = ((jd1 - _P6_J2000_JD) + jd2) * 86400.0
+            # DE440 stores the EMB against the SSB and the Earth against the
+            # EMB, so the barycentric Earth state is the sum of two segments.
+            r_emb, v_emb = state_m("emb", tdb_s)
+            r_earth_emb, v_earth_emb = state_m("earth", tdb_s)
+            r_earth, v_earth = r_emb + r_earth_emb, v_emb + v_earth_emb
+            r_sun, _ = state_m("sun", tdb_s)
+            # eq:optical:beta: the observer's barycentric velocity is the
+            # vehicle velocity relative to the central body plus the central
+            # body's own velocity relative to the SSB.
+            beta = (truth["v_mps"][row] + v_earth) / _P6_C_MPS
+            geometric = r_sun - r_earth - truth["r_m"][row]
+            geometric = geometric / np.linalg.norm(geometric)
+            apparent = _p6_aberrate_first_order(geometric, beta)
+            c_i2b = _p6_quat_to_dcm(truth["q_i2b"][row])
+            residual = _p6_separation_angle(c_i2b @ apparent, sun["sun_b"][j])
+            worst = max(worst, residual * _P6_MAS_PER_RAD)
+            deflection = (
+                _p6_separation_angle(geometric, apparent) * _P6_MAS_PER_RAD
+            )
+            worst_deflection = max(worst_deflection, deflection)
+            least_deflection = min(least_deflection, deflection)
+
+    if worst >= _V026_TOL_MAS:
+        raise CheckFailure(
+            f"worst logged-versus-reference Sun direction residual "
+            f"{worst:.6e} mas exceeds the exit-criterion-9 gate of "
+            f"{_V026_TOL_MAS} mas"
+        )
+    if worst >= _V026_REQUIREMENT_MAS:
+        raise CheckFailure(
+            f"worst residual {worst:.6e} mas exceeds the criterion's own "
+            f"requirement of {_V026_REQUIREMENT_MAS} mas"
+        )
+
+    # The gate is not vacuous only if the aberration is really present: an
+    # implementation that skipped the correction entirely would miss the
+    # logged direction by the whole deflection, so pinning the deflection
+    # pins the signal the residual is resolving.
+    if not 20_000.0 < least_deflection <= worst_deflection < 21_000.0:
+        raise CheckFailure(
+            f"aberration deflection spans {least_deflection:.1f} to "
+            f"{worst_deflection:.1f} mas, outside the eq:optical:abmag scale "
+            f"of ~20.5 arcsec at Earth's barycentric speed; the residual is "
+            f"not resolving the correction this criterion is about"
+        )
+
+    # Substituting the independent DCM is necessary but not sufficient. At
+    # q_w == 0 the DCM of eq:notation:quat2dcm is exactly symmetric, so on a
+    # fixture whose attitude stays in that plane a transposed convention
+    # changes nothing at all and the substitution reads as convention-aware
+    # while remaining blind.
+    asymmetry = max(
+        float(np.abs(_p6_quat_to_dcm(q) - _p6_quat_to_dcm(q).T).max())
+        for q in truth["q_i2b"]
+    )
+    if asymmetry <= 0.05:
+        raise CheckFailure(
+            f"the fixture's attitude keeps C_I2B within {asymmetry:.3e} of "
+            f"symmetric, so a transposed attitude convention would be "
+            f"invisible to this residual"
+        )
+
+
+# --------------------------------------------------------------------------
+# V027 / V028: Phase 6 exit criterion 3, at full and at reduced strength.
+#
+# The criterion is a conjunction: an R-run seeded ensemble of the reference
+# EKF mission passes ensemble NEES and per-sensor NIS against the
+# eq:ekf:ensemble chi-square bounds, AND re-executing the ensemble reproduces
+# every run's SRLOG SHA-256 bit for bit. V027 runs it at the criterion's
+# R = 100 for the full tier; V028 runs the identical scenario at R = 28 for
+# the quick tier. R is the ONLY difference between them, which is what makes
+# the reduced variant's weakness a single quantified statement rather than an
+# open question - see _V028_RUNS for the derivation and the numbers.
+#
+# The verdict is taken through star_reacher.consistency.ensemble_gate, the
+# FR-26 acceptance instrument, rather than re-derived here. NEES is gated on
+# the headline alone: the state error is a smooth trajectory whose epochs are
+# strongly correlated, and a binomial coverage threshold applied to them
+# rejects a correct filter about half the time. NIS is gated on the headline
+# AND on the binomial coverage threshold, because a consistent filter's
+# innovations are white and successive NIS epochs are therefore independent.
+# Both declarations are structural properties of the statistics, fixed before
+# any data is seen, never estimated from the run being judged.
+# --------------------------------------------------------------------------
+
+# The scenario's pinned truth. This is missions/leo_ekf_consistency.toml: the
+# truth environment is the central-body POINT MASS, which is the same gravity
+# model the navigator carries internally (ch:ekf assumption 2), and the IMU
+# carries only the two error terms the filter models. The scenario tests the
+# ESTIMATOR, not a model-error budget; running it against a richer truth
+# environment is a legitimate diagnostic but is not this gate.
+_P6_EKF_A = math.sqrt(0.5)
+_P6_EKF_Q_TRUE = np.array([0.0, _P6_EKF_A, _P6_EKF_A, 0.0])
+_P6_EKF_R_TRUE_M = np.array([7.0e6, 0.0, 0.0])
+_P6_EKF_V_TRUE_MPS = np.array([0.0, 7546.0, 0.0])
+_P6_EKF_SIGMA_ATT_RAD = 1.0e-3
+_P6_EKF_SIGMA_VEL_MPS = 0.5
+_P6_EKF_SIGMA_POS_M = 50.0
+_P6_EKF_BASE_RUN_SEED = 20260701
+# The draw stream is separate from the core's run seed so the initial-error
+# draws and the sensor noise cannot alias onto one another.
+_P6_EKF_DRAW_SEED = 90210
+_P6_NEES_DIM = 15
+# Sensor ids as the canonical kind order assigns them (imu, startracker,
+# navfix, altimeter), mapped to each aiding sensor's innovation dimension.
+_P6_NIS_DIM_BY_SENSOR = {1: 3, 2: 6, 3: 1}
+
+_P6_EKF_MISSION = """\
+schema_version = 1
+vehicle = "verify_vehicle.toml"
+
+[mission]
+name = "verify-p6-ekf"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 60.0
+
+[run]
+seed = {seed}
+
+[integrator]
+type = "rk4"
+dt_s = 0.1
+
+[environment]
+central_body = "earth"
+
+[logging]
+truth_rate_hz = 10
+
+[initial_state.cartesian]
+r_m = [7.0e6, 0.0, 0.0]
+v_mps = [0.0, 7546.0, 0.0]
+frame = "GCRF"
+
+[gnc]
+control_rate_hz = 10
+latency_cycles = 0
+
+[gnc.nav]
+component = "error_state_ekf"
+q0 = {q0}
+v0_mps = {v0}
+p0_m = {p0}
+bg0_radps = [0.0, 0.0, 0.0]
+ba0_mps2 = [0.0, 0.0, 0.0]
+p0_sigma_att_rad = [1.0e-3, 1.0e-3, 1.0e-3]
+p0_sigma_vel_mps = [0.5, 0.5, 0.5]
+p0_sigma_pos_m = [50.0, 50.0, 50.0]
+p0_sigma_bg_radps = [1.0759973046695306e-7, 1.0759973046695306e-7, 1.0759973046695306e-7]
+p0_sigma_ba_mps2 = [1.0759973046695306e-5, 1.0759973046695306e-5, 1.0759973046695306e-5]
+
+[gnc.guidance]
+component = "attitude_hold"
+q_cmd = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+
+[gnc.control]
+component = "pd_attitude"
+kp_nm_per_rad = [0.4, 0.4, 0.4]
+kd_nm_per_radps = [3.6, 3.6, 3.6]
+tau_max_nm = [0.05, 0.05, 0.05]
+
+[sensors.imu]
+sample_rate_hz = 10
+gyro_arw_rad_per_sqrt_s = 1.0e-5
+gyro_bias_instability_radps = 1.0e-7
+gyro_bias_tau_s = 100.0
+accel_vrw_mps_per_sqrt_s = 1.0e-4
+accel_bias_instability_mps2 = 1.0e-5
+accel_bias_tau_s = 100.0
+
+[sensors.navfix]
+sample_rate_hz = 1
+sigma_r_m = [10.0, 10.0, 10.0]
+sigma_v_mps = [0.1, 0.1, 0.1]
+
+[sensors.startracker]
+sample_rate_hz = 1
+boresight_b = [0.0, 0.0, 1.0]
+sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]
+
+[sensors.altimeter]
+sample_rate_hz = 1
+sigma_noise_m = 20.0
+sigma_bias_m = 0.0
+h_min_m = 0.0
+h_max_m = 0.0
+"""
+
+
+def _p6_initial_estimate(run_index: int):
+    """The filter's initial estimate for one ensemble run.
+
+    The error is drawn from N(0, P0) and SUBTRACTED from truth, so the
+    realized initial error is distributed exactly as P0 claims - the
+    precondition for NEES consistency from the first cycle. The attitude uses
+    the multiplicative convention of eq:ekf:qerr: q_true = q_hat (x)
+    dq(dtheta) gives q_hat = q_true (x) dq(-dtheta).
+
+    The bias estimates are deliberately NOT perturbed. They start at zero and
+    P0's bias blocks carry the instruments' stationary Gauss-Markov sigmas;
+    because the IMU initializes its in-run bias from exactly that stationary
+    distribution, the initial bias error already has the distribution the
+    filter believes, without this driver needing to know the sensor's private
+    draw.
+    """
+    rng = np.random.default_rng(_P6_EKF_DRAW_SEED + run_index)
+    dtheta = _P6_EKF_SIGMA_ATT_RAD * rng.standard_normal(3)
+    dv = _P6_EKF_SIGMA_VEL_MPS * rng.standard_normal(3)
+    dp = _P6_EKF_SIGMA_POS_M * rng.standard_normal(3)
+    return (
+        _p6_quat_mul(_P6_EKF_Q_TRUE, _p6_quat_exp(-dtheta)),
+        _P6_EKF_V_TRUE_MPS - dv,
+        _P6_EKF_R_TRUE_M - dp,
+    )
+
+
+def _p6_format_vector(values) -> str:
+    # Full round-trip precision: a truncated initial estimate would make this
+    # ensemble member a different run from the one the draw defines.
+    return "[" + ", ".join("%.17g" % float(v) for v in values) + "]"
+
+
+def _p6_reduce_error(e):
+    """Reduce the logged 16-vector nav.err to the 15 dimensions P describes.
+
+    The leading four components are the sign-canonicalized multiplicative
+    error quaternion of eq:ekf:qerr; the small-angle extraction
+    dtheta = 2 sgn(dq_w) dq_v is the same reduction ``star consistency``
+    applies.
+    """
+    sign = np.where(e[:, 0] >= 0.0, 1.0, -1.0)[:, np.newaxis]
+    return np.concatenate([2.0 * sign * e[:, 1:4], e[:, 4:]], axis=1)
+
+
+def _p6_per_sensor_innovations(innov):
+    """Split zero-padded nav.innov records into per-sensor (y, S) arrays."""
+    from star_reacher.consistency import pack_symmetric, unpack_symmetric
+
+    m_max = innov["y"].shape[-1]
+    out = {}
+    for sensor_id in sorted({int(s) for s in innov["sensor_id"]}):
+        sel = innov["sensor_id"] == sensor_id
+        m = int(innov["m"][sel][0])
+        y = innov["y"][sel][:, :m]
+        s = innov["S"][sel]
+        if m < m_max:
+            s = pack_symmetric(unpack_symmetric(s)[:, :m, :m])
+        out[sensor_id] = (y, s)
+    return out
+
+
+def _p6_execute_ensemble(outroot: Path, runs: int):
+    """Run ``runs`` ensemble members; return (sha list, NEES array, NIS dict)."""
+    import os
+
+    from star_reacher.consistency import nees, nis
+
+    outroot.mkdir(parents=True, exist_ok=True)
+    (outroot / "verify_vehicle.toml").write_text(_P6_VEHICLE, encoding="utf-8")
+    shas: list[str] = []
+    nees_runs: list = []
+    nis_runs: dict = {}
+    cwd = os.getcwd()
+    # The mission's vehicle reference resolves against the working directory.
+    os.chdir(outroot)
+    try:
+        for i in range(runs):
+            q0, v0, p0 = _p6_initial_estimate(i)
+            mission = outroot / ("run%03d.toml" % i)
+            mission.write_text(
+                _P6_EKF_MISSION.format(
+                    seed=_P6_EKF_BASE_RUN_SEED + i,
+                    q0=_p6_format_vector(q0),
+                    v0=_p6_format_vector(v0),
+                    p0=_p6_format_vector(p0),
+                ),
+                encoding="utf-8",
+            )
+            result = run_mission(mission, outroot / ("run%03d" % i), force=True)
+            shas.append(result.srlog_sha256)
+            run = load(result.srlog_path)
+            nees_runs.append(
+                nees(
+                    _p6_reduce_error(run.groups["nav.err"]["e"]),
+                    run.groups["nav.est"]["P"],
+                )
+            )
+            for sensor_id, (y, s) in _p6_per_sensor_innovations(
+                run.groups["nav.innov"]
+            ).items():
+                nis_runs.setdefault(sensor_id, []).append(nis(y, s))
+    finally:
+        os.chdir(cwd)
+    return (
+        shas,
+        np.stack(nees_runs),
+        {k: np.stack(v) for k, v in nis_runs.items()},
+    )
+
+
+def _p6_criterion3(runs: int) -> None:
+    """Execute and gate the criterion-3 ensemble at ``runs`` members."""
+    from star_reacher.consistency import ensemble_gate
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        shas, nees_eps, nis_eps = _p6_execute_ensemble(tdp / "ensemble", runs)
+
+        if nees_eps.shape[0] != runs:
+            raise CheckFailure(
+                f"the ensemble produced {nees_eps.shape[0]} NEES runs, not {runs}"
+            )
+        # A filter that silently skipped a sensor would otherwise pass the
+        # gates it did run and look healthy.
+        if sorted(nis_eps) != sorted(_P6_NIS_DIM_BY_SENSOR):
+            raise CheckFailure(
+                f"innovations arrived from sensors {sorted(nis_eps)}, expected "
+                f"{sorted(_P6_NIS_DIM_BY_SENSOR)}; an aiding sensor contributed "
+                f"nothing and its NIS gate would be vacuous"
+            )
+
+        gate = ensemble_gate(nees_eps, _P6_NEES_DIM, epochs_independent=False)
+        if gate.coverage_gated:
+            raise CheckFailure(
+                "NEES coverage must not gate: the state error is a correlated "
+                "trajectory and the binomial premise does not hold for it"
+            )
+        if not gate.passed:
+            raise CheckFailure(
+                f"ensemble NEES headline {gate.headline.mean:.4f} outside "
+                f"[{gate.lower:.4f}, {gate.upper:.4f}] (chi2 95 %, dof "
+                f"{gate.dof}, R = {runs}); coverage "
+                f"{gate.inside_count}/{len(gate.epoch_mean)} epochs inside "
+                f"(diagnostic only)"
+            )
+
+        for sensor_id, dim in sorted(_P6_NIS_DIM_BY_SENSOR.items()):
+            nis_gate = ensemble_gate(
+                nis_eps[sensor_id], dim, epochs_independent=True
+            )
+            if not nis_gate.coverage_gated:
+                raise CheckFailure(
+                    f"sensor {sensor_id} NIS coverage is not gating; a "
+                    f"consistent filter's innovations are white and the "
+                    f"binomial threshold is an exact false-failure bound"
+                )
+            if not nis_gate.passed:
+                raise CheckFailure(
+                    f"sensor {sensor_id} ensemble NIS headline "
+                    f"{nis_gate.headline.mean:.4f} against "
+                    f"[{nis_gate.lower:.4f}, {nis_gate.upper:.4f}] (chi2 95 %, "
+                    f"dof {nis_gate.dof}, R = {runs}); headline "
+                    f"{'passed' if nis_gate.headline.passed else 'FAILED'}, "
+                    f"coverage {nis_gate.inside_count}/"
+                    f"{len(nis_gate.epoch_mean)} epochs inside against a "
+                    f"threshold of {nis_gate.min_inside}"
+                )
+
+        rerun_shas, _, _ = _p6_execute_ensemble(tdp / "rerun", runs)
+
+    if rerun_shas != shas:
+        differing = [
+            i for i, (a, b) in enumerate(zip(shas, rerun_shas)) if a != b
+        ]
+        raise CheckFailure(
+            f"re-executing the ensemble changed the SRLOG SHA-256 of "
+            f"{len(differing)} of {runs} runs (first at index "
+            f"{differing[0]}: {shas[differing[0]]} != "
+            f"{rerun_shas[differing[0]]})"
+        )
+
+
+_V027_RUNS = 100  # the criterion's own ensemble size
+
+
+def _check_v027(ctx: dict) -> None:
+    """Phase 6 exit criterion 3 at FULL strength: the 100-run ensemble.
+
+    Measured on this fixture at R = 100: ensemble NEES headline 14.8776
+    inside [13.9456, 16.0923] with 599 of 601 epochs inside (diagnostic,
+    not gated); per-sensor NIS headlines 2.9895 (startracker, dim 3, 56 of
+    60 epochs inside), 6.0306 (navfix, dim 6, 56 of 60) and 0.9816
+    (altimeter, dim 1, 57 of 60) against a coverage threshold of 51; every
+    SRLOG SHA-256 reproduced on the rerun. These are the same numbers
+    tests/python/test_ekf_consistency.py measures on the committed mission,
+    which is what establishes that the inline fixture here is the same
+    scenario.
+
+    Detection power, derived rather than asserted. A filter reporting a
+    covariance mis-scaled by a factor f has per-epoch statistic (1/f) times
+    the consistent one, so the headline sits at n/f and the gate fires when
+    n/f leaves [chi2_0.025(Rn)/R, chi2_0.975(Rn)/R]. That is 50 % power. The
+    headline's own sampling spread sets the rest: the per-run time-averaged
+    NEES has a measured standard deviation of 3.838 across the 100 runs
+    (against 0.223 if the 601 epochs within a run were independent, so about
+    2.0 effectively independent epochs per run), giving the headline a
+    standard deviation of 3.838/sqrt(R). At R = 100 that yields
+    90 % power against a mis-scale of +11.1 % or -9.8 %, 99 % power against
+    +14.0 % or -12.3 %, and a false-failure rate of 0.5 %.
+    """
+    _p6_criterion3(_V027_RUNS)
+
+
+# R = 28 is the smallest ensemble whose NEES detection threshold stays within
+# a factor of two of the full R = 100 gate's, which is the design rule this
+# number comes from rather than a round figure. The thresholds are the
+# 50 %-power points derived above, computed from the project's own exact
+# chi-square evaluator:
+#
+#     R = 100: detects f >= 1.0756 (+7.6 %) or f <= 0.9321 (-6.8 %)
+#     R =  28: detects f >= 1.1503 (+15.0 %) or f <= 0.8774 (-12.3 %)
+#     R =  27: detects f >= 1.1534 (+15.3 %), a ratio of 2.03 - outside
+#
+# and at 90 % power, which is the figure the registered title carries:
+#
+#     R = 100: +11.1 % / -9.8 %
+#     R =  28: +22.2 % / -17.7 %
+#
+# The false-failure rate is 0.5 % at both sizes: the interval half-width and
+# the headline's standard deviation both scale as 1/sqrt(R), so reducing R
+# costs power and nothing else. Every prefix R = 2..100 of this ensemble
+# passes all four gates, so R = 28 is not a fragile pick; its NEES headline
+# of 13.7021 sits 16.3 % of the interval width above the lower bound, against
+# 43.4 % at R = 100.
+_V028_RUNS = 28
+
+
+def _check_v028(ctx: dict) -> None:
+    """Phase 6 exit criterion 3 at REDUCED strength for the quick tier.
+
+    WHAT THIS DOES NOT ESTABLISH. A pass here is NOT the criterion. The
+    scenario, the statistics, the gating rules and the bit-identical rerun
+    are identical to V027's; the ensemble is 28 runs instead of 100, and the
+    only consequence is statistical power. Concretely, this variant is blind
+    to a reported-covariance mis-scale smaller than about 15 % where the full
+    gate resolves 7.6 %, and it reaches 90 % power only at +22.2 % / -17.7 %
+    where the full gate reaches it at +11.1 % / -9.8 %. A defect that shifts
+    the covariance by 10 % passes here and fails V027. Read a quick-tier
+    green as "no gross inconsistency", never as the criterion closed. The
+    derivation of R and of both power figures is at _V028_RUNS.
+
+    The three NIS statistics are weaker still, and were weaker at full
+    strength too: their 50 %-power thresholds at R = 28 are +25.4 % (navfix,
+    dim 6), +38.8 % (startracker, dim 3) and +82.9 % (altimeter, dim 1),
+    against +12.4 %, +18.2 % and +34.7 % at R = 100. They gate a different
+    failure - an innovation covariance that does not match the residuals -
+    rather than adding power to the NEES statement.
+
+    Measured at R = 28: ensemble NEES headline 13.7021 inside
+    [13.0397, 17.0955]; NIS headlines 3.0216, 5.9896 and 0.9943 with 57, 60
+    and 58 of 60 epochs inside against a threshold of 51; every SRLOG
+    SHA-256 reproduced on the rerun. The gate was shown able to fail by
+    scaling the reported covariance until it fired: on this pinned ensemble
+    it flips at f = 1.0508 and f = 0.8015, against f = 1.0668 and f = 0.9245
+    for V027. Those realized flip points are seed artifacts of where each
+    ensemble's headline happens to sit inside its band; the derived
+    population thresholds above are the figures to design against.
+    """
+    _p6_criterion3(_V028_RUNS)
+
+
+# Tier membership. BOTH runs in the full tier and in --quick; FULL and QUICK
+# are the two strengths of exit criterion 3, which is the only check whose
+# cost forces a split. Everything else is budgeted for the < 60 s quick gate.
+TIER_BOTH = "both"
+TIER_FULL = "full"
+TIER_QUICK = "quick"
+
 _CHECKS = [
-    ("V001", "two-body double-run SHA-256 bit-identity", _check_v001),
-    ("V002", "minor-version-forward read (v1.999 file with one added channel)", _check_v002),
-    ("V003", "major-version mismatch rejected (v2.0 file)", _check_v003),
-    ("V004", "corrupted header rejected (bad magic; truncated JSON)", _check_v004),
-    ("V005", "CSV export round-trips every value bit-exactly", _check_v005),
-    ("V006", "RNG stream reproducibility", _check_v006),
-    ("V007", "load() smoke: shapes, dtypes, monotonic t_s, header fields", _check_v007),
-    ("V008", "truncated trailing record rejected", _check_v008),
-    ("V009", "UTC->TAI->TT golden epochs bit-exact with round trip", _check_v009),
-    ("V010", "quat<->DCM<->Euler round trips over 100 seeded attitudes", _check_v010),
-    ("V011", "GCRF->ITRF at golden epoch vs ERFA elements + orthonormality", _check_v011),
-    ("V012", "SREPH loader + Chebyshev evaluator on synthesized file", _check_v012),
-    ("V013", "two-body invariant drift and apsis events (quick tier)", _check_v013),
-    ("V014", "gravity tiers vs closed-form J2 on a synthesized field", _check_v014),
-    ("V015", "Battin third body vs extended-precision references", _check_v015),
-    ("V016", "conical shadow exact 0/1, penumbra value, umbra SRP zero", _check_v016),
-    ("V017", "USSA76/Harris-Priester/Mars density spot values", _check_v017),
-    ("V018", "perturbed-run double-run SHA-256 bit-identity (rkf78 + rk4)", _check_v018),
-    ("V019", "NPZ export round-trips bit-exactly (+ Parquet when available)", _check_v019),
-    ("V020", "viewer HTML self-contained, epochs exact, decimation bound held", _check_v020),
-    ("V021", "plot arrays match closed-form elements; headless PNG render", _check_v021),
-    ("V022", "P6 EC-4: stepped and batch log hashes identical; observe() pure", _check_v022),
-    ("V023", "P6 EC-5: v1.2 channels leave major at 1; oracle read from header", _check_v023),
-    ("V024", "package, compiled core, and log header report one version", _check_v024),
+    ("V001", TIER_BOTH, "two-body double-run SHA-256 bit-identity", _check_v001),
+    ("V002", TIER_BOTH, "minor-version-forward read (v1.999 file with one added channel)", _check_v002),
+    ("V003", TIER_BOTH, "major-version mismatch rejected (v2.0 file)", _check_v003),
+    ("V004", TIER_BOTH, "corrupted header rejected (bad magic; truncated JSON)", _check_v004),
+    ("V005", TIER_BOTH, "CSV export round-trips every value bit-exactly", _check_v005),
+    ("V006", TIER_BOTH, "RNG stream reproducibility", _check_v006),
+    ("V007", TIER_BOTH, "load() smoke: shapes, dtypes, monotonic t_s, header fields", _check_v007),
+    ("V008", TIER_BOTH, "truncated trailing record rejected", _check_v008),
+    ("V009", TIER_BOTH, "UTC->TAI->TT golden epochs bit-exact with round trip", _check_v009),
+    ("V010", TIER_BOTH, "quat<->DCM<->Euler round trips over 100 seeded attitudes", _check_v010),
+    ("V011", TIER_BOTH, "GCRF->ITRF at golden epoch vs ERFA elements + orthonormality", _check_v011),
+    ("V012", TIER_BOTH, "SREPH loader + Chebyshev evaluator on synthesized file", _check_v012),
+    ("V013", TIER_BOTH, "two-body invariant drift and apsis events (quick tier)", _check_v013),
+    ("V014", TIER_BOTH, "gravity tiers vs closed-form J2 on a synthesized field", _check_v014),
+    ("V015", TIER_BOTH, "Battin third body vs extended-precision references", _check_v015),
+    ("V016", TIER_BOTH, "conical shadow exact 0/1, penumbra value, umbra SRP zero", _check_v016),
+    ("V017", TIER_BOTH, "USSA76/Harris-Priester/Mars density spot values", _check_v017),
+    ("V018", TIER_BOTH, "perturbed-run double-run SHA-256 bit-identity (rkf78 + rk4)", _check_v018),
+    ("V019", TIER_BOTH, "NPZ export round-trips bit-exactly (+ Parquet when available)", _check_v019),
+    ("V020", TIER_BOTH, "viewer HTML self-contained, epochs exact, decimation bound held", _check_v020),
+    ("V021", TIER_BOTH, "plot arrays match closed-form elements; headless PNG render", _check_v021),
+    ("V022", TIER_BOTH, "P6 EC-4: stepped and batch log hashes identical; observe() pure", _check_v022),
+    ("V023", TIER_BOTH, "P6 EC-5: v1.2 channels leave major at 1; oracle read from header", _check_v023),
+    ("V024", TIER_BOTH, "package, compiled core, and log header report one version", _check_v024),
+    ("V025", TIER_BOTH, "P6 EC-2: Python PD law reproduces core torques < 1e-9 N*m, scenario non-degenerate", _check_v025),
+    ("V026", TIER_BOTH, "P6 EC-9: logged Sun direction vs independent aberration + DCM < 1e-5 mas", _check_v026),
+    ("V027", TIER_FULL, "P6 EC-3 full (R=100): ensemble NEES/NIS gates + bit-identical rerun", _check_v027),
+    ("V028", TIER_QUICK, "P6 EC-3 REDUCED (R=28): NOT the criterion - blind below ~15 % covariance mis-scale (full gate: 7.6 %)", _check_v028),
 ]
 
 
-def run_checks(quick: bool = False) -> int:
-    """Run every acceptance check, print one line each, return the exit code.
+def checks_for_tier(quick: bool):
+    """The (id, title, fn) triples that run in the requested tier.
 
-    ``quick`` is accepted for CLI symmetry: through Phase 3 the quick tier
-    and the full tier run the identical check set (every check is budgeted
-    for the < 60 s quick gate); the split becomes meaningful when later
-    phases add long-running checks.
+    Kept separate from ``run_checks`` so a caller - the CLI contract test
+    among them - can ask what a tier contains without executing it.
     """
+    wanted = TIER_QUICK if quick else TIER_FULL
+    return [
+        (check_id, title, fn)
+        for check_id, tier, title, fn in _CHECKS
+        if tier in (TIER_BOTH, wanted)
+    ]
+
+
+def run_checks(quick: bool = False) -> int:
+    """Run the requested tier's checks, print one line each, return the exit code.
+
+    The two tiers differ in exactly one check. ``--quick`` runs V028, a
+    28-run variant of the Phase 6 exit-criterion-3 ensemble; the full tier
+    runs V027, the criterion's own 100-run ensemble. Every other check is
+    budgeted for the < 60 s quick gate and runs in both.
+
+    The split is announced rather than left implicit. A quick tier that
+    silently covered part of a criterion is how criterion 4's blind spot
+    survived a whole phase, so the reduced check carries its limitation in
+    its registered title and prints alongside a line naming the tier and the
+    checks the other tier would have run.
+    """
+    selected = checks_for_tier(quick)
+    tier_name = TIER_QUICK if quick else TIER_FULL
+    ran = {check_id for check_id, _title, _fn in selected}
+    skipped = sorted(
+        check_id for check_id, _tier, _title, _fn in _CHECKS if check_id not in ran
+    )
+    print(
+        f"VERIFY: tier {tier_name} ({len(selected)} checks"
+        + (f"; not run in this tier: {', '.join(skipped)}" if skipped else "")
+        + ")",
+        flush=True,
+    )
     ctx: dict = {}
     results: list[tuple[str, bool]] = []
-    for check_id, title, fn in _CHECKS:
+    for check_id, title, fn in selected:
         try:
             fn(ctx)
         except CheckFailure as exc:

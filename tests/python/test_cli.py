@@ -205,15 +205,31 @@ def test_verify_output_contract(tmp_path):
     # The expected check set is read from the registry rather than pinned to a
     # literal, so adding a check does not require editing this contract; what
     # is asserted is the SHAPE of the output and that the verdict tally agrees
-    # with the number of checks that actually ran.
-    from star_reacher.verify import _CHECKS
+    # with the number of checks that actually ran IN THIS TIER.
+    from star_reacher.verify import _CHECKS, checks_for_tier
 
-    total = len(_CHECKS)
-    assert total >= 21, f"the check registry shrank to {total}"
-    for check_id, _title, _fn in _CHECKS:
+    selected = checks_for_tier(quick=True)
+    total = len(selected)
+    assert total >= 21, f"the quick check set shrank to {total}"
+    for check_id, _title, _fn in selected:
         assert any(re.match(rf"{check_id} (PASS|FAIL) ", ln) for ln in lines), (
             f"missing line for {check_id}:\n{proc.stdout}"
         )
+    # A check the quick tier does not run must not report a result, and must
+    # be named on the tier line instead: silent partial coverage is the
+    # failure mode the tier split exists to prevent.
+    ran = {check_id for check_id, _title, _fn in selected}
+    absent = [c for c, _t, _ti, _f in _CHECKS if c not in ran]
+    assert absent, "the tier split collapsed; --quick now runs every check"
+    for check_id in absent:
+        assert not any(re.match(rf"{check_id} (PASS|FAIL) ", ln) for ln in lines), (
+            f"{check_id} is not in the quick tier but reported a result"
+        )
+        assert check_id in lines[0], (
+            f"{check_id} is skipped in --quick without being named on the "
+            f"tier line: {lines[0]!r}"
+        )
+    assert lines[0].startswith("VERIFY: tier quick "), lines[0]
     final = lines[-1]
     assert re.fullmatch(
         rf"VERIFY: PASS \({total}/{total}\)"
@@ -245,7 +261,16 @@ def test_docs_mutually_exclusive_flags_exit_2():
     assert proc.returncode == 2
 
 
-def test_verify_help_documents_quick_equals_full():
+def test_verify_help_documents_what_quick_gives_up():
+    """The help must state the tier difference, not merely that one exists.
+
+    ``--quick`` reduces the exit-criterion-3 ensemble from 100 runs to 28,
+    which costs statistical power and nothing else. A user reading the help
+    has to be able to learn that a quick pass is not the criterion, so the
+    help names both check IDs and the mis-scale the reduced ensemble cannot
+    resolve.
+    """
     proc = _run_cli("verify", "--help")
     assert proc.returncode == 0
-    assert "identical" in proc.stdout
+    for token in ("V027", "V028", "R = 100", "R = 28"):
+        assert token in proc.stdout, f"{token!r} missing from the verify help"
