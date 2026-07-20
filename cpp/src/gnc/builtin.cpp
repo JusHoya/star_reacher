@@ -359,8 +359,32 @@ std::unique_ptr<IGncComponent> make_attitude_hold(const GncComponentCfg& c) {
 std::unique_ptr<IGncComponent> make_pd_attitude(const GncComponentCfg& c) {
   return std::unique_ptr<IGncComponent>(new PdAttitudeControl(c));
 }
+std::unique_ptr<IGncComponent> make_external(const GncComponentCfg& c) {
+  return std::unique_ptr<IGncComponent>(new ExternalCommand(c));
+}
 
 }  // namespace
+
+ExternalCommand::ExternalCommand(const GncComponentCfg& cfg) {
+  // No parameters: the command is data from the driver, not configuration.
+  // Rejecting stray keys here rather than ignoring them keeps a typo in the
+  // mission file from silently reading as an accepted setting.
+  if (!cfg.scalars.empty() || !cfg.vectors.empty()) {
+    throw std::invalid_argument(
+        "gnc component \"external\" takes no parameters; its command is "
+        "supplied by the stepping-API driver");
+  }
+}
+
+void ExternalCommand::init(const GncInitContext& ctx) {
+  // The pre-command hold echoes the activation attitude, so a run that steps
+  // before its driver has issued anything commands the attitude it started
+  // at rather than an arbitrary identity rotation.
+  cmd_ = GncOutput();
+  cmd_.q_i2b = ctx.q0_i2b;
+}
+
+GncOutput ExternalCommand::update(const GncInput&) { return cmd_; }
 
 void register_builtin_components() {
   static const bool once = [] {
@@ -368,6 +392,7 @@ void register_builtin_components() {
     register_component("pitch_program", &make_pitch_program);
     register_component("attitude_hold", &make_attitude_hold);
     register_component("pd_attitude", &make_pd_attitude);
+    register_component("external", &make_external);
     return true;
   }();
   (void)once;

@@ -25,6 +25,7 @@
 #include "star/constants.hpp"
 #include "star/ephemeris.hpp"
 #include "star/frames.hpp"
+#include "star/gnc/builtin.hpp"
 #include "star/gnc/component.hpp"
 #include "star/integrate.hpp"
 #include "star/models/actuators.hpp"
@@ -656,6 +657,18 @@ struct VehicleCycle::Impl {
   std::vector<double> e_buf;
   std::vector<double> innov_y_buf;
   std::vector<double> innov_s_buf;
+  // Non-owning views of the "external" component in whichever chain slots
+  // the mission put it, so the stepping API can hand it a command. Null when
+  // the mission configured no external slot.
+  gnc::ExternalCommand* ext_guidance = nullptr;
+  gnc::ExternalCommand* ext_control = nullptr;
+
+  // --- FR-24 observation snapshot -----------------------------------------
+  // Refreshed once per processed cycle and never on read, which is what
+  // makes observe() idempotent (exit criterion 4). Truth is stored beside it
+  // rather than inside it so the privileged accessor stays separate.
+  CycleObservation obs;
+  gnc::TruthState obs_truth;
 
   Impl(const RunConfig& c, const std::string& out_path)
       : cfg(c),
@@ -832,12 +845,65 @@ struct VehicleCycle::Impl {
           }
         }
       }
+      // Locate the stepping API's command addressee. dynamic_cast rather
+      // than a name comparison against the config: the pointer must be the
+      // object the chain will actually call, and deriving it from the object
+      // itself cannot disagree with what was constructed.
+      ext_guidance = dynamic_cast<gnc::ExternalCommand*>(guidance.get());
+      ext_control = dynamic_cast<gnc::ExternalCommand*>(control.get());
       // Free-flying missions close the loop from t = 0; geodetic missions
       // activate at pad release (format doc section 3.2 record-start
       // semantics).
       if (cfg.initial_form != "geodetic") {
         activate_gnc(0);
       }
+    }
+    // Seed the FR-24 snapshot so observe() before the first step() describes
+    // the initial state rather than a default-constructed blank. The stack
+    // composition is the same pure function the cycle uses, so the reported
+    // initial mass is the one cycle 0 will see.
+    sp = compose_stack(veh);
+    refresh_observation(0, 0.0);
+  }
+
+  // Overwrite the FR-24 snapshot with the state of cycle k at time t. Called
+  // at the end of every processed cycle and once at construction; NEVER from
+  // an accessor, which is what keeps observe() idempotent (exit criterion
+  // 4). Only the non-GNC fields are written here - the GNC block fills its
+  // own fields earlier in the same cycle, before the chain products are
+  // overwritten by the next one.
+  void refresh_observation(std::int64_t k, double t) {
+    obs.cycle = k;
+    obs.t_s = t;
+    obs.done = finished;
+    obs.gnc_active = gnc_active;
+    if (!gnc_active) {
+      // Clear the chain fields rather than leaving the last active cycle's
+      // values in place: a driver reading them after GNC deactivation would
+      // otherwise see a stale command that nothing is applying.
+      obs.imu = gnc::ImuSample();
+      obs.imu_fresh = false;
+      obs.navfix = gnc::NavFixSample();
+      obs.startracker = gnc::StarTrackerSample();
+      obs.altimeter = gnc::AltimeterSample();
+      obs.env = gnc::NavEnvironment();
+      obs.nav_est = gnc::GncOutput();
+      obs.att_cmd = gnc::GncOutput();
+      obs.applied = gnc::GncOutput();
+      obs.nav_x_hat.clear();
+      obs.nav_p_upper.clear();
+    }
+    obs_truth.valid = true;
+    obs_truth.t_s = t;
+    obs_truth.r_i_m = r_m;
+    obs_truth.v_i_mps = v_mps;
+    obs_truth.q_i2b = q;
+    obs_truth.omega_b_radps = omega_b;
+    obs_truth.mass_kg = sp.composite.mass_kg;
+    obs_truth.imu_bias_valid = imu != nullptr;
+    if (imu != nullptr) {
+      obs_truth.b_g_radps = imu->gyro_total_bias_radps();
+      obs_truth.b_a_mps2 = imu->accel_total_bias_mps2();
     }
   }
 
@@ -958,11 +1024,30 @@ struct VehicleCycle::Impl {
     writer.write_gnc_cmd(t, applied.torque_b_nm, q_cmd,
                          applied.omega_b_radps, applied.valid ? 1u : 0u);
 
+    // FR-24 snapshot of this cycle's chain view. Copied out of the same `in`
+    // the components were handed, so what a stepping driver observes is
+    // exactly what the nav stage saw - not a reconstruction that could drift
+    // from it.
+    obs.imu = in.imu;
+    obs.imu_fresh = in.imu_fresh;
+    obs.navfix = in.navfix;
+    obs.startracker = in.startracker;
+    obs.altimeter = in.altimeter;
+    obs.env = in.env;
+    obs.nav_est = in.nav_est;
+    obs.att_cmd = in.att_cmd;
+    obs.applied = applied;
+
     if (nav_n > 0) {
       nav->state(x_hat_buf.data());
       nav->covariance_upper(p_buf.data());
       writer.write_nav_est(t, x_hat_buf.data(), x_hat_buf.size(),
                            p_buf.data(), p_buf.size());
+      // Copy, not a view: observe() must never hand out a pointer into a
+      // buffer the next cycle overwrites (exit criterion 4's idempotence
+      // clause is about the returned value, not just the call).
+      obs.nav_x_hat = x_hat_buf;
+      obs.nav_p_upper = p_buf;
       // nav.err is log-side analysis (truth never enters GncInput here);
       // the estimator defines the truth-minus-estimate convention.
       gnc::TruthState truth;
@@ -1439,6 +1524,7 @@ struct VehicleCycle::Impl {
       writer.write_event(t_of(i), 2, "run_end");
       run_summary.event_records += 1;
       finish();
+      refresh_observation(i, t_of(i));
       return false;
     }
     if (i == steps) {
@@ -1447,8 +1533,12 @@ struct VehicleCycle::Impl {
       writer.write_event(cfg.duration_s, 2, "run_end");
       run_summary.event_records += 1;
       finish();
+      refresh_observation(i, t_of(i));
       return false;
     }
+    // Snapshot cycle i BEFORE advancing: every observation field then
+    // describes one consistent instant, the cycle just processed.
+    refresh_observation(i, t_of(i));
     advance_cycle(i);
     ++i;
     return true;
@@ -1471,6 +1561,30 @@ std::int64_t VehicleCycle::cycle() const { return impl_->i; }
 double VehicleCycle::time_s() const { return impl_->t_of(impl_->i); }
 
 const RunSummary& VehicleCycle::summary() const { return impl_->run_summary; }
+
+const CycleObservation& VehicleCycle::observation() const {
+  return impl_->obs;
+}
+
+const gnc::TruthState& VehicleCycle::truth() const { return impl_->obs_truth; }
+
+bool VehicleCycle::has_external_command() const {
+  return impl_->ext_guidance != nullptr || impl_->ext_control != nullptr;
+}
+
+void VehicleCycle::set_external_command(const gnc::GncOutput& cmd) {
+  if (!has_external_command()) {
+    throw std::logic_error(
+        "VehicleCycle::set_external_command: this mission configures no "
+        "\"external\" gnc.guidance or gnc.control component, so there is "
+        "nothing to command; the run is flying its own built-in chain");
+  }
+  // Both slots receive the same command when both are external: the guidance
+  // slot reads it as the attitude command and the control slot as the
+  // torque, which are disjoint fields of one GncOutput.
+  if (impl_->ext_guidance != nullptr) impl_->ext_guidance->set_command(cmd);
+  if (impl_->ext_control != nullptr) impl_->ext_control->set_command(cmd);
+}
 
 log::SrlogHeaderFields VehicleCycle::make_header_fields(const RunConfig& cfg) {
   check_config_vehicle(cfg);

@@ -66,11 +66,48 @@
 //       with NO renormalization of dq - inputs are used as received.
 //       q_cmd/w_cmd come from the guidance slot, q_est/w_est from the nav
 //       slot; when either slot is invalid the output is a hold.
+//
+//   "external"        (guidance or control) - no parameters.
+//       The FR-24 stepping-API command seam; documented at the
+//       ExternalCommand declaration below because the driver, not the
+//       mission file, supplies its numbers.
 #ifndef STAR_GNC_BUILTIN_HPP
 #define STAR_GNC_BUILTIN_HPP
 
+#include "star/gnc/component.hpp"
+
 namespace star {
 namespace gnc {
+
+// "external" (guidance or control) - no parameters.
+//
+// The FR-24 stepping-API authority stand-in: update() returns whatever the
+// driver most recently handed to set_command(), unchanged. It is the seam
+// that lets `Sim.step(commands)` command the vehicle without special-casing
+// the chain - the external command traverses the same nav -> guidance ->
+// control ordering, the same LatencyFifo, and the same gnc.cmd logging as a
+// built-in component, so a commanded run and an autonomous run differ only
+// in who computed the numbers.
+//
+// Zero-order hold is the whole semantics (D-5): the stored command persists
+// across cycles until the driver replaces it, so a step() that supplies no
+// command re-applies the previous one. The initial command is a hold
+// (valid == false), which the loop resolves to the neutral command.
+class ExternalCommand : public IGncComponent {
+ public:
+  explicit ExternalCommand(const GncComponentCfg& cfg);
+
+  void init(const GncInitContext& ctx) override;
+  GncOutput update(const GncInput& input) override;
+
+  // Replace the held command. Deterministic by construction: the value is
+  // stored verbatim and read back on the next update() with no arithmetic.
+  void set_command(const GncOutput& cmd) { cmd_ = cmd; }
+  const GncOutput& command() const { return cmd_; }
+
+ private:
+  GncOutput cmd_;
+};
 
 // Idempotent registration hook for the built-ins above. The registry calls
 // it lazily on first use; it exists as a named function (rather than only a

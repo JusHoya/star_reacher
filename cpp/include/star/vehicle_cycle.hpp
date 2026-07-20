@@ -34,11 +34,57 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "star/gnc/component.hpp"
 #include "star/run.hpp"
 #include "star/srlog_writer.hpp"
 
 namespace star {
+
+// The FR-24 `observe()` payload: everything a non-privileged driver may read
+// about the most recently processed control cycle. Truth is deliberately
+// absent - it is reached only through VehicleCycle::truth(), the privileged
+// accessor FR-24 keeps separate from the observation.
+//
+// This is a VALUE SNAPSHOT, refreshed once per step() and never recomputed
+// on read, which is what makes `observe()` idempotent (Phase 6 exit
+// criterion 4): reading it runs no component, draws no random number,
+// consumes no sensor sample, and mutates nothing. Two reads without an
+// intervening step() return the same bytes because they read the same
+// stored bytes.
+//
+// Timing: every field describes the SAME instant - the cycle indexed by
+// `cycle` at time `t_s`. Before the first step() the snapshot describes the
+// initial state at cycle 0 with the GNC fields at their pre-activation
+// defaults (gnc_active == false).
+struct CycleObservation {
+  std::int64_t cycle = 0;
+  double t_s = 0.0;
+  bool done = false;
+  bool gnc_active = false;
+
+  // Sensor measurements offered to the nav stage on this cycle. Each carries
+  // its own valid/fresh gating exactly as the nav component saw it.
+  gnc::ImuSample imu;
+  bool imu_fresh = false;
+  gnc::NavFixSample navfix;
+  gnc::StarTrackerSample startracker;
+  gnc::AltimeterSample altimeter;
+  gnc::NavEnvironment env;
+
+  // Chain products for this cycle: the navigation estimate, the guidance
+  // command, and the command actually applied after the latency FIFO.
+  gnc::GncOutput nav_est;
+  gnc::GncOutput att_cmd;
+  gnc::GncOutput applied;
+
+  // Estimator introspection, copied out of the nav component during the GNC
+  // block. Empty when the nav component declares no state (state_dim() == 0),
+  // so a dead-reckoning or guidance-only run carries no dead weight.
+  std::vector<double> nav_x_hat;
+  std::vector<double> nav_p_upper;
+};
 
 class VehicleCycle {
  public:
@@ -60,6 +106,29 @@ class VehicleCycle {
   bool done() const;
   std::int64_t cycle() const;   // current cycle index (0-based)
   double time_s() const;        // current cycle time, cycle() * dt_s
+
+  // FR-24 observe(): the stored snapshot of the most recently processed
+  // cycle. A pure read of a value refreshed only by step() - see
+  // CycleObservation for the idempotence argument.
+  const CycleObservation& observation() const;
+
+  // FR-24 truth(): the privileged true state at the same instant the
+  // observation describes. Kept out of CycleObservation so that handing a
+  // driver an observation can never leak truth, and so the FR-25 boundary
+  // stays a matter of which accessor was called. Like the observation, this
+  // is a stored snapshot, so reading it is pure.
+  const gnc::TruthState& truth() const;
+
+  // FR-24 step(commands): replace the command held by the run's "external"
+  // component. Throws std::logic_error when the mission configured no
+  // external slot - commanding a vehicle that is flying its own built-in
+  // guidance would otherwise fail silently, with the command dropped and the
+  // log showing an autonomous run.
+  void set_external_command(const gnc::GncOutput& cmd);
+
+  // True when the mission's guidance or control slot is the "external"
+  // component, i.e. when set_external_command() has an addressee.
+  bool has_external_command() const;
 
   // Run summary (final state, record tallies); valid once done().
   const RunSummary& summary() const;
