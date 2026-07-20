@@ -13,6 +13,23 @@ this worktree unless marked otherwise. No native build was performed, so
 gates whose sensitivity can only be shown by rebuilding the core are
 marked as such with the experiment specified.
 
+> **Status: this is a dated findings record, not a current description of
+> the gates.** Criteria 2, 3, and 9 have since been remediated along the
+> lines this audit recommended, so the measurements below describe the
+> fixtures as they stood at audit time and no longer match the committed
+> tests. The figures are deliberately left as measured rather than
+> restated, because the record of what the audit found is the point of the
+> document. For the current state see the criterion-2 and criterion-3
+> notes in `ch:gnc-builtin` and `ch:ekf`, the criterion-9 tolerance note in
+> `ch:sensors-optical`, and `docs/KNOWN_ISSUES.md`. The most consequential
+> divergences: criterion 9's gate is now `ABERRATION_TOL_MAS = 1e-5` on an
+> off-axis fixture that rotates the reference side through
+> `tests/refs/quaternions.quat_to_dcm`, against which the measured worst
+> residual is 4.726e-08 mas rather than the 2.576e-08 mas recorded here;
+> criterion 2 now runs a non-degenerate scenario gated on both the mpmath
+> goldens and the in-loop torques; and criterion 3 now routes both halves
+> through `consistency.ensemble_gate`.
+
 ## Verdicts
 
 | # | Criterion (abbreviated) | Verdict |
