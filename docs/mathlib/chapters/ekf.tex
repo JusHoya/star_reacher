@@ -146,11 +146,18 @@ nominal state mechanizes as
       \delta\quat{q}(\Delta\hat{\vv{\theta}}_k)}
       {\norm{\hat{\quat{q}}_{k-1} \quatmul
       \delta\quat{q}(\Delta\hat{\vv{\theta}}_k)}},\\
-    \hat{\vv{v}}_{k} &= \hat{\vv{v}}_{k-1}
-      + \hat{\mat{C}}\Bigl(\Delta\hat{\vv{v}}_k
+    \Delta\hat{\vv{v}}^{I}_k &= \hat{\mat{C}}\Bigl(\Delta\hat{\vv{v}}_k
         + \tfrac{1}{2}\,\Delta\hat{\vv{\theta}}_k \times
-          \Delta\hat{\vv{v}}_k\Bigr)
-      + \hat{\vv{g}}(\hat{\vv{p}}_{k-1})\,\Delta t,\\
+          \Delta\hat{\vv{v}}_k\Bigr),\\
+    \tilde{\vv{v}}_{k} &= \hat{\vv{v}}_{k-1} + \Delta\hat{\vv{v}}^{I}_k
+      + \hat{\vv{g}}(\hat{\vv{p}}_{k-1})\,\Delta t,
+    \qquad
+    \tilde{\vv{p}}_{k} = \hat{\vv{p}}_{k-1}
+      + \tfrac{1}{2}\bigl(\hat{\vv{v}}_{k-1}
+        + \tilde{\vv{v}}_{k}\bigr)\,\Delta t,\\
+    \hat{\vv{v}}_{k} &= \hat{\vv{v}}_{k-1} + \Delta\hat{\vv{v}}^{I}_k
+      + \tfrac{1}{2}\bigl(\hat{\vv{g}}(\hat{\vv{p}}_{k-1})
+        + \hat{\vv{g}}(\tilde{\vv{p}}_{k})\bigr)\,\Delta t,\\
     \hat{\vv{p}}_{k} &= \hat{\vv{p}}_{k-1}
       + \tfrac{1}{2}\bigl(\hat{\vv{v}}_{k-1}
         + \hat{\vv{v}}_{k}\bigr)\,\Delta t,\\
@@ -163,16 +170,74 @@ nominal state mechanizes as
   \;}
   \label{eq:ekf:mech}
 \end{equation}
-the standard first-order strapdown cycle (Titterton and
-Weston~\cite{titterton2004}; Savage~\cite{savage1998b}): the
-$\tfrac{1}{2}\Delta\vv{\theta} \times \Delta\vv{v}$ term is the
-rotation-of-frame (velocity rotation) compensation, leaving a residual
-$O(\norm{\Delta\vv{\theta}}^2 \norm{\Delta\vv{v}})$ per cycle;
-trapezoidal position integration matches; the bias estimates decay with
-their Gauss--Markov model (a $\ll 1\,\%$ effect per cycle at the
-supported $\tau_c$). The attitude increment shares
-equation~\eqref{eq:gnc:exactrot} with the dead reckoner --- one code
-path.
+the standard strapdown cycle (Titterton and
+Weston~\cite{titterton2004}; Savage~\cite{savage1998b}), closed to
+second order throughout. The $\tfrac{1}{2}\Delta\vv{\theta} \times
+\Delta\vv{v}$ term is the rotation-of-frame (velocity rotation)
+compensation, leaving a residual $O(\norm{\Delta\vv{\theta}}^2
+\norm{\Delta\vv{v}})$ per cycle; $\Delta\hat{\vv{v}}^{I}_k$ is the
+\emph{sensed} increment resolved in the inertial frame, common to
+predictor and corrector because the accelerometer has already
+integrated it over the cycle and it takes no part in the quadrature.
+The bias estimates decay with their Gauss--Markov model (a $\ll 1\,\%$
+effect per cycle at the supported $\tau_c$). The attitude increment
+shares equation~\eqref{eq:gnc:exactrot} with the dead reckoner --- one
+code path.
+
+Gravity is the one acceleration in~\eqref{eq:ekf:mech} that no sensor
+reports: the accelerometer measures specific force and is identically
+blind to it. Its contribution is therefore not a measurement the filter
+transcribes but an integral the filter must evaluate itself, and the
+accuracy of that quadrature is the navigator's own responsibility.
+Equation~\eqref{eq:ekf:mech} evaluates it with a predictor-corrector
+--- an Euler predictor $(\tilde{\vv{v}}_k, \tilde{\vv{p}}_k)$, then the
+trapezoidal rule on $\hat{\vv{g}}$ between the endpoints --- which is
+Heun's method on the gravitational part of the dynamics (Hairer,
+N\o{}rsett, and Wanner~\cite{hairer1993}), of local order
+$O(\Delta t^3)$ and global order $O(\Delta t^2)$. It costs one
+additional evaluation of $\hat{\vv{g}}$ per cycle and nothing else.
+
+\subsection{Why the gravity step must be second order}
+\label{sec:ekf:gravityorder}
+
+The order of this step is not a free implementation choice, and the
+reason is quantitative rather than aesthetic. Replacing the corrector
+with the explicit Euler step $\hat{\vv{v}}_k = \hat{\vv{v}}_{k-1} +
+\Delta\hat{\vv{v}}^{I}_k + \hat{\vv{g}}(\hat{\vv{p}}_{k-1})\,\Delta t$
+--- a first-order velocity feeding the second-order position integral,
+which is also internally inconsistent --- leaves a truncation error
+that is \emph{deterministic}: it is a fixed function of the trajectory,
+not a random variable, so it accumulates coherently instead of
+diffusing as $\sqrt{t}$, and no term of $\mat{Q}$
+in~\eqref{eq:ekf:G} describes it.
+
+Measured noise-free from the true state on the reference consistency
+scenario of Section~\ref{sec:ekf:consistency} ($\Delta t = 0.1$\,s, a
+7000\,km circular orbit), the first-order step diverges from the RK4
+solution of the same point-mass dynamics --- the scheme the truth
+trajectory uses --- by $2.63 \times 10^{-2}$\,m/s in velocity and
+$0.79$\,m in position over 60\,s. That velocity error is equivalent to
+a constant unmodelled acceleration of $4.38 \times 10^{-4}$\,m/s\,$^2$,
+which is $41\times$ the accelerometer bias $\sigma_{\mathrm{GM}} =
+1.08 \times 10^{-5}$\,m/s\,$^2$ the filter carries as a state. The
+estimator's own numerical error would then be the largest single term
+in its error budget, dominating the instrument errors the filter exists
+to estimate, and it would do so while the covariance remained unaware
+of it --- precisely the failure mode the NEES gate of
+Section~\ref{sec:ekf:consistency} is built to detect. The
+predictor-corrector reduces the same 60\,s divergence to
+$4.7 \times 10^{-7}$\,m/s and $4.4 \times 10^{-4}$\,m, an equivalent
+acceleration of $7.9 \times 10^{-9}$\,m/s\,$^2$ --- $1/1400$ of the
+bias sigma, and comfortably below every error the filter models.
+
+The requirement scales with scenario duration, which is why it cannot
+be discharged by observing that some particular short scenario passes
+its gate: the first-order step's equivalent acceleration is
+approximately constant, so its velocity error grows linearly in $t$
+while the filter's modelled uncertainty grows as $\sqrt{t}$, and the
+ratio between them therefore grows without bound. A reimplementation
+that adopts the first-order step will reproduce this chapter's gates on
+a short scenario and fail them on a longer one.
 
 \subsection{Linearized error dynamics}
 \label{sec:ekf:errordynamics}
@@ -837,11 +902,16 @@ aggregates.
       the exact rotation~\eqref{eq:gnc:exactrot}, the same map the
       Chapter~\ref{ch:gnc-builtin} dead reckoner uses, reproduced over
       twenty cycles to $10^{-14}$ relative. \\
-    \testid{ekf_free_fall_velocity_follows_point_mass_gravity} &
+    \testid{ekf_free_fall_velocity_is_second_order_in_gravity} &
       With zero specific force the velocity mechanization
-      of~\eqref{eq:ekf:mech} reduces to the navigator's own point-mass
-      gravity (assumption~2), advancing velocity by exactly
-      $\hat{\vv{g}}(\hat{\vv{p}})\,\Delta t$ per cycle. \\
+      of~\eqref{eq:ekf:mech} reduces to a quadrature of the navigator's
+      own point-mass gravity (assumption~2). The predictor-corrector is
+      reproduced independently, and the step is checked against an RK4
+      step of the same two-body dynamics --- a different scheme of
+      higher order, so the agreement is evidence about accuracy rather
+      than self-consistency --- to $10^{-8}$\,m/s, against the
+      $4.4 \times 10^{-5}$\,m/s the first-order step of
+      Section~\ref{sec:ekf:gravityorder} would leave. \\
     \testid{ekf_navfix_update_matches_an_explicit_inverse_implementation} &
       The update algebra of~\eqref{eq:ekf:joseph} and the reset
       of~\eqref{eq:ekf:reset} for the nav fix, recomputed through an
@@ -915,8 +985,10 @@ Sol\`a~\cite{sola2017} and the MEKF heritage in Markley and
 Crassidis~\cite{markley2014}, transcribed to the D-7 conventions of
 Chapter~\ref{ch:notation}; strapdown mechanization terms follow
 Titterton and Weston~\cite{titterton2004} and
-Savage~\cite{savage1998b}; Gauss--Markov process algebra follows
-Maybeck~\cite{maybeck1979}; NEES/NIS consistency testing and its
+Savage~\cite{savage1998b}, with the predictor-corrector gravity
+quadrature of Section~\ref{sec:ekf:gravityorder} following Hairer,
+N\o{}rsett, and Wanner~\cite{hairer1993}; Gauss--Markov process algebra
+follows Maybeck~\cite{maybeck1979}; NEES/NIS consistency testing and its
 chi-square acceptance bounds follow Bar-Shalom, Li, and
 Kirubarajan~\cite{barshalom2001}; the quantile approximation is
 Wilson and Hilferty~\cite{wilson1931}; the rejected higher-order
