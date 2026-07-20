@@ -33,6 +33,7 @@ from numpy.random import PCG64, Generator
 import star_reacher
 from star_reacher import _fixtures
 from star_reacher.chi2 import (
+    binom_cdf,
     chi2_cdf,
     chi2_ppf,
     gammp,
@@ -40,7 +41,9 @@ from star_reacher.chi2 import (
     wilson_hilferty_ppf,
 )
 from star_reacher.consistency import (
+    DEFAULT_CONFIDENCE,
     ensemble_gate,
+    inside_count_threshold,
     matrix_order,
     nees,
     nis,
@@ -297,6 +300,214 @@ def test_miscalibrated_covariance_fails_nis_gate(factor, expect_high):
         assert gate.fraction_below > 0.9
 
 
+# ---------------------------------------------------------------------------
+# The binomial coverage threshold
+
+
+def test_binom_cdf_matches_exact_rational_arithmetic():
+    # Reference computed in exact rational arithmetic from math.comb, which
+    # shares no code with the lgamma-based implementation under test.
+    from fractions import Fraction
+    from math import comb
+
+    for n in (1, 5, 20, 60, 200):
+        for p_num, p_den in ((1, 20), (1, 2), (19, 20)):
+            p = Fraction(p_num, p_den)
+            for k in range(n + 1):
+                exact = float(
+                    sum(comb(n, j) * p**j * (1 - p) ** (n - j) for j in range(k + 1))
+                )
+                assert abs(binom_cdf(k, n, float(p)) - exact) <= 1e-12
+
+
+def test_binom_cdf_edges_and_domain():
+    assert binom_cdf(-1, 10, 0.5) == 0.0
+    assert binom_cdf(10, 10, 0.5) == 1.0
+    assert binom_cdf(99, 10, 0.5) == 1.0
+    for bad in (lambda: binom_cdf(1, -1, 0.5), lambda: binom_cdf(1, 10, 0.0),
+                lambda: binom_cdf(1, 10, 1.0)):
+        with pytest.raises(ValueError):
+            bad()
+
+
+def test_inside_count_threshold_is_the_binomial_lower_tail():
+    """The threshold is the largest count meeting the stated budget.
+
+    Both halves matter: one more epoch would breach the spurious-failure
+    budget (so the threshold is not lax) and the threshold itself does not
+    (so it is not needlessly strict).
+    """
+    alpha = 1.0 - DEFAULT_CONFIDENCE
+    for epochs in (30, 60, 200, 601):
+        t = inside_count_threshold(epochs, 0.95, DEFAULT_CONFIDENCE)
+        assert binom_cdf(t - 1, epochs, 0.95) <= alpha
+        assert binom_cdf(t, epochs, 0.95) > alpha
+        # And it must sit below the mean, or it would be the coin flip the
+        # old ">= 95 % of epochs" rule was.
+        assert t < 0.95 * epochs
+
+
+def test_inside_count_threshold_domain():
+    for bad in (
+        lambda: inside_count_threshold(0),
+        lambda: inside_count_threshold(60, 0.0),
+        lambda: inside_count_threshold(60, 1.0),
+        lambda: inside_count_threshold(60, 0.95, 0.0),
+        lambda: inside_count_threshold(60, 0.95, 1.0),
+    ):
+        with pytest.raises(ValueError):
+            bad()
+
+
+def _null_epoch_means(rng, trials, epochs, dim, runs):
+    """Ensemble epoch means under exact consistency, independent epochs.
+
+    R * eps_bar_k ~ chi-square(R*dim) is the exact null law of the ensemble
+    average at one epoch, so drawing it directly needs no filter and no
+    approximation.
+    """
+    return rng.chisquare(runs * dim, size=(trials, epochs)) / runs
+
+
+def test_coverage_threshold_false_failure_rate_is_at_budget():
+    """Monte Carlo the coverage criterion against its design budget.
+
+    Draws from the exact null law with independent epochs -- the premise
+    NIS satisfies -- and checks the spurious-failure rate lands where the
+    binomial says it should, rather than at the ~50 % the superseded
+    ">= 95 % of epochs" rule produced (measured alongside for contrast).
+    """
+    trials, epochs, dim, runs = 20000, 60, 3, 100
+    rng = Generator(PCG64(20260719))
+    lower = chi2_ppf(0.025, runs * dim) / runs
+    upper = chi2_ppf(0.975, runs * dim) / runs
+    x = _null_epoch_means(rng, trials, epochs, dim, runs)
+    inside = ((x >= lower) & (x <= upper)).sum(axis=1)
+
+    threshold = inside_count_threshold(epochs, 0.95, DEFAULT_CONFIDENCE)
+    predicted = binom_cdf(threshold - 1, epochs, 0.95)
+    failures = int((inside < threshold).sum())
+    # Three-sigma Monte Carlo band around the binomial prediction.
+    expected = trials * predicted
+    sigma = math.sqrt(expected * (1.0 - predicted))
+    assert abs(failures - expected) <= 3.0 * sigma + 1.0, (
+        f"{failures}/{trials} spurious failures against a predicted "
+        f"{expected:.1f}; the threshold no longer matches its derivation"
+    )
+    assert failures / trials < 3.0e-3
+
+    # The superseded rule, on the very same draws: a coin flip.
+    old_rule_failures = int((inside < 0.95 * epochs).sum())
+    assert old_rule_failures / trials > 0.3, (
+        "the '>= 95 % of epochs' rule is expected to reject roughly half of "
+        "all consistent ensembles; if it no longer does, this contrast test "
+        "is measuring something else"
+    )
+
+
+def test_headline_criterion_does_not_spuriously_fail():
+    """The headline is conservative: averaging epochs shrinks its variance.
+
+    Under the null it is tested against a single-epoch interval, so its
+    spurious-failure rate must be far below the nominal 5 %.
+    """
+    trials, epochs, dim, runs = 4000, 60, 3, 100
+    rng = Generator(PCG64(555))
+    lower = chi2_ppf(0.025, runs * dim) / runs
+    upper = chi2_ppf(0.975, runs * dim) / runs
+    head = _null_epoch_means(rng, trials, epochs, dim, runs).mean(axis=1)
+    failures = int(((head < lower) | (head > upper)).sum())
+    assert failures == 0, f"{failures}/{trials} headline failures under the null"
+
+
+# ---------------------------------------------------------------------------
+# The instrument must still be able to fail
+
+
+def test_ensemble_gate_accepts_a_single_run():
+    # R = 1 keeps a one-log invocation gated: the run is its own ensemble
+    # average and stays chi-square(dim) at each epoch.
+    e, P_packed, _ = _consistent_ensemble(_NEES_SEED, runs=1, epochs=200, dim=6)
+    gate = ensemble_gate(nees(e, P_packed), 6)
+    assert gate.passed
+    assert gate.epoch_mean.shape == (200,)
+
+
+def test_biased_estimator_fails_the_gate():
+    """A constant offset in the error vector must go red.
+
+    The offset is expressed in units of the reported 1-sigma, so the
+    magnitude is meaningful independently of the covariance drawn.
+    """
+    e, P_packed, P = _consistent_ensemble(_NEES_SEED, runs=100, epochs=200, dim=6)
+    sigma = np.sqrt(np.einsum("tii->ti", P))
+    assert ensemble_gate(nees(e, P_packed), 6).passed
+    for k in (1.0, 2.0):
+        biased = e + k * sigma[np.newaxis, :, :]
+        gate = ensemble_gate(nees(biased, P_packed), 6)
+        assert not gate.passed, f"a {k}-sigma estimator bias was not caught"
+        assert gate.headline.mean > gate.upper
+
+
+def test_wrong_measurement_noise_model_fails_the_gate():
+    """An anisotropic wrong R: one component's assumed variance inflated.
+
+    Unlike a uniform rescale this leaves the other components correct, so
+    it tests that the gate responds to a partial covariance error rather
+    than only to a global scaling.
+    """
+    y, S_packed, S = _consistent_ensemble(_NIS_SEED, runs=100, epochs=200, dim=3)
+    assert ensemble_gate(nis(y, S_packed), 3).passed
+    for factor in (2.0, 5.0):
+        S_wrong = S.copy()
+        S_wrong[:, 0, 0] *= factor
+        gate = ensemble_gate(nis(y, pack_symmetric(S_wrong)), 3)
+        assert not gate.passed, f"wrong R (var[0] x {factor}) was not caught"
+
+
+def test_defect_confined_to_part_of_the_run_fails_the_gate():
+    # A covariance error over the last quarter of the run only: the kind of
+    # localized defect a whole-run average can dilute.
+    e, P_packed, _ = _consistent_ensemble(_NEES_SEED, runs=100, epochs=200, dim=6)
+    eps = nees(e, P_packed)
+    assert ensemble_gate(eps, 6).passed
+    spoiled = eps.copy()
+    spoiled[:, 150:] *= 4.0
+    assert not ensemble_gate(spoiled, 6).passed
+    # And it must still be caught on the NEES path, where only the headline
+    # gates -- a quarter of the run is enough to move the epoch average.
+    assert not ensemble_gate(spoiled, 6, epochs_independent=False).passed
+
+
+def test_coverage_is_reported_but_not_gated_for_correlated_epochs():
+    """``epochs_independent=False`` reports the coverage count, never gates.
+
+    NEES epochs are serially correlated, so its inside-count is
+    over-dispersed relative to the binomial the threshold is derived from;
+    the flag makes that structural fact explicit instead of letting a
+    mis-calibrated criterion set an exit code.
+    """
+    e, P_packed, _ = _consistent_ensemble(_NEES_SEED, runs=100, epochs=200, dim=6)
+    eps = nees(e, P_packed)
+    # Force the coverage criterion to fail while the headline still holds,
+    # by moving a minority of epochs far outside the interval.
+    spoiled = eps.copy()
+    spoiled[:, :40] *= 3.0
+    spoiled[:, 40:80] /= 3.0
+
+    gated = ensemble_gate(spoiled, 6, epochs_independent=True)
+    assert gated.coverage_gated
+    assert not gated.coverage_passed
+    assert not gated.passed
+
+    reported = ensemble_gate(spoiled, 6, epochs_independent=False)
+    assert not reported.coverage_gated
+    # Same measured count, but it no longer reaches the verdict.
+    assert reported.inside_count == gated.inside_count
+    assert not reported.coverage_passed
+    assert reported.passed == reported.headline.passed
+
+
 def test_gate_functions_are_deterministic():
     e, P_packed, _ = _consistent_ensemble(_NEES_SEED, runs=10, epochs=50, dim=6)
     eps = nees(e, P_packed)
@@ -424,30 +635,62 @@ def test_cli_missing_path_exits_1(tmp_path):
 
 
 def test_cli_single_run_passes(tmp_path):
+    # One log still carries gates: it is its own R = 1 ensemble. Three of
+    # them, because the NEES coverage criterion reports without gating.
     log = tmp_path / "run.srlog"
     _write_nav_log(log, seed=11)
     proc = _run_cli("consistency", str(log))
     assert proc.returncode == 0, proc.stderr + proc.stdout
-    assert "CONSISTENCY: PASS (2/2 gates)" in proc.stdout
+    assert "CONSISTENCY: PASS (3/3 gates)" in proc.stdout
     assert "NEES time-averaged" in proc.stdout
     assert "NIS time-averaged" in proc.stdout
 
 
 def test_cli_single_run_overconfident_fails(tmp_path):
-    # Covariance logged at half its true value: both time-averaged gates
-    # must fail high and the exit code must be nonzero.
+    # Covariance logged at half its true value. The exit code must be
+    # nonzero from a GATE, and the report must name the direction.
     log = tmp_path / "run.srlog"
     _write_nav_log(log, seed=11, p_report_factor=0.5)
     proc = _run_cli("consistency", str(log))
     assert proc.returncode == 1
-    assert "CONSISTENCY: FAIL (0/2 gates)" in proc.stdout
+    assert "CONSISTENCY: FAIL (2/3 gates)" in proc.stdout
     assert "overconfident" in proc.stdout
 
 
+def test_cli_time_averaged_numbers_never_set_the_exit_code(tmp_path):
+    """The per-run diagnostic is printed outside its bounds, exit stays 0.
+
+    This is the regression this whole gate revision exists to prevent: the
+    CLI used to gate on the per-run time average and so reported FAIL on
+    consistent output. The log is written with an honest covariance, so
+    every real gate passes; the seed is chosen so at least one time-averaged
+    diagnostic lands outside its indicative interval anyway.
+    """
+    log = tmp_path / "run.srlog"
+    _write_nav_log(log, seed=21, epochs=400)
+    proc = _run_cli("consistency", str(log))
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert "CONSISTENCY: PASS" in proc.stdout
+    # Indented lines only: the report's leading banner also says
+    # "time-averaged" while explaining that those numbers do not gate.
+    time_avg = [
+        line
+        for line in proc.stdout.splitlines()
+        if line.startswith("  ") and "time-averaged" in line
+    ]
+    assert time_avg, proc.stdout
+    for line in time_avg:
+        # Diagnostics never borrow the words that mean "this moved the exit
+        # code", whichever side of the interval they land on.
+        assert "[diagnostic, not gated]" in line
+        assert "PASS" not in line and "FAIL" not in line
+
+
 def test_cli_ensemble_over_directory(tmp_path):
-    # Three consistent runs in one directory: 6 per-run gates plus the
-    # NEES/NIS ensemble and pooled gates. Seeds pinned for the same
-    # coverage-at-threshold reason as the engine-level ensemble tests.
+    # Three consistent runs in one directory. Gates counted: the NEES
+    # headline plus the NIS headline and coverage; the NEES coverage number
+    # and every per-run and pooled number are diagnostics. Seeds pinned for
+    # the same coverage-at-threshold reason as the engine-level tests.
     for seed in (2, 3, 6):
         rundir = tmp_path / f"run{seed}"
         rundir.mkdir()
@@ -456,4 +699,18 @@ def test_cli_ensemble_over_directory(tmp_path):
     assert proc.returncode == 0, proc.stderr + proc.stdout
     assert "ensemble: R=3 runs, NEES" in proc.stdout
     assert "ensemble: R=3 runs, NIS" in proc.stdout
-    assert "CONSISTENCY: PASS (10/10 gates)" in proc.stdout
+    assert "CONSISTENCY: PASS (3/3 gates)" in proc.stdout
+
+
+def test_cli_ensemble_overconfident_directory_fails(tmp_path):
+    # The same three-run ensemble with every covariance logged at half
+    # truth: the gate must go red and the exit code must be nonzero, so
+    # narrowing what gates has not made the instrument unable to fail.
+    for seed in (2, 3, 6):
+        rundir = tmp_path / f"run{seed}"
+        rundir.mkdir()
+        _write_nav_log(rundir / "run.srlog", seed=seed, p_report_factor=0.5)
+    proc = _run_cli("consistency", str(tmp_path))
+    assert proc.returncode == 1, proc.stdout
+    assert "CONSISTENCY: FAIL (1/3 gates)" in proc.stdout
+    assert "overconfident" in proc.stdout

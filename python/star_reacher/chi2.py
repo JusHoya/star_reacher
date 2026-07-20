@@ -1,4 +1,5 @@
-"""Chi-square CDF and inverse CDF from first principles (FR-26, D-12).
+"""Chi-square and binomial distribution functions from first principles
+(FR-26, D-12).
 
 ``star consistency`` gates NEES/NIS statistics against two-sided chi-square
 bounds, and the D-12 runtime allowed-list (numpy, matplotlib, jplephem)
@@ -30,13 +31,30 @@ k in [1, 1e6]. That claim is test-anchored in
 ``tests/python/test_consistency.py`` against published table values, closed
 forms at k in {1, 2, 4}, CDF round-trips, and a Wilson-Hilferty large-k
 cross-check.
+
+The binomial CDF at the bottom of this module serves the second half of the
+FR-26 gate: the ensemble coverage criterion counts how many epochs fall
+inside their chi-square interval, and that count is Binomial(n_epochs, q)
+under the consistency hypothesis (``consistency.inside_count_threshold``
+turns it into an acceptance threshold). It is evaluated by exact summation
+of the smaller tail rather than through an incomplete-beta relation: the
+epoch counts involved are in the hundreds, so an O(n) sum of log-gamma
+probability terms is both cheaper and easier to audit than a continued
+fraction, and it is exact to rounding.
 """
 
 from __future__ import annotations
 
 import math
 
-__all__ = ["chi2_cdf", "chi2_ppf", "gammp", "normal_ppf", "wilson_hilferty_ppf"]
+__all__ = [
+    "binom_cdf",
+    "chi2_cdf",
+    "chi2_ppf",
+    "gammp",
+    "normal_ppf",
+    "wilson_hilferty_ppf",
+]
 
 _EPS = 2.220446049250313e-16  # IEEE-754 double machine epsilon
 # Guard value against zero denominators in the modified Lentz recurrence
@@ -244,3 +262,53 @@ def chi2_ppf(p: float, k: float) -> float:
             return x_next
         x = x_next
     raise RuntimeError(f"chi2_ppf did not converge for p={p!r}, k={k!r}")
+
+
+# Below exp(-745) a double underflows to zero, so a term that small cannot
+# change the sum; skipping it also keeps math.exp from raising on -inf.
+_LOG_UNDERFLOW = -745.0
+
+
+def _log_binom_pmf(j: int, n: int, p: float) -> float:
+    # log C(n, j) p^j (1-p)^(n-j), with the binomial coefficient through
+    # lgamma so n in the thousands cannot overflow an intermediate factorial.
+    return (
+        math.lgamma(n + 1.0)
+        - math.lgamma(j + 1.0)
+        - math.lgamma(n - j + 1.0)
+        + j * math.log(p)
+        + (n - j) * math.log1p(-p)
+    )
+
+
+def binom_cdf(k: int, n: int, p: float) -> float:
+    """Binomial CDF P(X <= k) for X ~ Binomial(n, p), by exact summation.
+
+    Whichever tail is shorter is summed and the other is taken as its
+    complement, so the returned value never loses the small tail to
+    cancellation against 1.0 — the regime the coverage threshold is solved
+    in, where the answer is O(1e-3). ``k < 0`` returns 0.0 and ``k >= n``
+    returns 1.0. Raises ``ValueError`` for n < 0 or p outside (0, 1).
+    """
+    if n < 0:
+        raise ValueError(f"binom_cdf requires n >= 0, got n={n!r}")
+    if not (math.isfinite(p) and 0.0 < p < 1.0):
+        raise ValueError(f"binom_cdf requires 0 < p < 1, got p={p!r}")
+    k = int(k)
+    n = int(n)
+    if k < 0:
+        return 0.0
+    if k >= n:
+        return 1.0
+
+    def tail(lo: int, hi: int) -> float:
+        total = 0.0
+        for j in range(lo, hi + 1):
+            log_pmf = _log_binom_pmf(j, n, p)
+            if log_pmf > _LOG_UNDERFLOW:
+                total += math.exp(log_pmf)
+        return total
+
+    if k < n * p:
+        return min(tail(0, k), 1.0)
+    return max(0.0, 1.0 - tail(k + 1, n))
