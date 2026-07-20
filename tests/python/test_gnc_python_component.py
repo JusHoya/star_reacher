@@ -10,12 +10,13 @@ Python component in the loop and check that:
   committed reference mission);
 * the trampoline marshals every field a component may read, including the
   aiding-measurement slots, the truth-free navigation environment, the
-  central-body constants, the configured sensor model, and the true IMU
-  biases on the ``error_state`` truth argument -- without these an
-  aiding estimator written in Python has no route to its measurements;
+  central-body constants, and the configured sensor model -- without these
+  an aiding estimator written in Python has no route to its measurements;
 * the estimator introspection hooks (``state``, ``covariance_upper``,
-  ``error_state``, ``innovations``) round-trip, and a wrong-length return
-  raises rather than being silently truncated.
+  ``error_layout``, ``innovations``) round-trip, and a wrong-length return
+  raises rather than being silently truncated;
+* the FR-24 privileged-truth boundary holds against a component built to
+  break it, and the sanctioned ``oracle = true`` debug path still works.
 
 They fail cleanly, never skip, when the core is absent (the project's
 agent-honesty gate).
@@ -287,21 +288,30 @@ def _make_recording_nav(core, seen):
             return 7
 
         def state(self):
+            # Attitude followed by a gyro-bias estimate held at exactly zero,
+            # which makes the bias rows of nav.err equal the true in-run bias
+            # and so directly readable in the log.
             return list(self.q) + [0.0, 0.0, 0.0]
 
         def covariance_upper(self):
             return [0.0] * (7 * 8 // 2)
 
-        def error_state(self, truth):
-            seen["truth"] = {
-                "valid": truth.valid,
-                "imu_bias_valid": truth.imu_bias_valid,
-                "b_g_radps": list(truth.b_g_radps),
-                "b_a_mps2": list(truth.b_a_mps2),
-                "mass_kg": truth.mass_kg,
-                "r_i_m": list(truth.r_i_m),
-            }
-            return [0.0] * 7
+        def error_layout(self):
+            # The FR-24 replacement for error_state(truth): a description of
+            # the state vector, carrying no information about the world. The
+            # loop differences against it to write nav.err.
+            return [
+                core.ErrorBlock(
+                    core.ErrorQuantity.ATTITUDE,
+                    core.ErrorForm.QUAT_ERROR_LOCAL,
+                    0,
+                ),
+                core.ErrorBlock(
+                    core.ErrorQuantity.GYRO_BIAS,
+                    core.ErrorForm.DIFFERENCE,
+                    4,
+                ),
+            ]
 
     return RecordingNav
 
@@ -366,26 +376,27 @@ def test_trampoline_marshals_every_component_input(tmp_path):
         assert abs(sum(x * x for x in row) - 1.0) < 1e-9
 
     # -- FR-25 privileged boundary -----------------------------------------
-    # The EKF mission does not set oracle, so truth must never appear on the
-    # component's input even though the same run supplies it to error_state.
+    # The EKF mission does not set oracle, so truth appears nowhere on the
+    # component's input, and no other call hands it truth either.
     assert all(c["oracle_valid"] is False for c in cycles)
 
-    # -- WS7 truth biases on the error_state argument -----------------------
-    truth = seen["truth"]
-    assert truth["valid"] is True
-    assert truth["imu_bias_valid"] is True, (
-        "the true IMU biases did not reach error_state; a bias-carrying "
-        "estimator would have to log its bias rows as zero, which reads as "
-        "'no error' rather than 'not known'"
+    # -- true IMU biases reach nav.err through the declared layout ----------
+    # The component declares a GYRO_BIAS block over three state slots it
+    # holds at exactly zero, so those rows of nav.err are the true in-run
+    # bias itself. Reading them out of the log is what shows the bias truth
+    # reached the channel: without it a bias-carrying estimator's rows would
+    # log as zero, which reads as "no error" rather than "not known" -- and
+    # the component obtained none of this, the loop did the differencing.
+    from star_reacher import load
+
+    e = load(tmp_path / "recording.srlog").groups["nav.err"]["e"]
+    assert e.shape[1] == 7
+    bias_rows = e[:, 4:7]
+    assert bias_rows.any(), (
+        "every gyro-bias row of nav.err is exactly zero; the configured IMU "
+        "has a non-zero in-run bias, so this is a broken error-layout path "
+        "rather than a physically quiet run"
     )
-    assert len(truth["b_g_radps"]) == 3
-    assert len(truth["b_a_mps2"]) == 3
-    assert any(b != 0.0 for b in truth["b_g_radps"]), (
-        "the gyro bias arrived as exactly zero; the configured IMU has a "
-        "non-zero in-run bias, so this is a marshalling failure rather than "
-        "a physically quiet run"
-    )
-    assert truth["mass_kg"] > 0.0
 
 
 def test_oracle_flag_reaches_a_python_component(tmp_path):
@@ -488,34 +499,302 @@ def test_duplicate_registration_is_refused():
 #
 # FR-24 says truth() is "privileged; never visible to GNC plugins" and FR-25
 # says "truth never appears in GncInput". Reading the loop is not enough to
-# establish that: the interesting question is what a component that is
-# actively trying to obtain truth can reach. These two tests answer it, and
-# they disagree with each other on purpose -- the boundary holds on the input
-# path and is contractual on the analysis-output path, and both halves are
-# pinned here so neither can drift unnoticed.
+# establish that: the interesting question is what a component actively
+# hunting for truth can reach. The tests below answer it by driving a
+# component that scrapes every value it is handed or can reach, and comparing
+# the harvest against the true state read from the privileged accessor on the
+# very same cycles.
+#
+# This replaces an earlier pair of tests that pinned a real leak. The
+# interface used to expose error_state(truth, e), which the loop called for
+# every estimator on every cycle regardless of the oracle flag, handing over
+# the true state so the component could compute nav.err. That method no
+# longer exists: a component declares its state layout through
+# error_layout() and the loop computes nav.err itself, so there is no
+# truth-bearing argument left to retain (gnc/component.hpp).
 
 
 def _make_truth_hunter(core, caught):
-    """A component that tries every route to truth it is offered."""
+    """A component that scrapes every value any route offers it.
+
+    Every override records what it was given, and ``probe`` walks an object
+    two levels deep harvesting every float it can see. A truth-bearing field
+    added to any of these structures in future therefore shows up as a
+    harvested value rather than as a silent widening of the boundary.
+    """
+
+    def probe(obj, sink, depth=2):
+        for name in dir(obj):
+            if name.startswith("_"):
+                continue
+            try:
+                value = getattr(obj, name)
+            except Exception:  # noqa: BLE001 - an unreadable attribute is a miss
+                continue
+            if callable(value) or isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                sink.add(float(value))
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    if isinstance(item, (int, float)) and not isinstance(
+                        item, bool
+                    ):
+                        sink.add(float(item))
+            elif depth > 0:
+                probe(value, sink, depth - 1)
 
     class TruthHunter(core.IGncComponent):
         def __init__(self, cfg):
             super().__init__()
             self.q = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+            # Route: the factory argument, which is config the mission states.
+            caught["cfg_attrs"] = sorted(
+                a for a in dir(cfg) if not a.startswith("_")
+            )
+            probe(cfg, caught["floats"])
 
         def init(self, ctx):
-            # The init context is configuration and constants; record every
-            # attribute name so a future field carrying truth is noticed.
+            # Route: the one-time init context.
             caught["init_attrs"] = sorted(
                 a for a in dir(ctx) if not a.startswith("_")
             )
+            probe(ctx, caught["floats"])
+            # Route: anything reachable from self, including whatever the base
+            # class and the trampoline put there.
+            caught["self_attrs"] = sorted(
+                a for a in dir(self) if not a.startswith("_")
+            )
+            probe(self, caught["floats"])
+            # Route: the garbage collector. A determined plugin author would
+            # ask what holds a reference to it and try to walk back to the
+            # driver that owns the truth.
+            import gc
+
+            for referrer in gc.get_referrers(self):
+                probe(referrer, caught["floats"], depth=1)
 
         def update(self, inp):
+            # Route: the per-cycle input, every member of it.
             caught.setdefault("input_attrs", sorted(
                 a for a in dir(inp) if not a.startswith("_")
             ))
             caught.setdefault("oracle_valid", set()).add(inp.oracle.valid)
             caught.setdefault("oracle_r", []).append(list(inp.oracle.r_i_m))
+            probe(inp, caught["floats"])
+            out = core.GncOutput()
+            out.valid = True
+            out.q_i2b = self.q
+            return out
+
+        # Route: every remaining virtual, each recording every argument it
+        # receives. The *args is deliberate - if any of these ever grows a
+        # parameter, the value lands in the harvest instead of being missed by
+        # a fixed signature.
+        def state_dim(self, *args):
+            caught.setdefault("argc", {})["state_dim"] = len(args)
+            for a in args:
+                probe(a, caught["floats"])
+            return 4
+
+        def cov_dim(self, *args):
+            caught.setdefault("argc", {})["cov_dim"] = len(args)
+            for a in args:
+                probe(a, caught["floats"])
+            return 4
+
+        def innov_max_dim(self, *args):
+            caught.setdefault("argc", {})["innov_max_dim"] = len(args)
+            for a in args:
+                probe(a, caught["floats"])
+            # Non-zero so the loop actually calls innovations() and that
+            # route is probed too; the component reports no updates.
+            return 3
+
+        def state(self, *args):
+            caught.setdefault("argc", {})["state"] = len(args)
+            for a in args:
+                probe(a, caught["floats"])
+            return self.q
+
+        def covariance_upper(self, *args):
+            caught.setdefault("argc", {})["covariance_upper"] = len(args)
+            for a in args:
+                probe(a, caught["floats"])
+            return [0.0] * 10
+
+        def innovations(self, *args):
+            caught.setdefault("argc", {})["innovations"] = len(args)
+            for a in args:
+                probe(a, caught["floats"])
+            return []
+
+        def error_layout(self, *args):
+            # The descriptor call: it must be handed nothing at all.
+            caught.setdefault("argc", {})["error_layout"] = len(args)
+            for a in args:
+                probe(a, caught["floats"])
+            return [
+                core.ErrorBlock(
+                    core.ErrorQuantity.ATTITUDE,
+                    core.ErrorForm.QUAT_ERROR_LOCAL,
+                    0,
+                )
+            ]
+
+        def error_state(self, *args):
+            # The removed route. Defining it must have no effect whatsoever;
+            # if the core ever calls it again, this records the fact.
+            caught["error_state_called"] = True
+            for a in args:
+                probe(a, caught["floats"])
+            return [0.0] * 4
+
+    return TruthHunter
+
+
+def test_truth_is_unreachable_from_a_python_component(tmp_path):
+    """With oracle false, no route a component can take yields truth.
+
+    The component above scrapes every float reachable through the factory
+    argument, the init context, itself, its referrers, the per-cycle input,
+    and every argument of every virtual it can override. This test drives it
+    one cycle at a time and reads the true state through ``Sim.truth()`` --
+    the privileged FR-24 accessor, available to the driver and not to the
+    component -- on the same cycles. Nothing the component harvested may
+    equal any of those true values.
+
+    Exact equality is the right comparison: the aiding measurements are
+    deliberately noisy views of truth, so a component that had obtained a
+    true value would match it to the bit while a measurement never does.
+    """
+    core = _core_or_fail()
+    caught = {"floats": set()}
+    name = _register(core, _make_truth_hunter(core, caught), "truth_hunter")
+    cfg = _swap_component(core, _run_config(core, ATTITUDE_MISSION), "nav", name)
+    assert cfg.oracle is False, "the reference mission must not set oracle"
+
+    initial = set()
+    evolved = set()
+    first = True
+    sim = core.Sim(cfg, str(tmp_path / "hunt.srlog"))
+    while not sim.done():
+        sim.step()
+        state = sim.truth()
+        assert state["valid"], "the privileged accessor must report a state"
+        # The FIRST cycle's true state is separated out because a component
+        # legitimately knows it: the mission file states the initial attitude
+        # and the vehicle's mass, and init() is given q0 by contract. What a
+        # leak would deliver is the state as it EVOLVES, which no
+        # configuration a component can read contains.
+        sink = initial if first else evolved
+        for key in ("r_i_m", "v_i_mps", "q_i2b", "omega_b_radps",
+                    "b_g_radps", "b_a_mps2"):
+            for v in state[key]:
+                sink.add(float(v))
+        sink.add(float(state["mass_kg"]))
+        first = False
+    sim.summary()
+
+    # Also drop the trivially shared constants, which carry no information
+    # about the world.
+    evolved -= initial
+    evolved -= {0.0, 1.0, -1.0}
+    assert len(evolved) > 1000, (
+        "the truth harvest is too small for this comparison to mean anything"
+    )
+    leaked = sorted(evolved & caught["floats"])
+    assert not leaked, (
+        f"a component obtained {len(leaked)} evolving true value(s) with "
+        f"oracle = false; first few: {leaked[:5]}"
+    )
+
+    # The removed route was not silently revived.
+    assert "error_state_called" not in caught, (
+        "the core called error_state() on a component; that method was "
+        "removed precisely because it handed truth across the boundary"
+    )
+    assert not hasattr(core.IGncComponent, "error_state"), (
+        "IGncComponent still exposes error_state; a plugin must have no "
+        "truth-bearing virtual to override"
+    )
+
+    # Every virtual the loop calls is called with no arguments at all, so
+    # there is no argument through which truth could arrive.
+    assert caught["argc"] == {
+        "state_dim": 0,
+        "cov_dim": 0,
+        "innov_max_dim": 0,
+        "state": 0,
+        "covariance_upper": 0,
+        "innovations": 0,
+        "error_layout": 0,
+    }, caught["argc"]
+
+    # GncInput.oracle is the only truth-shaped member, and it is empty.
+    assert caught["oracle_valid"] == {False}
+    assert all(r == [0.0, 0.0, 0.0] for r in caught["oracle_r"])
+    # Pinning the member lists makes a future truth-bearing field a test
+    # failure rather than a silent widening of the boundary. The aiding slots
+    # carry noisy measurements and env carries ephemeris and frame context,
+    # both of which a real onboard navigator computes for itself.
+    assert caught["input_attrs"] == [
+        "altimeter", "att_cmd", "cycle", "dt_s", "env", "imu", "imu_fresh",
+        "nav_est", "navfix", "oracle", "prev_applied", "startracker", "t_s",
+    ]
+    assert "truth" not in caught["init_attrs"]
+    assert "oracle" not in caught["init_attrs"]
+    assert "truth" not in caught["cfg_attrs"]
+    # Nothing on the component itself is a truth channel either.
+    assert not [
+        a for a in caught["self_attrs"] if "truth" in a or "oracle" in a
+    ]
+
+
+def test_nav_err_still_reaches_a_python_estimator(tmp_path):
+    """The declared layout is what buys back nav.err for a plugin.
+
+    Closing the leak by refusing to compute nav.err for plugins at all would
+    have passed the test above trivially. This one holds the channel to its
+    purpose: a Python estimator that declares a layout gets a real error
+    channel, computed by the loop in the convention the component declared.
+    """
+    core = _core_or_fail()
+    from star_reacher import load
+
+    caught = {"floats": set()}
+    name = _register(core, _make_truth_hunter(core, caught), "layout_nav")
+    cfg = _swap_component(core, _run_config(core, ATTITUDE_MISSION), "nav", name)
+    log_path = tmp_path / "layout.srlog"
+    _drive(core, cfg, log_path)
+
+    e = load(log_path).groups["nav.err"]["e"]
+    assert e.shape[1] == 4, "the declared 4-slot attitude block is the channel"
+    # Canonicalized to the +w hemisphere on every record, and a real error:
+    # the component holds a fixed attitude while the vehicle rotates.
+    assert (e[:, 0] >= 0.0).all()
+    assert abs(e[:, 1:]).max() > 1e-6
+
+
+def test_a_component_declaring_no_layout_gets_no_nav_err(tmp_path):
+    """No layout means no channel -- not a crash, and not a channel of zeros.
+
+    A zero-filled nav.err would be indistinguishable from a perfect estimate,
+    so the run declares the channel only when the component said how to read
+    its state vector.
+    """
+    core = _core_or_fail()
+    from star_reacher import load
+
+    class SilentNav(core.IGncComponent):
+        def __init__(self, cfg):
+            super().__init__()
+            self.q = [1.0, 0.0, 0.0, 0.0]
+
+        def init(self, ctx):
+            self.q = list(ctx.q0_i2b)
+
+        def update(self, inp):
             out = core.GncOutput()
             out.valid = True
             out.q_i2b = self.q
@@ -530,77 +809,101 @@ def _make_truth_hunter(core, caught):
         def covariance_upper(self):
             return [0.0] * 10
 
-        def error_state(self, truth):
-            # Adversarial: retain the argument the interface tells
-            # implementations not to retain.
-            caught["retained_truth_valid"] = truth.valid
-            caught["retained_truth_r"] = list(truth.r_i_m)
-            return [0.0] * 4
+    name = _register(core, SilentNav, "silent_nav")
+    cfg = _swap_component(core, _run_config(core, ATTITUDE_MISSION), "nav", name)
+    log_path = tmp_path / "silent.srlog"
+    _drive(core, cfg, log_path)
 
-    return TruthHunter
+    data = load(log_path)
+    assert "nav.est" in data.groups, "the estimate channel is unaffected"
+    assert "nav.err" not in data.groups, (
+        "a component that declared no error layout still got a nav.err "
+        "channel; zeros there would read as a perfect estimate"
+    )
 
 
-def test_truth_is_unreachable_from_a_component_input(tmp_path):
-    """With oracle false, no input a component receives carries truth.
+def test_a_partial_layout_is_refused(tmp_path):
+    """A layout with a hole is an error, not a zero-filled channel."""
+    core = _core_or_fail()
 
-    This is the clause FR-25 states as an invariant of ``GncInput``, checked
-    against a component built to look for truth rather than against a
-    cooperative one. The reference mission does not set oracle, so a
-    conforming loop leaves every truth field empty.
+    class PartialNav(core.IGncComponent):
+        def __init__(self, cfg):
+            super().__init__()
+            self.q = [1.0, 0.0, 0.0, 0.0]
+
+        def init(self, ctx):
+            self.q = list(ctx.q0_i2b)
+
+        def update(self, inp):
+            out = core.GncOutput()
+            out.valid = True
+            out.q_i2b = self.q
+            return out
+
+        def state_dim(self):
+            return 7  # attitude plus three slots the layout never covers
+
+        def state(self):
+            return self.q + [0.0, 0.0, 0.0]
+
+        def covariance_upper(self):
+            return [0.0] * (7 * 8 // 2)
+
+        def error_layout(self):
+            return [
+                core.ErrorBlock(
+                    core.ErrorQuantity.ATTITUDE,
+                    core.ErrorForm.QUAT_ERROR_LOCAL,
+                    0,
+                )
+            ]
+
+    name = _register(core, PartialNav, "partial_nav")
+    cfg = _swap_component(core, _run_config(core, ATTITUDE_MISSION), "nav", name)
+    with pytest.raises(Exception) as excinfo:
+        core.Sim(cfg, str(tmp_path / "partial.srlog"))
+    message = str(excinfo.value)
+    assert "cover 4 slots" in message and "state_dim() == 7" in message, message
+
+
+def test_oracle_true_still_injects_truth_and_stamps_the_header(tmp_path):
+    """The sanctioned debug path is intact.
+
+    oracle = true is the one route by which a component may see the true
+    state, and a run that used it must be identifiable from the log header
+    alone. Both halves are checked against the same truth-hunting component
+    the boundary test uses, so what is confirmed here is that the structural
+    change closed the unsanctioned route without closing this one.
     """
     core = _core_or_fail()
-    caught = {}
-    name = _register(core, _make_truth_hunter(core, caught), "truth_hunter")
+    from star_reacher import load
+
+    caught = {"floats": set()}
+    name = _register(core, _make_truth_hunter(core, caught), "oracle_hunter")
     cfg = _swap_component(core, _run_config(core, ATTITUDE_MISSION), "nav", name)
-    assert cfg.oracle is False, "the reference mission must not set oracle"
-    _drive(core, cfg, tmp_path / "hunt.srlog")
+    cfg.oracle = True
 
-    # GncInput.oracle is the only truth-shaped member, and it is empty.
-    assert caught["oracle_valid"] == {False}
-    assert all(r == [0.0, 0.0, 0.0] for r in caught["oracle_r"])
-    # No other member of GncInput or GncInitContext is a truth channel: the
-    # aiding slots carry noisy measurements and env carries ephemeris and
-    # frame context, both of which a real onboard navigator computes for
-    # itself. Pinning the member lists makes a future truth-bearing field a
-    # test failure rather than a silent widening of the boundary.
-    assert caught["input_attrs"] == [
-        "altimeter", "att_cmd", "cycle", "dt_s", "env", "imu", "imu_fresh",
-        "nav_est", "navfix", "oracle", "prev_applied", "startracker", "t_s",
-    ]
-    assert "truth" not in caught["init_attrs"]
-    assert "oracle" not in caught["init_attrs"]
+    log_path = tmp_path / "oracle.srlog"
+    truth_r = []
+    sim = core.Sim(cfg, str(log_path))
+    while not sim.done():
+        sim.step()
+        truth_r.append(list(sim.truth()["r_i_m"]))
+    sim.summary()
 
+    assert caught["oracle_valid"] == {True}, "oracle = true must populate it"
+    # The injected value is the real state, not a placeholder.
+    seen_r = [r for r in caught["oracle_r"] if r != [0.0, 0.0, 0.0]]
+    assert seen_r, "oracle.r_i_m stayed zero under oracle = true"
+    radius = sum(x * x for x in seen_r[-1]) ** 0.5
+    assert 6.0e6 < radius < 8.0e6
+    assert seen_r[-1] in truth_r, (
+        "the injected position does not match the privileged accessor's"
+    )
 
-def test_error_state_hands_truth_to_a_component_even_without_oracle(tmp_path):
-    """The honest limit of the boundary: error_state() is an open channel.
-
-    ``IGncComponent::error_state(truth, e)`` exists so the loop can log
-    nav.err -- truth minus estimate in the estimator's own state convention,
-    which only the estimator can compute. It is therefore called for every
-    run regardless of the oracle flag, and it is handed the real truth state.
-    The header tells implementations not to retain that argument, but nothing
-    enforces it, and an estimator plugin that retains it has truth available
-    to its next update().
-
-    This test asserts the leak rather than the wish, so the gap between
-    FR-24's "never visible to GNC plugins" and what the code enforces is a
-    recorded, reviewable fact. Closing it mechanically would mean giving up
-    nav.err for plugin estimators; that trade has not been made.
-
-    The exposure is bounded to estimators: error_state() is called only when
-    state_dim() > 0, so a guidance or control plugin is never offered truth.
-    """
-    core = _core_or_fail()
-    caught = {}
-    name = _register(core, _make_truth_hunter(core, caught), "truth_retainer")
-    cfg = _swap_component(core, _run_config(core, ATTITUDE_MISSION), "nav", name)
-    assert cfg.oracle is False
-    _drive(core, cfg, tmp_path / "retain.srlog")
-
-    assert caught["retained_truth_valid"] is True
-    radius = sum(x * x for x in caught["retained_truth_r"]) ** 0.5
-    assert 6.0e6 < radius < 8.0e6, (
-        "error_state() no longer supplies a populated truth state; if the "
-        "channel was deliberately closed, delete this test and tighten "
-        "test_truth_is_unreachable_from_a_component_input to cover it"
+    header = load(log_path).header
+    assert header["oracle"] is True, (
+        "an oracle run must be identifiable from the header alone (FR-25); "
+        "test_gnc_missions.test_oracle_flag_stamped_in_header covers the "
+        "built-in chain, this covers a plugin component"
     )
