@@ -204,18 +204,58 @@ TEST_CASE("ekf_mechanization_attitude_matches_the_exact_rotation_path") {
   CHECK(x[3] == doctest::Approx(expected.z()).epsilon(1e-14));
 }
 
-TEST_CASE("ekf_free_fall_velocity_follows_point_mass_gravity") {
+TEST_CASE("ekf_free_fall_velocity_is_second_order_in_gravity") {
   // With zero specific force the mechanization reduces to the filter's own
-  // point-mass gravity (ch:ekf assumption 2), so one cycle moves velocity
-  // by exactly g(p) dt.
+  // point-mass gravity (ch:ekf assumption 2), so one cycle is a pure
+  // quadrature of g along the trajectory. eq:ekf:mech closes that quadrature
+  // to second order with a predictor-corrector, and this pins both the
+  // arithmetic and the ORDER: the first-order step it replaced is excluded
+  // by four decades, so a regression to Euler fails here rather than
+  // surviving as a silent bias the ensemble gate has to catch.
   std::unique_ptr<IGncComponent> f = make_ekf();
   const double dt = 0.1;
   f->update(imu_cycle(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), dt));
   const std::vector<double> x = state_of(*f);
-  const double r = kPos.norm();
-  const Eigen::Vector3d g = -kMu * kPos / (r * r * r);
-  CHECK(x[4] == doctest::Approx(kVel.x() + g.x() * dt).epsilon(1e-12));
-  CHECK(x[5] == doctest::Approx(kVel.y() + g.y() * dt).epsilon(1e-12));
+
+  const auto grav = [](const Eigen::Vector3d& p) {
+    const double r = p.norm();
+    return Eigen::Vector3d(-kMu * p / (r * r * r));
+  };
+
+  // The specified predictor-corrector, recomputed here independently.
+  const Eigen::Vector3d g0 = grav(kPos);
+  const Eigen::Vector3d v_pred = kVel + g0 * dt;
+  const Eigen::Vector3d p_pred = kPos + 0.5 * (kVel + v_pred) * dt;
+  const Eigen::Vector3d v_new = kVel + 0.5 * (g0 + grav(p_pred)) * dt;
+  CHECK(x[4] == doctest::Approx(v_new.x()).epsilon(1e-12));
+  CHECK(x[5] == doctest::Approx(v_new.y()).epsilon(1e-12));
+
+  // An RK4 step of the same two-body dynamics is an INDEPENDENT reference:
+  // a different scheme of higher order, not a restatement of the formula
+  // above, so agreeing with it is evidence about accuracy rather than about
+  // self-consistency. It is also the scheme the truth trajectory uses, which
+  // is the comparison the NEES gate ultimately makes.
+  const auto deriv = [&grav](const Eigen::Matrix<double, 6, 1>& y) {
+    Eigen::Matrix<double, 6, 1> d;
+    d.head<3>() = y.tail<3>();
+    d.tail<3>() = grav(y.head<3>());
+    return d;
+  };
+  Eigen::Matrix<double, 6, 1> y;
+  y << kPos, kVel;
+  const Eigen::Matrix<double, 6, 1> k1 = deriv(y);
+  const Eigen::Matrix<double, 6, 1> k2 = deriv(y + 0.5 * dt * k1);
+  const Eigen::Matrix<double, 6, 1> k3 = deriv(y + 0.5 * dt * k2);
+  const Eigen::Matrix<double, 6, 1> k4 = deriv(y + dt * k3);
+  const Eigen::Matrix<double, 6, 1> y_rk4 =
+      y + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+
+  const Eigen::Vector3d v_ekf(x[4], x[5], x[6]);
+  const double err = (v_ekf - y_rk4.tail<3>()).norm();
+  // Measured 7.9e-10 m/s for the predictor-corrector against 4.4e-5 m/s for
+  // the Euler step it replaced; the gate sits between them, nearer the
+  // former by three decades.
+  CHECK(err < 1.0e-8);
 }
 
 TEST_CASE("ekf_propagated_covariance_stays_symmetric_and_psd") {
