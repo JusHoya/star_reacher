@@ -359,10 +359,13 @@ The module implementing this chapter is
       rotation, so a transposed convention or a shared scale cannot
       hide. \\
     \testid{test_landmarks_are_actually_visible} &
-      Non-vacuity of the row above: more than half of all landmark
-      projections pass the reference's own visibility tests, so the pixel
-      gate is not satisfied by off-sensor numbers no consumer would
-      read. \\
+      Non-vacuity of the row above: the assertion is that more than half of
+      all landmark projections pass the reference's own visibility tests,
+      so the pixel gate is not satisfied by off-sensor numbers no consumer
+      would read. On the committed fixture all \num{300} pass --- the
+      criterion-9 off-axis slew of
+      chapter~\ref{ch:sensors-optical} happens to hold every landmark
+      on-sensor at every sample. \\
     \bottomrule
   \end{tabular}
 \end{table}
