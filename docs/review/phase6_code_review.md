@@ -6,9 +6,12 @@ evidence or acceptance-gate audit; that is covered separately by
 `docs/audit/phase6_evidence_audit.md`.
 
 Review base: `phase-6-gnc-sensors` at `ea0e5e9`, worktree branch
-`ws-p6-review`. Nothing was compiled during this review; every finding is
-either an airtight static read (CONFIRMED) or is marked SUSPECTED with the
-experiment that would settle it.
+`ws-p6-review`. Nothing was compiled during this review — another agent held
+the sole compiler slot throughout. Every finding below is nonetheless marked
+CONFIRMED, because each rests on an airtight static read or on an executed
+pure-Python demonstration; none required a build to establish. The closing
+method note states what a build would still be worth running, and records the
+one hypothesis that traced out weaker than first assumed.
 
 ## Headline result: the `auto` + Eigen hunt found nothing
 
@@ -636,7 +639,7 @@ if n == m + 1 and n >= 4:
 ```
 
 Both the module docstring (`python/star_reacher/consistency_cli.py:33`) and
-`docs/formats/srlog_v1.md:340` state that "any other pairing of n and m is
+`docs/formats/srlog_v1.md:337` state that "any other pairing of n and m is
 reported as a mismatch rather than guessed at". `n == m + 1` is never
 reported — it is always collapsed, on the assumption that slots 0..3 are a
 scalar-first error quaternion. Nothing in the log states the estimator's error
@@ -855,7 +858,7 @@ Two items that are not defects in effect but read as checks they are not:
   fire on very short runs.
 - `python/star_reacher/consistency_cli.py:173` — since the producer already
   canonicalises the error quaternion to the `+w` hemisphere
-  (`docs/formats/srlog_v1.md:337`), the `sign = np.where(w >= 0.0, 1.0, -1.0)`
+  (`docs/formats/srlog_v1.md:330`), the `sign = np.where(w >= 0.0, 1.0, -1.0)`
   factor is always `+1` for core-produced logs. A defensive branch that cannot
   fire; harmless.
 
