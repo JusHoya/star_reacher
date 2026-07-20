@@ -41,13 +41,36 @@ also what ch:ekf specifies, since each sensor's NIS has its own chi-square
 dimension. A single-sensor run reports one ``NIS`` gate; a multi-sensor run
 reports one ``NIS[sensor k]`` gate per sensor.
 
-Report: one time-averaged NEES gate and one NIS gate per sensor per run;
-with two or more runs, the ensemble per-epoch and pooled gates for each
-statistic (the ensemble per-epoch gate is the acceptance instrument). The
-final line is ``CONSISTENCY: PASS (N/N gates)`` or ``CONSISTENCY: FAIL
-(k/N gates)``. Exit codes: 0 when every gate passes; 1 on any gate failure,
-unreadable or missing input, or a log without the required groups (the
-error names the missing group); 2 for usage errors (argparse).
+**What gates, and what only reports.** The exit code is set by the
+ensemble statistic of ch:ekf eq:ekf:ensemble and by nothing else. For each
+statistic (NEES, and NIS per sensor) two gates are counted:
+
+- the *headline* — the ensemble average over runs, averaged over epochs,
+  against the two-sided 95 % chi-square interval at ``dof = R*dim``;
+- the *coverage* — the number of epochs whose ensemble average lies inside
+  that interval, against the binomial lower-tail threshold derived in
+  :func:`star_reacher.consistency.inside_count_threshold`.
+
+The per-run time-averaged numbers and the pooled all-epoch mean are printed
+as labelled diagnostics and never reach the exit code, because the
+chi-square bounds they would be judged against assume the per-epoch values
+are independent while a filter's state error is serially correlated within
+a run. On a provably consistent 100-run ensemble the per-run interval
+admits only 7 of 100 runs, so gating on it would report FAIL on a correct
+filter; :mod:`star_reacher.consistency` derives this in full and ch:ekf
+sec:ekf:consistency is the normative statement.
+
+Ensemble statistics are formed for any run count including one: a single
+log is its own ensemble average and stays chi-square(dim) per epoch, so
+one-log invocations remain gated rather than unconditionally green (they
+are simply low-powered).
+
+Report: the per-run diagnostics for every log, then the gates for each
+statistic. The final line is ``CONSISTENCY: PASS (N/N gates)`` or
+``CONSISTENCY: FAIL (k/N gates)``, counting gates only. Exit codes: 0 when
+every gate passes; 1 on any gate failure, unreadable or missing input, or a
+log without the required groups (the error names the missing group); 2 for
+usage errors (argparse).
 """
 
 from __future__ import annotations
@@ -80,14 +103,17 @@ def add_consistency_parser(sub) -> None:
         "consistency",
         help="compute NEES/NIS chi-square consistency gates from SRLOG runs",
         description=(
-            "Compute per-run time-averaged and (for two or more runs) "
-            "ensemble NEES/NIS statistics from the nav.err, nav.est, and "
-            "nav.innov channel groups, check each against two-sided 95 % "
-            "chi-square bounds, and print a PASS/FAIL report per gate "
-            "(FR-26). The ensemble per-epoch gate is the estimator "
-            "acceptance instrument: it passes when the ensemble average "
-            "lies inside the bounds for at least 95 % of epochs. Exits 0 "
-            "only when every gate passes."
+            "Compute NEES/NIS consistency statistics from the nav.err, "
+            "nav.est, and nav.innov channel groups and print a PASS/FAIL "
+            "report (FR-26). The estimator acceptance instrument is the "
+            "ensemble statistic (ch:ekf eq:ekf:ensemble): per statistic, "
+            "the ensemble average must lie inside two-sided 95 % "
+            "chi-square bounds, and the number of epochs inside those "
+            "bounds must meet a binomial lower-tail threshold. Per-run "
+            "time-averaged and pooled numbers are printed as diagnostics "
+            "and do not affect the exit code: their bounds assume epochs "
+            "are independent, which is false within a run. Exits 0 only "
+            "when every gate passes."
         ),
     )
     p.add_argument(
@@ -298,8 +324,26 @@ def _print_interval_gate(label: str, gate: IntervalGate, extra: str) -> bool:
     return gate.passed
 
 
+def _print_interval_diagnostic(label: str, gate: IntervalGate, extra: str) -> None:
+    """Print a non-gating interval statistic.
+
+    Deliberately does not print PASS/FAIL: those words are reserved for
+    statistics that move the exit code, and a reader who sees FAIL beside a
+    diagnostic will act on a number whose bounds do not apply.
+    """
+    where = "inside" if gate.passed else "outside"
+    print(
+        f"  {label}: mean {gate.mean:.4f} {where} [{gate.lower:.4f}, "
+        f"{gate.upper:.4f}] (chi2 95 %, {extra}) [diagnostic, not gated]"
+    )
+
+
 def _print_ensemble_gate(label: str, gate: EnsembleGate, dim_label: str) -> list[bool]:
-    if gate.passed:
+    headline_ok = _print_interval_gate(
+        f"{label} ensemble headline", gate.headline, f"dof {gate.dof}, {dim_label}"
+    )
+    epochs = gate.epoch_mean.shape[0]
+    if gate.coverage_passed:
         verdict = "PASS"
     else:
         verdict = (
@@ -307,15 +351,16 @@ def _print_ensemble_gate(label: str, gate: EnsembleGate, dim_label: str) -> list
             f"{100.0 * gate.fraction_above:.1f} % above)"
         )
     print(
-        f"  {label} ensemble: {100.0 * gate.fraction_inside:.1f} % of "
-        f"{gate.epoch_mean.shape[0]} epochs in [{gate.lower:.4f}, "
-        f"{gate.upper:.4f}] (chi2 95 %, dof {gate.dof}, need >= "
-        f"{100.0 * gate.min_fraction:.1f} %): {verdict}"
+        f"  {label} ensemble coverage: {gate.inside_count}/{epochs} epochs "
+        f"({100.0 * gate.fraction_inside:.1f} %) in [{gate.lower:.4f}, "
+        f"{gate.upper:.4f}] (need >= {gate.min_inside}/{epochs} = "
+        f"{100.0 * gate.min_fraction:.1f} %, binomial lower tail at "
+        f"{100.0 * gate.confidence:.1f} % confidence): {verdict}"
     )
-    pooled_ok = _print_interval_gate(
+    _print_interval_diagnostic(
         f"{label} pooled", gate.pooled, f"dof {gate.pooled.dof}, {dim_label}"
     )
-    return [gate.passed, pooled_ok]
+    return [headline_ok, gate.coverage_passed]
 
 
 def cmd_consistency(args) -> int:
@@ -361,58 +406,60 @@ def cmd_consistency(args) -> int:
     results: list[bool] = []
     nees_runs: list[np.ndarray] = []
     nis_runs: dict[int, list[np.ndarray]] = {sid: [] for sid in sensor_ids}
+    print(
+        "gating: the ensemble headline and coverage criteria of ch:ekf "
+        "eq:ekf:ensemble set the exit code; per-run time-averaged and "
+        "pooled numbers are printed as diagnostics only (their chi-square "
+        "bounds assume epochs are independent, which is false within a run)."
+    )
     try:
         for path, arrays in per_file:
             eps_nees = nees(arrays["e"], arrays["P"])
             nees_runs.append(eps_nees)
             n = arrays["e"].shape[-1]
             print(f"run: {path}")
-            results.append(
-                _print_interval_gate(
-                    "NEES time-averaged",
-                    time_average_gate(eps_nees, n),
-                    f"T={eps_nees.shape[0]}, n={n}",
-                )
+            _print_interval_diagnostic(
+                "NEES time-averaged",
+                time_average_gate(eps_nees, n),
+                f"T={eps_nees.shape[0]}, n={n}",
             )
             for sid in sensor_ids:
                 y, s_packed = arrays["innov"][sid]
                 eps_nis = nis(y, s_packed)
                 nis_runs[sid].append(eps_nis)
                 m = y.shape[-1]
-                results.append(
-                    _print_interval_gate(
-                        f"{nis_label(sid)} time-averaged",
-                        time_average_gate(eps_nis, m),
-                        f"T={eps_nis.shape[0]}, m={m}",
-                    )
+                _print_interval_diagnostic(
+                    f"{nis_label(sid)} time-averaged",
+                    time_average_gate(eps_nis, m),
+                    f"T={eps_nis.shape[0]}, m={m}",
                 )
 
-        if len(per_file) >= 2:
-            series: list[tuple[str, list[np.ndarray], int]] = [
-                ("NEES", nees_runs, per_file[0][1]["e"].shape[-1])
-            ]
-            for sid in sensor_ids:
-                series.append(
-                    (
-                        nis_label(sid),
-                        nis_runs[sid],
-                        per_file[0][1]["innov"][sid][0].shape[-1],
-                    )
+        series: list[tuple[str, list[np.ndarray], int]] = [
+            ("NEES", nees_runs, per_file[0][1]["e"].shape[-1])
+        ]
+        for sid in sensor_ids:
+            series.append(
+                (
+                    nis_label(sid),
+                    nis_runs[sid],
+                    per_file[0][1]["innov"][sid][0].shape[-1],
                 )
-            for label, runs_eps, dim in series:
-                epoch_counts = {eps.shape[0] for eps in runs_eps}
-                if len(epoch_counts) != 1:
-                    print(
-                        f"star consistency: the {label} epoch counts differ "
-                        f"across runs ({sorted(epoch_counts)}); ensemble "
-                        f"statistics need one common epoch grid (same "
-                        f"mission and rates, different seeds)",
-                        file=sys.stderr,
-                    )
-                    return _EXIT_RUNTIME
-                print(f"ensemble: R={len(runs_eps)} runs, {label}")
-                gate = ensemble_gate(np.stack(runs_eps), dim)
-                results.extend(_print_ensemble_gate(label, gate, f"dim {dim}"))
+            )
+        for label, runs_eps, dim in series:
+            epoch_counts = {eps.shape[0] for eps in runs_eps}
+            if len(epoch_counts) != 1:
+                print(
+                    f"star consistency: the {label} epoch counts differ "
+                    f"across runs ({sorted(epoch_counts)}); ensemble "
+                    f"statistics need one common epoch grid (same "
+                    f"mission and rates, different seeds)",
+                    file=sys.stderr,
+                )
+                return _EXIT_RUNTIME
+            plural = "run" if len(runs_eps) == 1 else "runs"
+            print(f"ensemble: R={len(runs_eps)} {plural}, {label}")
+            gate = ensemble_gate(np.stack(runs_eps), dim)
+            results.extend(_print_ensemble_gate(label, gate, f"dim {dim}"))
     except ValueError as exc:
         # Dimension mismatches and non-positive-definite covariances arrive
         # here from the engine with their own actionable wording.
