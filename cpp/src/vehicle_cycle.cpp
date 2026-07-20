@@ -852,29 +852,31 @@ struct VehicleCycle::Impl {
           if (s.kind == "navfix") {
             navfix = static_cast<sensors::NavFix*>(sensor_list.back().get());
             navfix_id = id;
-            const sensors::NavFixCfg c = sensors::parse_nav_fix_cfg(s);
+            const sensors::NavFixCfg navfix_cfg = sensors::parse_nav_fix_cfg(s);
             sensor_model.navfix_present = true;
             sensor_model.navfix_id = id;
-            sensor_model.navfix_sigma_r_m = c.sigma_r_m;
-            sensor_model.navfix_sigma_v_mps = c.sigma_v_mps;
+            sensor_model.navfix_sigma_r_m = navfix_cfg.sigma_r_m;
+            sensor_model.navfix_sigma_v_mps = navfix_cfg.sigma_v_mps;
           } else if (s.kind == "startracker") {
             startracker =
                 static_cast<sensors::StarTracker*>(sensor_list.back().get());
             startracker_id = id;
-            const sensors::StarTrackerCfg c = sensors::parse_star_tracker_cfg(s);
+            const sensors::StarTrackerCfg startracker_cfg =
+                sensors::parse_star_tracker_cfg(s);
             sensor_model.startracker_present = true;
             sensor_model.startracker_id = id;
-            sensor_model.startracker_sigma_rad = c.sigma_rad;
-            sensor_model.startracker_boresight_b = c.boresight_b;
+            sensor_model.startracker_sigma_rad = startracker_cfg.sigma_rad;
+            sensor_model.startracker_boresight_b = startracker_cfg.boresight_b;
           } else if (s.kind == "altimeter") {
             altimeter =
                 static_cast<sensors::Altimeter*>(sensor_list.back().get());
             altimeter_id = id;
-            const sensors::AltimeterCfg c = sensors::parse_altimeter_cfg(s);
+            const sensors::AltimeterCfg altimeter_cfg =
+                sensors::parse_altimeter_cfg(s);
             sensor_model.altimeter_present = true;
             sensor_model.altimeter_id = id;
-            sensor_model.altimeter_sigma_noise_m = c.sigma_noise_m;
-            sensor_model.altimeter_sigma_bias_m = c.sigma_bias_m;
+            sensor_model.altimeter_sigma_noise_m = altimeter_cfg.sigma_noise_m;
+            sensor_model.altimeter_sigma_bias_m = altimeter_cfg.sigma_bias_m;
           }
         }
       }
@@ -1159,12 +1161,12 @@ struct VehicleCycle::Impl {
         {
           const std::size_t mm = static_cast<std::size_t>(innov_mm);
           std::size_t src = 0;
-          std::size_t row0 = 0;  // start of row i in the m_max-wide triangle
-          for (std::size_t i = 0; i < m; ++i) {
-            for (std::size_t j = i; j < m; ++j) {
-              innov_s_buf[row0 + (j - i)] = s.s_upper[src++];
+          std::size_t row0 = 0;  // start of the current row in the m_max triangle
+          for (std::size_t row = 0; row < m; ++row) {
+            for (std::size_t col = row; col < m; ++col) {
+              innov_s_buf[row0 + (col - row)] = s.s_upper[src++];
             }
-            row0 += mm - i;  // row i holds m_max - i entries
+            row0 += mm - row;  // row `row` holds m_max - row entries
           }
         }
         writer.write_nav_innov(t, s.sensor_id, m, innov_y_buf.data(),
