@@ -42,8 +42,12 @@ _CORE_MISSING_MESSAGE = (
 
 # Registry names must be unique for the life of the process (a duplicate is a
 # determinism hazard and the core refuses it), so every registration in this
-# module draws a fresh suffix.
+# module draws a fresh suffix. The "test_" prefix is the established
+# convention for probe registrations: registering into the core registry is
+# process-wide, and test_gnc_validation's registry-parity check filters that
+# prefix out so these probes cannot masquerade as shipped components.
 _names = itertools.count()
+_NAME_PREFIX = "test_"
 
 
 def _core_or_fail():
@@ -95,7 +99,7 @@ def _swap_component(core, cfg, slot, name, vectors=None, scalars=None):
 
 
 def _register(core, cls, prefix):
-    name = f"{prefix}_{next(_names)}"
+    name = f"{_NAME_PREFIX}{prefix}_{next(_names)}"
     core.register_python_component(name, cls)
     return name
 

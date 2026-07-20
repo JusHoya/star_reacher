@@ -390,3 +390,154 @@ TEST_CASE("gnc_cycle_batch_wrapper_matches_stepping") {
   REQUIRE(!a.empty());
   CHECK(a == b);
 }
+
+// --- FR-24 observation snapshot and external command ----------------------
+
+// Deep equality of two observation snapshots. Written out rather than
+// defaulted because Eigen members have no operator== that compares
+// element-wise to a bool, and the exit-criterion-4 claim is about VALUES:
+// an idempotence test that compared object identity would pass trivially.
+bool same_observation(const star::CycleObservation& a,
+                      const star::CycleObservation& b) {
+  const bool scalars = a.cycle == b.cycle && a.t_s == b.t_s &&
+                       a.processed == b.processed && a.done == b.done &&
+                       a.gnc_active == b.gnc_active &&
+                       a.imu_fresh == b.imu_fresh;
+  const bool imu = a.imu.valid == b.imu.valid && a.imu.t_s == b.imu.t_s &&
+                   a.imu.dt_s == b.imu.dt_s &&
+                   a.imu.dtheta_b_rad == b.imu.dtheta_b_rad &&
+                   a.imu.dv_b_mps == b.imu.dv_b_mps;
+  const bool chain = a.nav_est.valid == b.nav_est.valid &&
+                     a.nav_est.q_i2b.coeffs() == b.nav_est.q_i2b.coeffs() &&
+                     a.nav_est.omega_b_radps == b.nav_est.omega_b_radps &&
+                     a.att_cmd.q_i2b.coeffs() == b.att_cmd.q_i2b.coeffs() &&
+                     a.applied.valid == b.applied.valid &&
+                     a.applied.torque_b_nm == b.applied.torque_b_nm;
+  const bool aiding = a.navfix.fresh == b.navfix.fresh &&
+                      a.navfix.valid == b.navfix.valid &&
+                      a.navfix.r_i_m == b.navfix.r_i_m &&
+                      a.startracker.fresh == b.startracker.fresh &&
+                      a.altimeter.fresh == b.altimeter.fresh &&
+                      a.altimeter.h_m == b.altimeter.h_m;
+  const bool est = a.nav_x_hat == b.nav_x_hat &&
+                   a.nav_p_upper == b.nav_p_upper;
+  return scalars && imu && chain && aiding && est;
+}
+
+TEST_CASE("gnc_cycle_observation_is_idempotent_without_step") {
+  // Exit criterion 4, second clause, at the core: reading the observation
+  // must not advance the RNG, consume a sensor sample, or mutate a buffer,
+  // so repeated reads without an intervening step() are equal.
+  const std::string path = "test_gnc_obs_idempotent.srlog";
+  star::VehicleCycle vc(gnc_scenario(false, 0), path);
+
+  // Before the first step the snapshot describes the initial state.
+  CHECK(vc.observation().processed == false);
+  CHECK(vc.observation().cycle == 0);
+  CHECK(same_observation(vc.observation(), vc.observation()));
+
+  for (int k = 0; k < 5; ++k) {
+    REQUIRE(vc.step());
+    const star::CycleObservation first = vc.observation();
+    const star::CycleObservation second = vc.observation();
+    const star::CycleObservation third = vc.observation();
+    CHECK(same_observation(first, second));
+    CHECK(same_observation(second, third));
+    CHECK(first.processed == true);
+    CHECK(first.cycle == k);
+    // Non-vacuous: the snapshot really carries this cycle's chain products.
+    CHECK(first.gnc_active == true);
+    CHECK(first.nav_x_hat.size() == 7u);
+  }
+  while (vc.step()) {
+  }
+  std::remove(path.c_str());
+}
+
+TEST_CASE("gnc_cycle_observation_does_not_perturb_the_log") {
+  // The stronger statement behind idempotence: observing cannot change the
+  // run at all. A log written while observing every cycle must be identical
+  // to one written without observing.
+  const std::string quiet_path = "test_gnc_obs_quiet.srlog";
+  const std::string watched_path = "test_gnc_obs_watched.srlog";
+  const star::RunConfig cfg = gnc_scenario(false, 0);
+
+  star::VehicleCycle quiet(cfg, quiet_path);
+  while (quiet.step()) {
+  }
+
+  star::VehicleCycle watched(cfg, watched_path);
+  while (watched.step()) {
+    // Three reads per cycle, plus the privileged accessor.
+    (void)watched.observation();
+    (void)watched.observation();
+    (void)watched.observation();
+    (void)watched.truth();
+  }
+
+  const std::vector<unsigned char> a = read_all_bytes(quiet_path);
+  const std::vector<unsigned char> b = read_all_bytes(watched_path);
+  std::remove(quiet_path.c_str());
+  std::remove(watched_path.c_str());
+  REQUIRE(!a.empty());
+  CHECK(a == b);
+}
+
+TEST_CASE("gnc_cycle_external_command_holds_and_applies") {
+  // FR-24 step(commands): the external component is an ordinary chain
+  // member, so a driver-supplied torque reaches gnc.cmd and the dynamics,
+  // and persists across cycles until replaced (D-5 zero-order hold).
+  const std::string path = "test_gnc_external_cmd.srlog";
+  star::RunConfig cfg = gnc_scenario(false, 0);
+  cfg.gnc.control.component = "external";
+  cfg.gnc.control.vectors.clear();
+
+  star::VehicleCycle vc(cfg, path);
+  REQUIRE(vc.has_external_command());
+
+  star::gnc::GncOutput cmd;
+  cmd.valid = true;
+  cmd.torque_b_nm = Eigen::Vector3d(0.001, -0.002, 0.003);
+  vc.set_external_command(cmd);
+  REQUIRE(vc.step());
+  CHECK(vc.observation().applied.torque_b_nm == cmd.torque_b_nm);
+
+  // Held across a step that supplies nothing.
+  REQUIRE(vc.step());
+  CHECK(vc.observation().applied.torque_b_nm == cmd.torque_b_nm);
+
+  star::gnc::GncOutput zero;
+  zero.valid = true;
+  vc.set_external_command(zero);
+  REQUIRE(vc.step());
+  CHECK(vc.observation().applied.torque_b_nm == Eigen::Vector3d::Zero());
+
+  while (vc.step()) {
+  }
+  std::remove(path.c_str());
+}
+
+TEST_CASE("gnc_cycle_external_command_requires_an_external_slot") {
+  // Commanding a mission that flies its own built-in chain must fail
+  // loudly: a dropped command is indistinguishable from a vehicle that
+  // refused to manoeuvre.
+  const std::string path = "test_gnc_no_external.srlog";
+  star::VehicleCycle vc(gnc_scenario(false, 0), path);
+  CHECK(vc.has_external_command() == false);
+  CHECK_THROWS_AS(vc.set_external_command(star::gnc::GncOutput()),
+                  std::logic_error);
+  while (vc.step()) {
+  }
+  std::remove(path.c_str());
+}
+
+TEST_CASE("gnc_cycle_external_component_rejects_parameters") {
+  // The external component's command is data from the driver, not
+  // configuration; a stray key is a typo, not an accepted setting.
+  star::RunConfig cfg = gnc_scenario(false, 0);
+  cfg.gnc.control.component = "external";
+  cfg.gnc.control.vectors["kp_nm_per_rad"] = {1.0, 1.0, 1.0};
+  CHECK_THROWS_AS(star::VehicleCycle(cfg, "test_gnc_external_reject.srlog"),
+                  std::invalid_argument);
+  std::remove("test_gnc_external_reject.srlog");
+}
