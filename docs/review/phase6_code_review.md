@@ -430,6 +430,48 @@ well as the flag.
   (`bindings/module.cpp:577-585`) rather than a static `std::map<std::string,
   py::object>`, which would release Python references after interpreter
   finalisation.
+- **`truth_vector()` does not return a reference to a temporary.** Every arm
+  of the switch returns a reference to a member of the `truth` parameter, and
+  the unmatched case throws rather than returning a default-constructed
+  temporary (`cpp/src/gnc/component.cpp:68-85`). The caller binds the result
+  to a `const Eigen::Vector3d&` (`cpp/src/gnc/component.cpp:230`), so a
+  `return Eigen::Vector3d::Zero()` in the default arm would have been a
+  dangling read. It is not there.
+- **The two error conventions agree with their declarations.**
+  `attitude_error()` computes `q̂⁻¹ ⊗ q_true` for the local forms
+  (`cpp/src/gnc/component.cpp:98-100`), exactly the convention
+  `cpp/include/star/gnc/ekf.hpp` documents for the EKF, and canonicalises to
+  the `+w` hemisphere so the logged error cannot flip between epochs. Both
+  declared layouts tile their state vectors exactly — the EKF's 4+3+3+3+3 = 16
+  against `state_dim() == 16`, dead reckoning's 4+3 = 7 against
+  `state_dim() == 7` — which is what `validate_error_layout()` enforces.
+- **Sensor rate divisibility is defensively re-checked in C++.**
+  `cpp/src/vehicle_cycle.cpp:434-438` rejects a `sample_rate_hz` below 1 or
+  one that does not divide `control_rate_hz`, and the IMU is separately
+  required to equal the control rate (`428-432`). Without that check the
+  integer division at `cpp/src/vehicle_cycle.cpp:823-824` could yield a zero
+  decimation factor and the modulo at `cpp/src/vehicle_cycle.cpp:988` would be
+  a division by zero. The guard is present and correct.
+- **The latency FIFO is a pure state machine.** Pre-filled with `k` hold
+  entries so an output produced on cycle `i` surfaces on cycle `i + k`, with a
+  popped hold resolving to the previous applied command with its valid flag
+  cleared (`cpp/src/gnc/component.cpp:311-335`). No clock, no allocation after
+  construction.
+- **`builtin.cpp` is clean.** The PD control law's composition is correct
+  under D-7: `dq = q_cmd* ⊗ q_est` is `q_cmd2b`, so `C(dq)` resolves the
+  commanded rate into the estimated body frame, and the sign convention drives
+  the body toward the command (`cpp/src/gnc/builtin.cpp:296-330`). Every
+  built-in refuses unknown parameter keys rather than ignoring them, and the
+  hold paths return `valid = false` so the FIFO — not an accidental identity
+  quaternion — supplies the applied command.
+- **No determinism violation anywhere in loop-reachable C++.** A sweep for
+  `std::chrono`, `time()`, `clock()`, `rand()`, `random_device`, `getenv`, and
+  unordered iteration across `cpp/src/gnc/`, `cpp/src/sensors/`,
+  `cpp/src/vehicle_cycle.cpp`, and `cpp/src/models/environment.cpp` returned a
+  single hit: the `std::sort` at `cpp/src/gnc/component.cpp:152`. That sort is
+  construction-time, not in the loop, and its only unstable case — two blocks
+  sharing an offset — is rejected two lines later by the exact-tiling check,
+  so the outcome is a throw regardless of how the tie ordered. Clean.
 
 ## Not reviewed
 
