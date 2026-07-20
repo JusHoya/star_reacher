@@ -385,7 +385,26 @@ class ErrorStateEkf final : public IGncComponent {
     // pivoting hazards at these sizes (ch:ekf implementation note 3). K is
     // formed as K^T = S^-1 (P H^T)^T, exploiting S's symmetry.
     const Eigen::LDLT<Eigen::Matrix<double, M, M>> ldlt(s);
+    // GCC 13 raises a false -Warray-bounds on the M = 1 instantiation of the
+    // line below, reporting writes at offsets 120-232 into the 120-byte kt.
+    // Those offsets are dst.row(1) of a 1x15 destination. They come from
+    // Eigen's row permutation `dst = m_transpositions * rhs`
+    // (Eigen/src/Cholesky/LDLT.h), which swaps via dst.row(k).swap(dst.row(j))
+    // with j = tr.coeff(k) (Eigen/src/Core/ProductEvaluators.h). For M = 1
+    // that swap is provably the identity: ldlt_inplace::unblocked returns
+    // early on size <= 1 having called transpositions.setIdentity(), so
+    // j == k == 0 and only row 0 is ever touched. Under -DNDEBUG the
+    // eigen_assert carrying that index bound is compiled out, leaving GCC to
+    // model the unreachable j >= 1 branch; removing -DNDEBUG alone silences
+    // the warning. Recorded in docs/ci/phase6_crossplatform.md.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#endif
     const Eigen::Matrix<double, M, kM> kt = ldlt.solve(pht.transpose());
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
     const Eigen::Matrix<double, kM, M> k = kt.transpose();
     dx = k * y;
     const Matrix15d ikh = Matrix15d::Identity() - k * h;
