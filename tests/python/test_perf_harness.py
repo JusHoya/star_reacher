@@ -151,10 +151,14 @@ def test_measure_smoke_schema_and_gates(tmp_path):
             sys.executable,
             str(REPO / "scripts" / "perf_gate.py"),
             "measure",
-            # The tiny reference mission stands in for both mission metrics
-            # so the suite stays fast; the gate MATH is identical.
+            # The tiny reference mission stands in for both open-loop mission
+            # metrics so the suite stays fast; the gate MATH is identical.
             "--mission-a", str(twobody),
             "--ascent", str(twobody),
+            # The closed-loop metric needs a mission that actually carries a
+            # [gnc] table, so the smallest one substitutes for the 400 s
+            # GNC ascent here.
+            "--ascent-gnc", str(REPO / "missions" / "leo_attitude_gnc.toml"),
             "--srlog-records", "20000",
             "--json", str(out_json),
         ],

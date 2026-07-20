@@ -25,6 +25,19 @@ measurement would contaminate the very numbers being gated):
     orbit-insertion event well before duration_s, and crediting unsimulated
     seconds would overstate the factor). Gate: >= 100x.
 
+``ascent_gnc_rt_factor``
+    The Phase 6 exit criterion 10 re-gate: the same ratio as
+    ``ascent_rt_factor``, measured the same way, but for
+    ``missions/ascent_leo_gnc.toml`` - the closed-loop ascent that flies the
+    built-in C++ GNC chain (ideal IMU, dead-reckoning navigation,
+    pitch_program guidance, pd_attitude control) instead of an open-loop
+    pitch-program sequence action. FR-32 states the ascent target once; this
+    metric is what holds it "with the built-in C++ GNC stack in the loop".
+    The two ascents are deliberately measured as separate metrics rather than
+    one being replaced, because their ratio is the cost of the GNC chain and
+    the nightly EC-5 rolling gate then tracks each independently.
+    Gate: >= 100x.
+
 ``srlog_write_mbps``
     Sustained SRLOG write throughput, measured as log bytes divided by the
     wall time of the compiled core's propagation call on a deliberately
@@ -101,6 +114,12 @@ GATES = {
         "units": "x realtime",
         "gate_text": ">= 100x",
     },
+    "ascent_gnc_rt_factor": {
+        "threshold": 100.0,
+        "sense": "higher_is_better",
+        "units": "x realtime",
+        "gate_text": ">= 100x",
+    },
     "srlog_write_mbps": {
         "threshold": 50.0,
         "sense": "higher_is_better",
@@ -109,7 +128,12 @@ GATES = {
     },
 }
 
-DEFAULT_METRICS = ("mission_a_wall_s", "ascent_rt_factor", "srlog_write_mbps")
+DEFAULT_METRICS = (
+    "mission_a_wall_s",
+    "ascent_rt_factor",
+    "ascent_gnc_rt_factor",
+    "srlog_write_mbps",
+)
 
 
 def gate_passes(metric: str, value: float) -> bool:
@@ -312,11 +336,19 @@ def measure_mission_a_wall_s(mission: Path, workdir: Path) -> tuple[float, dict]
     return wall_s, detail
 
 
-def measure_ascent_rt_factor(mission: Path, workdir: Path) -> tuple[float, dict]:
-    """Simulated span / core propagation wall for the ascent mission."""
+def measure_ascent_rt_factor(
+    mission: Path, workdir: Path, subdir: str = "ascent"
+) -> tuple[float, dict]:
+    """Simulated span / core propagation wall for an ascent mission.
+
+    Shared by the open-loop (``ascent_rt_factor``) and closed-loop GNC
+    (``ascent_gnc_rt_factor``) metrics: the measurement contract is identical
+    and only the mission differs, so ``subdir`` keeps their output trees
+    apart within one measurement run.
+    """
     import star_reacher
 
-    core_wall_s, srlog_path = _run_in_process_timed(mission, workdir / "ascent")
+    core_wall_s, srlog_path = _run_in_process_timed(mission, workdir / subdir)
     run = star_reacher.load(srlog_path)
     # The mission terminates on its insertion event before duration_s; only
     # the span the core actually simulated is credited.
@@ -402,6 +434,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
     json_out = Path(args.json).resolve() if args.json else None
     mission_a = Path(args.mission_a).resolve()
     ascent = Path(args.ascent).resolve()
+    ascent_gnc = Path(args.ascent_gnc).resolve()
     os.chdir(REPO_ROOT)
 
     import star_reacher
@@ -438,6 +471,10 @@ def cmd_measure(args: argparse.Namespace) -> int:
                 value, detail = measure_mission_a_wall_s(mission_a, workdir)
             elif name == "ascent_rt_factor":
                 value, detail = measure_ascent_rt_factor(ascent, workdir)
+            elif name == "ascent_gnc_rt_factor":
+                value, detail = measure_ascent_rt_factor(
+                    ascent_gnc, workdir, subdir="ascent_gnc"
+                )
             else:
                 value, detail = measure_srlog_write_mbps(args.srlog_records, workdir)
             gate = GATES[name]
@@ -531,6 +568,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--ascent",
         default=str(REPO_ROOT / "missions" / "ascent_leo.toml"),
         help="mission for the real-time-factor metric (default: the ascent)",
+    )
+    p_measure.add_argument(
+        "--ascent-gnc",
+        default=str(REPO_ROOT / "missions" / "ascent_leo_gnc.toml"),
+        help="mission for the closed-loop GNC real-time-factor metric "
+        "(default: the GNC ascent)",
     )
     p_measure.add_argument(
         "--srlog-records",
