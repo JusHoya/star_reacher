@@ -870,20 +870,33 @@ aggregates.
     Test ID & Acceptance basis \\
     \midrule
     \testid{test_ensemble_nees_gate_passes} &
-      Phase~6 exit criterion~3, NEES half. A 100-run seeded ensemble of the
-      reference consistency scenario satisfies the
+      Phase~6 exit criterion~3, NEES half, taken through
+      \texttt{consistency.ensemble\_gate} with
+      \texttt{epochs\_independent = False}. A 100-run seeded ensemble of
+      the reference consistency scenario satisfies the
       gate~\eqref{eq:ekf:ensemble} at $n = 15$: the ensemble average is
-      inside the two-sided 95\,\% bounds. Bounds are evaluated with
-      the project's exact quantile function, not the
-      approximation~\eqref{eq:ekf:wh}. As of this commit the same test also
-      asserts a second, weaker condition --- that at least 95\,\% of epochs
-      individually fall inside those bounds --- which is \emph{not} part of
-      the criterion and is unsound; see the note below. \\
+      inside the two-sided 95\,\% bounds. Bounds are evaluated with the
+      project's exact quantile function, not the
+      approximation~\eqref{eq:ekf:wh}, and are asserted equal to the ones
+      this module derives independently from the chapter, so a change to
+      either is caught rather than silently shifting the gate. The verdict
+      rests on the headline alone: the epoch coverage fraction is computed
+      and reported but excluded from it, because the state error is a
+      serially correlated trajectory for which the binomial premise does
+      not hold. The test asserts that exclusion
+      (\texttt{coverage\_gated} is false) rather than leaving it to
+      configuration. \\
     \testid{test_ensemble_nis_gate_passes} &
       Exit criterion~3, NIS half, parameterized over the three aiding
-      sensors: each sensor's ensemble NIS~\eqref{eq:ekf:nis} lies inside
-      the gate~\eqref{eq:ekf:ensemble} evaluated at that sensor's own
-      update dimension $m$. \\
+      sensors and taken through the same instrument with
+      \texttt{epochs\_independent = True}. Each sensor's ensemble
+      NIS~\eqref{eq:ekf:nis} must lie inside the
+      gate~\eqref{eq:ekf:ensemble} evaluated at that sensor's own update
+      dimension $m$, \emph{and} the epoch coverage must meet the binomial
+      threshold, which here gates rather than merely reports: a consistent
+      filter's innovations are white, so successive NIS epochs are
+      independent and the threshold is an exact bound on the
+      spurious-failure probability at the library's $c = 0.999$. \\
     \testid{test_ensemble_rerun_is_bit_identical} &
       Exit criterion~3's determinism half: re-executing the whole ensemble
       reproduces the SRLOG SHA-256 of every one of the 100 runs. \\
@@ -983,35 +996,43 @@ aggregates.
   \end{tabular}
 \end{table}
 
-\paragraph{Two notes on the criterion-3 driver, recorded as of this
-commit.} First, the driver derives the
-bounds~\eqref{eq:ekf:ensemble} in-process from
-\texttt{star\_reacher.chi2} rather than calling
-\texttt{consistency.ensemble\_gate()}, so the sanctioned instrument's
-coverage logic --- including its declaration that NEES epochs are
-correlated --- never runs on the criterion-3 path. The bounds it computes
-are nonetheless the correct ones; the concern is that two implementations
-of one gate now exist.
+\paragraph{How the criterion-3 driver reaches its verdict.} The driver
+takes both halves of the criterion through
+\texttt{consistency.ensemble\_gate()}, the same instrument
+\texttt{star consistency} uses, rather than reimplementing the
+bounds~\eqref{eq:ekf:ensemble} beside it. It does so in-process, importing
+the function directly; it does not shell out to the command line, which is
+why the CLI rows of Table~\ref{tab:ekf:validation-py} are the sanctioned
+command-line form of the ensemble gate rather than the path this criterion
+takes. The two remain tied together because both call one implementation.
 
-Second, and more consequentially,
-\testid{test_ensemble_nees_gate_passes} asserts, alongside the headline
-bound the criterion states, that at least 95\,\% of epochs individually
-fall inside those bounds. This chapter's own instrument documents that rule
-as invalid: the count of epochs inside is $\mathrm{Binomial}(n, 0.95)$
-under the null, so a threshold at 95\,\% tests that count against its own
-mean and a correct filter meets it about half the time. For NEES the
-situation is worse than a coin flip, because the epoch-mean series has an
-integrated autocorrelation time of roughly 30 epochs and the count-inside
-is correspondingly over-dispersed. The assertion is green today only
-because the seeds are pinned and the run is bit-deterministic; any
-legitimate change that perturbs the last bits --- a compiler change, a
-platform with different rounding, a model fix --- flips it with probability
-near one half, and it would present as an EKF consistency failure when
-nothing is wrong. It is not part of exit criterion~3 and should be deleted
-or replaced with \texttt{consistency.inside\_count\_threshold} applied
-through \texttt{ensemble\_gate()} with epochs declared correlated. That
-change is in progress and this note should be re-checked against the test
-before it is relied upon.
+The consequence that matters is that the instrument's coverage logic now
+runs on the criterion-3 path, and it distinguishes the two statistics. NEES
+is gated with \texttt{epochs\_independent = False}: the epoch coverage
+fraction is computed and reported, but excluded from the verdict, which
+rests on the headline bound alone. That exclusion is structural, made from
+what the statistic is rather than estimated from the data being judged. The
+count of epochs inside is $\mathrm{Binomial}(n, 0.95)$ under the null, so a
+threshold set at 95\,\% would test that count against its own mean and a
+correct filter would meet it about half the time; for NEES it is worse than
+a coin flip, because the epoch-mean series has an integrated
+autocorrelation time of roughly 30 epochs and the count-inside is
+correspondingly over-dispersed. Such a rule would be green only while the
+seeds stayed pinned, and any legitimate change perturbing the last bits ---
+a compiler change, a platform with different rounding, a model fix ---
+would flip it with probability near one half and present as an EKF
+consistency failure when nothing was wrong.
+
+NIS is gated with \texttt{epochs\_independent = True}, where the binomial
+premise does hold: a consistent filter's innovations are white, so
+successive epochs are independent and
+\texttt{consistency.inside\_count\_threshold} is an exact bound on the
+spurious-failure probability at the library's default $c = 0.999$ rather
+than a test of the count against its own mean. Both halves additionally
+assert that the instrument's interval equals the one
+\texttt{test\_ekf\_consistency} derives independently from this chapter, so
+a change to either the chapter or the library is caught here instead of
+silently shifting the gate.
 
 \section{References}
 \label{sec:ekf:references}
