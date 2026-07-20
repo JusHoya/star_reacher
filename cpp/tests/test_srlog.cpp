@@ -807,6 +807,15 @@ TEST_CASE("srlog_v12_write_calls_guard_declaration_and_dimensions") {
                     std::invalid_argument);  // m > m_max
     CHECK_THROWS_AS(writer.write_nav_innov(0.0, 0, 0, y, 3, s, 6),
                     std::invalid_argument);  // m == 0
+    // sensor_id indexes the header's gnc.sensors array, which this file
+    // declares with two entries. An id outside it is a record no reader can
+    // resolve - IndexError at analysis time, or a silent misattribution if a
+    // tool clamps - and misattribution is exactly what the NEES/NIS result
+    // cannot survive. Every other v1.2 dimension was already checked here.
+    CHECK_THROWS_WITH_AS(writer.write_nav_innov(0.0, 2, 2, y, 3, s, 6),
+                         doctest::Contains("sensor_id 2"),
+                         std::invalid_argument);
+    CHECK_NOTHROW(writer.write_nav_innov(0.0, 1, 2, y, 3, s, 6));  // in range
     const double q[4] = {1, 0, 0, 0};
     const double px[2] = {0.0, 0.0};
     CHECK_THROWS_AS(

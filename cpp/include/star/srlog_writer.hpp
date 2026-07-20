@@ -14,6 +14,7 @@
 #ifndef STAR_SRLOG_WRITER_HPP
 #define STAR_SRLOG_WRITER_HPP
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -44,11 +45,11 @@ struct SrlogHeaderFields {
   std::string core_version;   // e.g. "0.1.0"
   std::string git_hash;       // 40-hex or "unknown"
   std::string config_sha256;  // 64-hex, computed by the Python validator
-  std::uint64_t master_seed;  // serialized as a decimal string (JSON has no u64)
-  bool oracle;
+  std::uint64_t master_seed = 0;  // serialized as a decimal string (JSON has no u64)
+  bool oracle = false;
   std::string epoch_utc;      // ISO-8601, carried verbatim from the mission file
   std::string central_body;   // "earth" in Phase 1
-  std::uint32_t truth_rate_hz;
+  std::uint32_t truth_rate_hz = 0;
 
   // v1.1 vehicle channel groups (FR-16; format doc section 3.1). Each group
   // enters the file only when its rate is nonzero, and every nonzero rate
@@ -265,7 +266,13 @@ class SrlogWriter {
   int mass_index_ = -1;
   int env_index_ = -1;
   std::size_t force_source_count_ = 0;
-  int sensor_index_[kSensorKindCount] = {-1, -1, -1, -1, -1, -1};
+  // std::array filled in the constructor rather than a brace-initialised C
+  // array: a brace list one element short value-initialises the remainder to
+  // 0, and 0 is the group index of `truth`. A seventh sensor kind - which
+  // this header sanctions as a minor bump - would therefore pass the
+  // `idx < 0` guard in every write_sensor_* and tag a sensor payload as a
+  // truth record, producing a SILENTLY corrupt log rather than a crash.
+  std::array<int, kSensorKindCount> sensor_index_{};
   int nav_est_index_ = -1;
   int nav_err_index_ = -1;
   int nav_innov_index_ = -1;
@@ -275,6 +282,9 @@ class SrlogWriter {
   std::size_t nav_state_dim_ = 0;
   std::size_t nav_cov_dim_ = 0;
   std::size_t nav_innov_max_dim_ = 0;
+  // Declared sensor count, so nav.innov's sensor_id can be bound-checked
+  // against the header array it indexes.
+  std::size_t sensor_count_ = 0;
 };
 
 }  // namespace log

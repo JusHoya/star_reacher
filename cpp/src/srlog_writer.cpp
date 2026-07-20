@@ -494,6 +494,10 @@ SrlogWriter::SrlogWriter(const std::string& path,
   }
   if (fields.mass_rate_hz != 0) mass_index_ = next_index++;
   if (fields.env_rate_hz != 0) env_index_ = next_index++;
+  // -1 is "this kind is absent from this file"; the default-constructed
+  // array holds 0, which is truth's group index.
+  sensor_index_.fill(-1);
+  sensor_count_ = fields.sensors.size();
   for (const SensorGroupDecl& s : fields.sensors) {
     for (std::size_t k = 0; k < kSensorKindCount; ++k) {
       if (s.kind == kSensorKinds[k]) {
@@ -790,6 +794,20 @@ void SrlogWriter::write_nav_innov(double t_s, std::uint32_t sensor_id,
     throw std::logic_error(
         "SRLOG writer: nav.innov group was not declared at header-write "
         "time");
+  }
+  // sensor_id indexes the header's gnc.sensors array (format doc section
+  // 3.2), and the writer has known that array's size since construction.
+  // Every other dimension of a v1.2 record is checked here; without this one
+  // a component could write an id no reader can resolve, and a downstream
+  // tool would either raise at analysis time or - worse, if it clamps -
+  // silently attribute the innovation to the wrong instrument. That
+  // attribution is what the whole NEES/NIS result rests on.
+  if (sensor_id >= sensor_count_) {
+    throw std::invalid_argument(
+        "SRLOG writer: nav.innov record names sensor_id " +
+        std::to_string(sensor_id) + ", but this file declares " +
+        std::to_string(sensor_count_) +
+        " sensor(s); sensor_id indexes the header's gnc.sensors array");
   }
   const std::size_t mm = nav_innov_max_dim_;
   if (y_len != mm || s_len != mm * (mm + 1) / 2 || m == 0 || m > mm) {
