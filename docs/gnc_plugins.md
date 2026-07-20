@@ -22,11 +22,11 @@ built-in C++ components come from.
 ```python
 from star_reacher.sim import Sim
 
-sim = Sim("missions/leo_attitude_gnc.toml", "out/stepped")
-obs, info = sim.reset()
-while not sim.done():
-    obs = sim.step()
-print(sim.summary())
+with Sim("missions/leo_attitude_gnc.toml", "out/stepped") as sim:
+    obs, info = sim.reset()
+    while not sim.done():
+        obs = sim.step()
+    print(sim.summary())
 ```
 
 | Call | Returns | Notes |
@@ -39,12 +39,33 @@ print(sim.summary())
 | `done()` | `bool` | True once the run ended and the log is closed. |
 | `summary()` | `dict` | Final state and record tallies; valid once `done()`. |
 | `run_to_completion()` | `dict` | Steps to the end and returns the summary. |
+| `close()` | `None` | Releases the log handle. Idempotent, and called by `__exit__`. |
 
 `observe()` is idempotent: it runs no component, draws no random number,
 consumes no sensor sample, and returns fresh dicts rather than views into core
 buffers, so two calls without an intervening `step()` are equal. `truth()` is
 a deliberately separate call, so an observation handed to an agent can never
 contain truth by accident.
+
+### Lifetime
+
+Use the context-manager form. A run that ends normally closes its own log,
+but a run abandoned part way — a driver that stops early, or any exception
+escaping `step()` — holds `run.srlog` open for as long as the underlying core
+object lives, and how long that is depends on refcount timing and on whether
+a traceback still pins the frame holding it. On Windows the open handle then
+makes a later unlink of the output directory, or a reopen of the same path,
+fail with `PermissionError: [WinError 32]`; on Linux the unlink silently
+succeeds. `close()` makes the file's lifetime something the driver states
+rather than something it infers. Stepping after `close()` raises; the log of a
+run closed early is a valid prefix, carrying no `run_end` event.
+
+`reset()` may be called repeatedly on one `Sim` — the FR-24 episode loop —
+at the default `force=False`. The `force` guard protects an output this `Sim`
+did not write; once it has opened that path itself, a later `reset()`
+overwrites its own previous run, so each episode leaves only the last
+episode's `run.srlog`. A driver that needs one log per episode constructs a
+`Sim` per output directory.
 
 ### Commanding a run
 
@@ -143,6 +164,19 @@ override `cov_dim()` / `covariance_upper()`, `innov_max_dim()` /
 `innovations()`, and `error_layout()`. Those hooks are what let the loop log
 `nav.est`, `nav.err`, and `nav.innov` generically for any estimator
 dimension. A wrong-length return raises rather than being silently truncated.
+
+`state_dim()`, `cov_dim()`, and `innov_max_dim()` are **constants of a run**.
+Each is queried once, at GNC activation; the loop sizes its fixed log buffers
+from what it got, and the log header records the same values as the file's
+fixed record strides. Nothing resizes either afterwards, so an estimator that
+means to augment its state declares the augmented dimension up front and
+zero-pads until it is populated. This is enforced rather than requested: the
+first value each method returns is pinned, and a later divergence raises. So
+does a negative dimension, an `InnovationSample` whose `y` is longer than the
+declared `innov_max_dim()`, and an `s_upper` that is not exactly
+`m(m+1)/2` entries for its own `y`. Every one of those was a heap write or
+read past the end of a buffer sized at construction, reachable from pure
+Python with no unsafe API.
 
 `error_layout()` is how an estimator earns a `nav.err` channel. It returns a
 list of `ErrorBlock`, each naming a truth quantity, the form of the

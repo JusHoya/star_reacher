@@ -1105,3 +1105,62 @@ and traced the chain to check. `cpp/src/vehicle_cycle.cpp:721` sets the Moon's
 `inv_f` to `1.0e12` rather than `0.0`, which clears the guard at
 `cpp/src/models/atmosphere_hp.cpp:157`. The finding is real but latent, and is
 reported at that severity rather than the one I first assumed.
+
+## Corrections from the remediation pass (2026-07-20)
+
+The review above was written without a compiler, as its method note states.
+Building and running the two experiments it proposed confirmed finding 1's
+defect but contradicted two statements about its *consequence*. Both are
+recorded here rather than edited into the text above, so the review stays the
+artifact it was and the correction is attributable and dated. A wrong finding
+is worse than no finding, and the same standard applies to a wrong
+consequence.
+
+**Correction 1: the divergence was a hard failure, not silently different
+bytes.** The review predicted that `missions/leo_ekf_consistency.toml` would
+produce two different `run.srlog` files depending on the entry point. It does
+not. `check_sensor_decls()` (`cpp/src/srlog_writer.cpp:152-170`) requires the
+declared sensor array to be a subsequence of the canonical vocabulary *in
+canonical order*, and rejects anything else. For any sensor set whose
+alphabetical order differs from its canonical order, the alphabetical order is
+by construction not a canonical subsequence, so the writer refuses it.
+Reproduced with the pre-fix expression restored verbatim:
+
+```
+batch   run.srlog sha256: 317e43abd6e4cbd3891056ff2ad426ca960906d56a914f7599b2c48c0f0d0962
+batch header gnc.sensors : ['imu', 'startracker', 'navfix', 'altimeter']
+stepped run RAISED (ValueError): SRLOG writer: sensor kind 'imu' is
+  duplicated or out of canonical order; declare a subset of {imu,
+  startracker, sunsensor, navfix, altimeter, camera} in that order
+```
+
+The real defect is therefore that **the FR-24 stepping API did not work at all
+on any multi-sensor mission whose sensor set is not already in canonical
+order**, including the phase's flagship EKF mission. That is a worse
+availability defect than the review described and a better safety one: the
+failure was loud, and no corrupt or mislabelled log was ever produced.
+
+**Correction 2: the EKF's update order does not depend on the sensor list
+order.** The review states that the ordering divergence would give "a
+genuinely different state trajectory" because the filter "folds its three
+aiding updates in list order". It does not. `ErrorStateEkf::update()`
+(`cpp/src/gnc/ekf.cpp:174-194`) applies its updates from named members of
+`GncInput` in a hardcoded sequence — nav fix, star tracker, altimeter — which
+is the order Chapter `ch:ekf` documents as normative and is independent of
+`cfg.gnc.sensors`. The normativity comment the review cites is correct about
+*why* the order is pinned; it is pinned in the filter, not inherited from the
+configuration. The reachable consequences of the ordering divergence were the
+header's declared sensor array and the `sensor_id` label, both of which the
+writer guard above converts into a refusal.
+
+Confirming this in the other direction: the batch hash is unchanged by the
+fix (`317e43ab...` both before and after), because `star run` was already
+passing the canonical order. The remedy moved only the stepping path.
+
+**Confirmed as described.** Findings 2 and 3 reproduced exactly as predicted
+once built. With the bound checks reverted, a Python component declaring
+`innov_max_dim() -> 1` and returning a six-wide innovation, and one whose
+`state_dim()` grows mid-run, both abort the process with
+`0xC0000374` (`STATUS_HEAP_CORRUPTION`) under MSVC release; a short `s_upper`
+is a silent out-of-bounds read that completes the run. Finding 4 reproduced as
+described.
