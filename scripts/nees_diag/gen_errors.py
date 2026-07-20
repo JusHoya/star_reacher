@@ -30,7 +30,10 @@ from pathlib import Path
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT / "python"))
+# star_reacher is imported from the INSTALLED package, never from
+# REPO_ROOT/python: the source tree carries no compiled _core, so putting
+# it on sys.path shadows the wheel and makes every core-backed call in
+# these diagnostics fail with CoreMissingError.
 sys.path.insert(0, str(REPO_ROOT / "tests" / "python"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
