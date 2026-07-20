@@ -1,6 +1,6 @@
 # Provenance manifest for the Phase 6 independent-reference set (schema in
 # tests/golden/README.md). This directory holds NumPy reference implementations
-# of the quantities Phase 6 exit criteria 1, 6, 7, and 9 gate, plus their
+# of the quantities Phase 6 exit criteria 1, 2, 6, 7, and 9 gate, plus their
 # consuming pytests under tests/python/test_refs_*.py. It commits no numeric
 # value files: every reference number is either computed live from a cited
 # formula or generated from a seeded synthetic signal whose coefficients are
@@ -24,6 +24,14 @@ the chapters -- the normative specification -- are the only implementation-side
 input. Where a chapter is ambiguous the ambiguity is recorded in the module
 docstring and the reading justified from the cited source, rather than resolved
 by inspecting code.
+
+ONE MODULE IS EXEMPT, AND SAYS SO. pd_attitude.py cannot claim blindness in
+that sense: the PD law's normative statement is a specification comment carried
+in the implementation's own header, so the specification and the implementation
+share a file. Its entry below records what it does and does not read, and
+anchors it on the mpmath golden set -- produced by neither implementation --
+rather than on a claim of independent derivation. The exemption is named here
+so the blanket wording above is not read as covering it.
 
 DEPENDENCIES. NumPy and the Python standard library only. SciPy is deliberately
 NOT imported even where it is installed, so the references remain usable under
@@ -333,4 +341,68 @@ The seeds in the single-ensemble gate tests are pinned deliberately: a two-sided
 95 % interval rejects about one correct ensemble in twenty by construction, so a
 seeded gate is the only form that is both meaningful and reproducible. The
 coverage tests are what establish the rejection rate is the nominal one.
+"""
+
+[[file]]
+name = "pd_attitude.py"
+source = """
+Chapter ch:gnc-builtin: the quaternion error of equation eq:gnc:deltaq, the
+short-path sign term of eq:gnc:sign, the commanded-rate resolution through the
+error DCM of eq:gnc:werr, the per-axis proportional-derivative law of
+eq:gnc:pd, and the symmetric per-axis saturation of eq:gnc:sat, with the
+quaternion-to-DCM of eq:notation:quat2dcm from Chapter ch:notation.
+"""
+citation = """
+Wie, B., Weiss, H. and Arapostathis, A., "Quaternion Feedback Regulator for
+Spacecraft Eigenaxis Rotations", Journal of Guidance, Control, and Dynamics
+12(3), 1989, pp. 375-380 (references.bib key wie1989), the source
+Chapter ch:gnc-builtin cites for the -k sign(dq_0) dq_vec unwinding form;
+Markley, F. L. and Crassidis, J. L., 2014 (key markley2014) for the attitude
+algebra, via Chapter ch:notation. Per-axis symmetric saturation is a project
+definition (PRD FR-25, Phase 6 exit criterion 2).
+"""
+generation = """
+Computed live. This module is NOT blind in the sense the other entries here
+are, and the difference is recorded rather than glossed. The PD law's normative
+statement is a specification comment carried in the implementation's own header
+(cpp/include/star/gnc/builtin.hpp), so specification and implementation share a
+file and no reading of the equations can be said to be independent of it. What
+the module does not do is read the C++ function body: the Hamilton product, the
+quaternion-to-DCM, the sign branch and the clamp are written out from the
+equations in NumPy, vectorized over a run of samples, with different
+associativity and loop structure than the scalar per-axis C++ loop.
+
+Its independent anchor is therefore the golden set rather than the
+transcription: tests/golden/gnc/pd_attitude.toml records the 60-digit mpmath
+evaluation of those same equations on bit-identical inputs, produced by
+neither implementation, and covering both branches of eq:gnc:sign (including
+dq_0 exactly zero) and a mixed-saturation case. Validated in
+tests/python/test_gnc_pd_golden.py against every golden case, with the file's
+recorded dq_0 re-derived from the module's own Hamilton product so the
+asserted branch coverage describes the computation actually under test.
+
+Consumed as the criterion-2 gate in two places, which together are the
+criterion's conjunction: test_gnc_pd_golden.py against the mpmath goldens, and
+test_gnc_missions.test_pd_law_python_reimplementation_contract against the
+torques the compiled built-in logs on a closed-loop mission. That mission
+scenario is deliberately non-degenerate -- non-zero commanded rate, an error
+axis not parallel to it, both sign branches, and a saturated transient on
+every axis -- because an earlier attitude-hold fixture satisfied the tolerance
+while leaving eq:gnc:werr, eq:gnc:sign and eq:gnc:sat multiplied by zero.
+"""
+date = "2026-07-19"
+tolerance = """
+Against the goldens: per component |got - expected| <= max(5e-15 * |expected|,
+1e-18), the bound tests/golden/gnc/manifest.toml derives for the C++ consumer
+and which the Python path earns for the same reason -- a handful of binary64
+roundings past the once-rounded 60-digit reference, each ~2.2e-16 relative.
+Saturated components equal the tau_max constant exactly and zero components are
+exact, which the absolute floor covers. The criterion's own figure of 1e-9 N*m
+absolute is asserted alongside it, so the literal wording is checked and not
+merely implied.
+
+Against the compiled core on the mission: the criterion's 1e-9 N*m. Both sides
+evaluate the same equations in binary64 from the same logged inputs, so the
+residual is a rounding-order quantity and the tolerance is not doing the work
+the branch coverage is.
 """

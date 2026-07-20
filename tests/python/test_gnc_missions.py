@@ -9,10 +9,18 @@ contract (< 1e-9 N*m, exit criterion 2), the latency_cycles application
 shift observed through gnc.cmd (exit criterion 8), oracle header stamping,
 and the open-loop/closed-loop pitch-command equality on the ascent mission.
 
+The criterion-2 contract is checked on a purpose-built scenario rather than
+on the reference mission's attitude hold, for the reason set out at
+``_PD_SCENARIO_RATIONALE`` below: the attitude hold satisfies the tolerance
+while leaving three of the law's five equations multiplied by zero. The
+other half of the criterion -- the same Python controller against the
+independent mpmath goldens -- is ``tests/python/test_gnc_pd_golden.py``.
+
 They fail cleanly, never skip, when the core is absent (the project's
 agent-honesty gate).
 """
 
+import sys
 import tomllib
 from pathlib import Path
 
@@ -21,6 +29,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MISSION = REPO_ROOT / "missions" / "leo_attitude_gnc.toml"
+
+sys.path.insert(0, str(REPO_ROOT / "tests" / "refs"))
+import pd_attitude as pd  # noqa: E402
+import quaternions as qref  # noqa: E402
 
 _CORE_MISSING_MESSAGE = (
     "star_reacher._core is not built in this environment. These integration "
@@ -172,58 +184,213 @@ def test_dead_reckoning_tracks_torque_driven_truth(reference_run):
     assert align > 0.99999
 
 
-def test_pd_law_python_reimplementation_contract(reference_run):
-    """Phase 6 exit criterion 2, arithmetic side: an independent Python
-    reimplementation of the documented PD law reproduces the logged applied
-    torques to < 1e-9 N*m across the whole run (latency 0: the applied
-    command IS the cycle's chain output)."""
-    _, run = reference_run
+# --- Exit criterion 2: the non-degenerate PD scenario ---------------------
+
+_PD_SCENARIO_RATIONALE = """
+The committed reference mission holds a fixed attitude, and on it three of the
+PD law's five equations are multiplied by zero: attitude_hold commands zero
+body rate, so eq:gnc:werr's rotation of w_cmd has nothing to rotate; the
+tracking error stays well inside a half turn, so eq:gnc:sign never takes its
+short-path branch; and the 10-degree transient never reaches tau_max, so
+eq:gnc:sat never clamps. A Python reference that dropped any of the three
+reproduced the logged torques exactly, which means no tolerance could have
+separated it.
+
+This scenario is built so each of those three has a measurable effect, driving
+the FR-24 external-guidance seam so the commanded attitude and rate are the
+driver's to choose while the compiled built-in pd_attitude component still
+computes every torque:
+
+* a constant non-zero commanded body rate about _PD_RATE_AXIS, so eq:gnc:werr
+  carries a real vector;
+* an initial commanded attitude offset of _PD_OFFSET_RAD about a DIFFERENT
+  axis, _PD_OFFSET_AXIS, so the error quaternion is not parallel to the
+  commanded rate. Parallel axes would leave C(dq) w_cmd == w_cmd and make both
+  the rotation and its transpose invisible -- the trap a single-axis slew falls
+  into;
+* the commanded quaternion expressed ANTIPODALLY for the first half of the run.
+  The attitude commanded is physically identical either way, so a controller
+  that honours eq:gnc:sign produces the same torque from both representations
+  while one that omits the branch reverses it. That is the defect the equation
+  exists to prevent, expressed as a scenario rather than as an assertion;
+* a 60-degree offset against 0.4 N*m/rad gains and a 0.05 N*m authority, so the
+  opening transient saturates every axis and eq:gnc:sat clamps for a
+  substantial run of cycles.
+
+test_pd_scenario_exercises_every_equation asserts each of these properties
+holds, so the gate cannot quietly return to being degenerate.
+"""
+
+_PD_CYCLE_S = 0.1
+_PD_OFFSET_AXIS = np.array([1.0, 2.0, -2.0]) / 3.0
+_PD_OFFSET_RAD = np.deg2rad(60.0)
+_PD_RATE_AXIS = np.array([2.0, -1.0, -2.0]) / 3.0
+_PD_RATE_RADPS = 0.02
+# The representation flip lands mid-run so both branches cover a comparable
+# number of cycles, with the negative branch holding the saturated transient.
+_PD_SIGN_FLIP_CYCLE = 300
+
+
+def _pd_external_guidance_mission(tmp_path):
+    """The reference mission with the guidance slot driven externally.
+
+    Written into tmp_path and run from the repository root, exactly as the
+    other mission-variant tests do, so the relative vehicle path resolves and
+    the repository tree is untouched.
+    """
+    text = MISSION.read_text(encoding="utf-8")
+    head, sep, tail = text.partition("[gnc.guidance]")
+    assert sep, "reference mission no longer has a [gnc.guidance] table"
+    # Everything from [gnc.guidance] to the next top-level table is the
+    # attitude-hold block; the external slot takes no parameters, so the block
+    # is replaced wholesale rather than patched (a leftover q_cmd would be an
+    # unknown key for the external component and the validator would reject it).
+    lines = tail.split("\n")
+    rest = ""
+    for index, line in enumerate(lines):
+        if line.startswith("[") and index > 0:
+            rest = "\n".join(lines[index:])
+            break
+    out = tmp_path / "pd_nondegenerate.toml"
+    out.write_text(
+        head + '[gnc.guidance]\ncomponent = "external"\n\n' + rest, encoding="utf-8"
+    )
+    return out
+
+
+def _pd_command(cycle, q_start):
+    """The commanded attitude and body rate at one control cycle.
+
+    A pure function of the cycle index, so the run is reproducible without the
+    driver reading any observation back out of the simulation.
+    """
+    q = qref.quat_mul(
+        q_start, qref.quat_from_rotation_vector(_PD_OFFSET_RAD * _PD_OFFSET_AXIS)
+    )
+    q = qref.quat_mul(
+        q,
+        qref.quat_from_rotation_vector(
+            _PD_RATE_RADPS * cycle * _PD_CYCLE_S * _PD_RATE_AXIS
+        ),
+    )
+    if cycle < _PD_SIGN_FLIP_CYCLE:
+        q = -q  # the antipodal representation of the same attitude
+    return q, _PD_RATE_RADPS * _PD_RATE_AXIS
+
+
+@pytest.fixture(scope="module")
+def pd_scenario(tmp_path_factory):
+    """Drive the non-degenerate criterion-2 scenario; return its log and gains."""
+    _core_or_fail()
+    import os
+
+    from star_reacher import load
+    from star_reacher.sim import Sim
+
+    tmp = tmp_path_factory.mktemp("pd_nondegenerate")
+    mission_path = _pd_external_guidance_mission(tmp)
+    config = tomllib.loads(mission_path.read_text(encoding="utf-8"))
+    q_start = np.array(config["gnc"]["nav"]["q0"])
+
+    cwd = os.getcwd()
+    os.chdir(REPO_ROOT)
+    try:
+        sim = Sim(mission_path, tmp / "run", force=True)
+        sim.reset()
+        cycle = 0
+        while not sim.done():
+            q_cmd, w_cmd = _pd_command(cycle, q_start)
+            sim.step(
+                {
+                    "q_i2b": list(q_cmd),
+                    "omega_b_radps": list(w_cmd),
+                    "valid": True,
+                }
+            )
+            cycle += 1
+    finally:
+        os.chdir(cwd)
+    return load(tmp / "run" / "run.srlog"), config
+
+
+def _pd_scenario_arrays(pd_scenario):
+    """The controller's logged inputs and output, as the reference reads them."""
+    run, config = pd_scenario
     est = run.groups["nav.est"]["x_hat"]
     cmd = run.groups["gnc.cmd"]
+    control = config["gnc"]["control"]
+    return {
+        "q_est": est[:, :4],
+        "w_est": est[:, 4:],
+        "q_cmd": cmd["q_cmd_i2b"],
+        "w_cmd": cmd["w_cmd_b_radps"],
+        "logged_tau": cmd["tau_b_nm"],
+        "kp": np.array(control["kp_nm_per_rad"]),
+        "kd": np.array(control["kd_nm_per_radps"]),
+        "tau_max": np.array(control["tau_max_nm"]),
+    }
 
-    mission = tomllib.loads(MISSION.read_text(encoding="utf-8"))
-    kp = np.array(mission["gnc"]["control"]["kp_nm_per_rad"])
-    kd = np.array(mission["gnc"]["control"]["kd_nm_per_radps"])
-    tau_max = np.array(mission["gnc"]["control"]["tau_max_nm"])
 
-    q_est = est[:, :4]
-    w_est = est[:, 4:]
-    q_cmd = cmd["q_cmd_i2b"]
-    w_cmd = cmd["w_cmd_b_radps"]
+def test_pd_law_python_reimplementation_contract(pd_scenario):
+    """Phase 6 exit criterion 2, mission side: the Python controller of
+    ``tests/refs/pd_attitude`` reproduces the compiled built-in's logged
+    applied torques to < 1e-9 N*m across the whole run (latency 0: the applied
+    command IS the cycle's chain output).
 
-    # Hamilton product conj(q_cmd) (x) q_est, scalar-first (D-7): the
-    # conjugate keeps the scalar and negates the vector part
-    # (eq:gnc:deltaq; no renormalization of dq).
-    pw = q_cmd[:, 0]
-    px = -q_cmd[:, 1]
-    py = -q_cmd[:, 2]
-    pz = -q_cmd[:, 3]
-    qw, qx, qy, qz = q_est[:, 0], q_est[:, 1], q_est[:, 2], q_est[:, 3]
-    dq0 = pw * qw - px * qx - py * qy - pz * qz
-    dqx = pw * qx + px * qw + py * qz - pz * qy
-    dqy = pw * qy - px * qz + py * qw + pz * qx
-    dqz = pw * qz + px * qy - py * qx + pz * qw
-    s = np.where(dq0 >= 0.0, 1.0, -1.0)  # sign(0) = +1 (eq:gnc:sign)
-    dq_vec = np.stack([dqx, dqy, dqz], axis=1)
-    # eq:gnc:werr: resolve the commanded rate into the estimated body frame
-    # through the error DCM C(dq) (quaternion-to-DCM, eq:notation:quat2dcm;
-    # dq is cmd-to-body). Built row by row from the dq components.
-    ww, xx, yy, zz = dq0 * dq0, dqx * dqx, dqy * dqy, dqz * dqz
-    c = np.empty((len(dq0), 3, 3))
-    c[:, 0, 0] = ww + xx - yy - zz
-    c[:, 0, 1] = 2.0 * (dqx * dqy + dq0 * dqz)
-    c[:, 0, 2] = 2.0 * (dqx * dqz - dq0 * dqy)
-    c[:, 1, 0] = 2.0 * (dqx * dqy - dq0 * dqz)
-    c[:, 1, 1] = ww - xx + yy - zz
-    c[:, 1, 2] = 2.0 * (dqy * dqz + dq0 * dqx)
-    c[:, 2, 0] = 2.0 * (dqx * dqz + dq0 * dqy)
-    c[:, 2, 1] = 2.0 * (dqy * dqz - dq0 * dqx)
-    c[:, 2, 2] = ww - xx - yy + zz
-    w_cmd_b = np.einsum("kij,kj->ki", c, w_cmd)
-    tau = -kp * s[:, None] * dq_vec - kd * (w_est - w_cmd_b)  # eq:gnc:pd
-    tau = np.clip(tau, -tau_max, tau_max)  # eq:gnc:sat
+    The same function is evaluated against the independent mpmath goldens by
+    ``tests/python/test_gnc_pd_golden.py``; the two together are the
+    criterion's conjunction. The scenario is the one _PD_SCENARIO_RATIONALE
+    describes, chosen so every equation the law names is exercised.
+    """
+    a = _pd_scenario_arrays(pd_scenario)
+    tau = pd.pd_torque(
+        a["q_cmd"], a["q_est"], a["w_cmd"], a["w_est"], a["kp"], a["kd"], a["tau_max"]
+    )
+    worst = float(np.max(np.abs(tau - a["logged_tau"])))
+    assert worst < 1e-9, (
+        f"worst Python-versus-core commanded-torque residual {worst:.6e} N*m "
+        f"exceeds the exit-criterion-2 gate of 1e-9 N*m"
+    )
 
-    assert np.max(np.abs(tau - cmd["tau_b_nm"])) < 1e-9
+
+def test_pd_scenario_exercises_every_equation(pd_scenario):
+    """The criterion-2 scenario is not degenerate on any of the five equations.
+
+    Without this the gate above could pass while three of the equations it
+    claims to cover were multiplied by zero, which is precisely how the
+    previous fixture failed. Each assertion names the equation it protects;
+    the thresholds sit well inside the measured values so a legitimate model
+    change does not trip them, while any return to a degenerate fixture does.
+    """
+    a = _pd_scenario_arrays(pd_scenario)
+    dq = pd.error_quaternion(a["q_cmd"], a["q_est"])
+    dq0 = dq[:, 0]
+    cycles = len(dq0)
+
+    # eq:gnc:werr -- a commanded rate to rotate at all.
+    assert np.abs(a["w_cmd"]).max() > 1e-3
+
+    # eq:gnc:werr -- and an error DCM far enough from the identity that the
+    # rotation changes the answer, and far enough from symmetric that
+    # transposing it changes the answer too.
+    c = pd.error_dcm(dq)
+    assert np.abs(c - np.eye(3)).max() > 0.5
+    assert np.abs(c - np.transpose(c, (0, 2, 1))).max() > 0.5
+
+    # eq:gnc:sign -- both branches, each over a substantial run of cycles.
+    assert int(np.sum(dq0 < 0.0)) > cycles // 8
+    assert int(np.sum(dq0 >= 0.0)) > cycles // 8
+
+    # eq:gnc:sat -- the clamp actually catches, on a real fraction of cycles.
+    unclamped = pd.pd_torque(
+        a["q_cmd"], a["q_est"], a["w_cmd"], a["w_est"], a["kp"], a["kd"], None
+    )
+    clamped = np.any(np.abs(unclamped) > a["tau_max"], axis=1)
+    assert int(clamped.sum()) > cycles // 20
+
+    # eq:gnc:pd -- every axis carries torque, so no per-axis gain path is
+    # multiplied by zero.
+    assert np.all(np.abs(a["logged_tau"]).max(axis=0) > 1e-3)
 
 
 def test_latency_two_cycles_shifts_application(tmp_path):
