@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.26)
 
 # Version is kept in sync with pyproject.toml [project] version manually
 # (Phase 1 contract: both files carry this note).
-project(star_reacher VERSION 0.5.0 LANGUAGES CXX)
+project(star_reacher VERSION 0.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
