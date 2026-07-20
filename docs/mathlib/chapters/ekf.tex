@@ -849,8 +849,11 @@ aggregates.
       passing, still exits 0, and no diagnostic line carries the words
       \texttt{PASS} or \texttt{FAIL}. \\
     \testid{test_cli_ensemble_over_directory} &
-      The command evaluates an ensemble over a directory of runs, the form
-      the exit-criterion-3 driver will invoke. \\
+      The command evaluates an ensemble over a directory of runs. This is
+      the sanctioned command-line form of the ensemble gate, but it is not
+      the path exit criterion~3 takes: that driver derives its bounds
+      in-process and never invokes the CLI, as the note following
+      Table~\ref{tab:ekf:validation-filter} records. \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -872,7 +875,10 @@ aggregates.
       gate~\eqref{eq:ekf:ensemble} at $n = 15$: the ensemble average is
       inside the two-sided 95\,\% bounds. Bounds are evaluated with
       the project's exact quantile function, not the
-      approximation~\eqref{eq:ekf:wh}. \\
+      approximation~\eqref{eq:ekf:wh}. As of this commit the same test also
+      asserts a second, weaker condition --- that at least 95\,\% of epochs
+      individually fall inside those bounds --- which is \emph{not} part of
+      the criterion and is unsound; see the note below. \\
     \testid{test_ensemble_nis_gate_passes} &
       Exit criterion~3, NIS half, parameterized over the three aiding
       sensors: each sensor's ensemble NIS~\eqref{eq:ekf:nis} lies inside
@@ -976,6 +982,36 @@ aggregates.
     \bottomrule
   \end{tabular}
 \end{table}
+
+\paragraph{Two notes on the criterion-3 driver, recorded as of this
+commit.} First, the driver derives the
+bounds~\eqref{eq:ekf:ensemble} in-process from
+\texttt{star\_reacher.chi2} rather than calling
+\texttt{consistency.ensemble\_gate()}, so the sanctioned instrument's
+coverage logic --- including its declaration that NEES epochs are
+correlated --- never runs on the criterion-3 path. The bounds it computes
+are nonetheless the correct ones; the concern is that two implementations
+of one gate now exist.
+
+Second, and more consequentially,
+\testid{test_ensemble_nees_gate_passes} asserts, alongside the headline
+bound the criterion states, that at least 95\,\% of epochs individually
+fall inside those bounds. This chapter's own instrument documents that rule
+as invalid: the count of epochs inside is $\mathrm{Binomial}(n, 0.95)$
+under the null, so a threshold at 95\,\% tests that count against its own
+mean and a correct filter meets it about half the time. For NEES the
+situation is worse than a coin flip, because the epoch-mean series has an
+integrated autocorrelation time of roughly 30 epochs and the count-inside
+is correspondingly over-dispersed. The assertion is green today only
+because the seeds are pinned and the run is bit-deterministic; any
+legitimate change that perturbs the last bits --- a compiler change, a
+platform with different rounding, a model fix --- flips it with probability
+near one half, and it would present as an EKF consistency failure when
+nothing is wrong. It is not part of exit criterion~3 and should be deleted
+or replaced with \texttt{consistency.inside\_count\_threshold} applied
+through \texttt{ensemble\_gate()} with epochs declared correlated. That
+change is in progress and this note should be re-checked against the test
+before it is relied upon.
 
 \section{References}
 \label{sec:ekf:references}

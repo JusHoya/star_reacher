@@ -23,11 +23,13 @@ is the substrate for the world-model and AI/ML navigation work of the
 later phases: an external renderer or a learned perception model
 consumes the emitted pose stream and produces images or measurements,
 while the core remains small and deterministic. Everything emitted is
-truth: Phase~6 exit criterion~7 gates the pose and intrinsics channels
-\emph{bit-exactly} against the \texttt{truth} channels and the resolved
-configuration, and gates the landmark projections against an independent
-NumPy pinhole script to $< 10^{-6}$ pixels --- which is why every frame,
-axis, and pixel convention in this chapter is stated exactly. Direction
+truth: Phase~6 exit criterion~7 gates the pose channels \emph{bit-exactly}
+against the \texttt{truth} channels, and gates the landmark projections
+against an independent NumPy pinhole script to $< 10^{-6}$ pixels ---
+which is why every frame, axis, and pixel convention in this chapter is
+stated exactly. The criterion also names the intrinsics, which the
+\texttt{sensors.camera} record layout does not carry; that clause is
+uncovered, and Section~\ref{sec:camera:validation} records why. Direction
 outputs carry the FR-23 velocity-aberration correction of
 Chapter~\ref{ch:sensors-optical}, applied through the same shared code
 path.
@@ -100,11 +102,18 @@ a right-handed triad. The chain from inertial to camera is
 \end{equation}
 with $\vv{r}^{I}$, $\quat{q}_{i2b}$ the truth state (composition per
 equation~\eqref{eq:notation:quatcomp}). The emitted pose channels are
-$\vv{r}^{I}$ and $\quat{q}_{i2b}$ themselves --- byte-identical to the
-\texttt{truth} group (exit criterion~7) --- together with the
-configuration constants $\quat{q}_{b2c}$, $\vv{r}_{\mathrm{cam}}^{B}$,
-and the intrinsics, echoed once in the log header so a consumer can
-compose equation~\eqref{eq:camera:pose} without the mission file.
+$\vv{r}^{I}$ and $\quat{q}_{i2b}$ themselves, byte-identical to the
+\texttt{truth} group (exit criterion~7). The constants
+$\quat{q}_{b2c}$, $\vv{r}_{\mathrm{cam}}^{B}$, and the intrinsics are
+\emph{not} carried in the log: a consumer reconstructing
+equation~\eqref{eq:camera:pose} reads them from the resolved
+configuration, which is where \texttt{docs/formats/srlog\_v1.md} places
+them. An earlier revision of this chapter stated that they were echoed
+once in the log header; that echo was never implemented, and verifying
+against a run confirms no intrinsic, extrinsic, or landmark value appears
+anywhere in the header. Adding it would be a log-format change. This is
+the direct cause of the uncovered intrinsics clause recorded after the
+evidence table.
 
 \subsection{Pinhole intrinsics}
 \label{sec:camera:intrinsics}
@@ -260,9 +269,13 @@ Binding implementation notes for the Phase~6 module:
     \texttt{eq:camera:occlusion} verbatim.
   \item \textbf{Bit-exact pose emission.} The pose channels are copies
     of the same doubles the \texttt{truth} writer receives --- not
-    recomputed values --- so exit criterion~7's bit-exactness clause is
-    satisfied by construction; intrinsics and extrinsics are emitted
-    from the resolved configuration verbatim.
+    recomputed values --- so exit criterion~7's \emph{pose} bit-exactness
+    clause is satisfied by construction. The intrinsics and the extrinsics
+    are taken from the resolved configuration verbatim, without
+    recomputation, but they are not written to the record stream: they are
+    configuration, and the \texttt{sensors.camera} layout below carries no
+    channel for them. The criterion's intrinsics clause is uncovered for
+    that reason; see the discussion following the evidence table.
   \item \textbf{Evaluation order.} Per sample: pose copy; per landmark:
     equations~\eqref{eq:camera:landmark}--\eqref{eq:camera:proj}, then
     the four visibility tests in the stated order with short-circuit
@@ -289,7 +302,7 @@ The module implementing this chapter is
 
 \begin{table}[htbp]
   \centering
-  \caption{Validation evidence for the camera hook (doctest,
+  \caption{Validation evidence for the camera hook: core (doctest,
     \texttt{cpp/tests/test\_sensors.cpp}).}
   \label{tab:camera:validation}
   \begin{tabular}{lp{8.2cm}}
@@ -313,27 +326,93 @@ The module implementing this chapter is
       The camera kind constructs from the factory at its configured rate
       and reports the \texttt{sensors.camera} group name; non-positive
       intrinsics are refused at construction. \\
-    \testid{gnc_cycle_double_run_is_byte_identical} &
-      Exit criterion~1 bit identity at the whole-file level: two runs of
-      the same seeded scenario on the same binary produce byte-identical
-      logs, covering the camera channels. The hook consumes no draws, so
-      its contribution is deterministic by construction. \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-Exit criterion~7's bit-exactness clause is satisfied \emph{by
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the camera hook: in-loop behavior and
+    the blind pinhole re-gate (pytest,
+    \texttt{tests/python/test\_p6\_optical\_gates.py} and
+    \texttt{test\_gnc\_missions.py}).}
+  \label{tab:camera:validation-py}
+  \begin{tabular}{lp{8.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{test_full_sensor_suite_reruns_bit_identical} &
+      Exit criterion~1 bit identity, camera half. Two seeded runs of the
+      reference mission with all six FR-23 sensor kinds declared agree on
+      the whole-file SHA-256 and then channel by channel under array bit
+      equality, \texttt{sensors.camera} among them. The hook consumes no
+      draws, so its contribution is deterministic by construction; the row
+      pins that the surrounding sensors' draw schedules do not perturb it. \\
+    \testid{test_landmark_pixels_match_independent_reference} &
+      Exit criterion~7's pixel clause. Every logged visible-landmark
+      $(u, v)$ matches \texttt{tests/refs/pinhole.py} --- a NumPy
+      transcription of equations~\eqref{eq:camera:pose}
+      and~\eqref{eq:camera:landmark}--\eqref{eq:camera:proj} written from
+      this chapter alone, importing nothing from the core --- to
+      $< 10^{-6}$ pixels, on a fixture with $f_x \ne f_y$, an off-axis
+      principal point, a nonzero mount station, and a non-identity mount
+      rotation, so a transposed convention or a shared scale cannot
+      hide. \\
+    \testid{test_landmarks_are_actually_visible} &
+      Non-vacuity of the row above: more than half of all landmark
+      projections pass the reference's own visibility tests, so the pixel
+      gate is not satisfied by off-sensor numbers no consumer would
+      read. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Exit criterion~7's pose bit-exactness clause is satisfied \emph{by
 construction} rather than by a test tolerance: the emitted pose channels
 are assignments of the same \texttt{double} values the truth writer
 receives, never recomputed (implementation note 2), so no arithmetic
-exists that could differ. The remaining criterion-7 clause --- the
-independent NumPy recomputation of
-equations~\eqref{eq:camera:pose} and
-\eqref{eq:camera:landmark}--\eqref{eq:camera:proj} matching every logged
-visible-landmark $(u, v)$ to $< 10^{-6}$ pixels on a scenario with an
-off-axis mount and $f_x \ne f_y$ --- is outstanding, as is the
-aberration-consistency check pairing the camera Sun vector against the
-sun-sensor direction.
+exists that could differ. A reader should scope what that buys. Because
+both sides of \testid{test_camera_pose_channels_are_bit_exact_truth} are
+read from one log written by one run, the assertion compares a value
+against a copy of itself, and it cannot fail on any arithmetic ground. It
+retains real power against two specific defects, both live on this
+fixture: a mis-indexed truth row, and a hook that logged the
+mount-offset-shifted station $\vv{r}_{\mathrm{cam}}$ in place of $\vv{r}$,
+which differ here because $\vv{r}^{B}_{\mathrm{cam}} = [0.5, -0.25,
+0.125]\,\unit{\metre}$ is nonzero. It is adequate for the clause as the
+criterion phrases it, and it proves less than the phrase ``bit-exact''
+invites.
+
+The pixel clause of criterion~7 is closed by the two pytest rows above.
+The following remain outstanding:
+\begin{itemize}
+  \item \textbf{Intrinsics clause of exit criterion~7.} The criterion
+    requires the camera hook's pose \emph{and intrinsics} to equal the
+    \texttt{truth} channels bit-exactly. There is no intrinsics channel to
+    compare: the normative \texttt{sensors.camera} record carries $t_s$,
+    $\vv{r}$, $\quat{q}_{i2b}$, and the $2L$ interleaved pixel coordinates
+    only, and the criterion-7 gate reads $f_x$, $f_y$, $c_x$, $c_y$ from
+    the mission file it wrote itself, so no intrinsic value is ever
+    compared against a core output. The clause is therefore uncovered, not
+    merely untabled. The gap is a specification one and predates the tests:
+    Section~\ref{sec:camera:pose} previously asserted that the intrinsics
+    and extrinsics were echoed once in the log header, and no such echo was
+    ever implemented --- verified against a run, no intrinsic, extrinsic,
+    or landmark value appears anywhere in the header. Closing the clause
+    requires either implementing that echo and gating it, which is a
+    log-format change, or amending the criterion to drop the clause on the
+    recorded ground that intrinsics are configuration rather than a logged
+    channel. The intrinsics themselves
+    are not unexercised --- they enter every pixel the clause above gates,
+    on a fixture chosen so $f_x$, $f_y$, $c_x$, and $c_y$ are separately
+    resolvable --- but that is agreement against a reference, not bit
+    equality against a channel.
+  \item \textbf{Aberration consistency across hooks.} Pairing the camera
+    Sun vector of equation~\eqref{eq:camera:sunvec} against the sun-sensor
+    direction of Chapter~\ref{ch:sensors-optical} on one run, confirming
+    both resolve the same apparent direction through the shared aberration
+    path. No committed test compares the two.
+\end{itemize}
 
 \paragraph{Scope of the implemented hook.} Landmarks are body-fixed points
 on the \emph{central} body, which is the surface-relative
@@ -356,8 +435,11 @@ coordinates only. The Sun vector of equation~\eqref{eq:camera:sunvec} is
 computed through the shared aberration path and exposed to in-process
 consumers, and the per-landmark visibility flags likewise; extending the
 record to carry them would be a log-format change, which this
-implementation deliberately does not make. Exit criterion~7 gates the pose,
-intrinsics, and landmark pixels, all of which the current layout carries.
+implementation deliberately does not make. The same is true of the
+intrinsics, which ride in the resolved configuration rather than the record
+stream. Exit criterion~7 gates the pose, the intrinsics, and the landmark
+pixels; the current layout carries the first and the third, and the
+intrinsics clause is uncovered for the reason recorded above.
 
 \section{References}
 \label{sec:camera:references}
