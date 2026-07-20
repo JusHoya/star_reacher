@@ -415,7 +415,9 @@ aberration function).
 \begin{table}[htbp]
   \centering
   \caption{Validation evidence for the optical sensors (doctest,
-    \texttt{cpp/tests/test\_sensors.cpp}).}
+    \texttt{cpp/tests/test\_sensors.cpp}; pytest,
+    \texttt{tests/python/test\_p6\_optical\_gates.py} and
+    \texttt{test\_gnc\_missions.py}).}
   \label{tab:optical:validation}
   \begin{tabular}{lp{8.2cm}}
     \toprule
@@ -457,30 +459,88 @@ aberration function).
       Both optical kinds construct from the factory at their configured
       rate and report their own \texttt{sensors.*} group names, so a
       sensor and its log declaration cannot drift apart. \\
-    \testid{gnc_cycle_double_run_is_byte_identical} &
-      Exit criterion~1 bit identity at the whole-file level: two runs of
-      the same seeded scenario on the same binary produce byte-identical
-      logs, covering the optical sensor channels. \\
+    \testid{test_full_sensor_suite_reruns_bit_identical} &
+      Exit criterion~1 bit identity, optical half. Two seeded runs of the
+      reference mission with all six FR-23 sensor kinds declared --- the
+      \texttt{sensors.startracker} and \texttt{sensors.sunsensor}
+      declarations among them, both carrying nonzero sigmas, so the noise
+      draws of equation~\eqref{eq:optical:noiseq} are live --- agree on the
+      whole-file SHA-256 and then channel by channel under array bit
+      equality, so each optical stream is pinned individually. \\
+    \testid{test_aberration_matches_independent_reference} &
+      Exit criterion~9. The logged apparent Sun directions match
+      \texttt{tests/refs/aberration.py} --- a NumPy transcription of
+      equations~\eqref{eq:optical:beta}--\eqref{eq:optical:abmag} written
+      from this chapter alone, importing nothing from the core and
+      deriving its own constants --- across 300 records of a committed
+      ephemeris-backed scenario. Measured worst residual
+      \qty{2.576e-8}{\mas} against the criterion's \qty{1}{\mas}; see the
+      tolerance note below. \\
+    \testid{test_aberration_signal_dominates_the_gate} &
+      Non-vacuity of the row above: the aberration displacement the gate
+      resolves is really present, between \num{20000} and
+      \qty{21000}{\mas} on this geometry, so agreement at the gate is a
+      statement about the correction rather than about its absence. \\
+    \testid{test_star_tracker_statistic_passes_the_reference_gate} &
+      The criterion-1 star-tracker statistic re-gated end to end through
+      \texttt{tests/refs/sensor\_stats.py}, which runs the aberration
+      factor~\eqref{eq:optical:qab} backwards out of the logged quaternion.
+      A wrong $\quat{q}_{\mathrm{ab}}$ appears here as a mean offset rather
+      than as noise --- coverage the C++ gate cannot supply, since it fixes
+      $\vv{v} = \vv{0}$ and so composes against the identity. \\
     \bottomrule
   \end{tabular}
 \end{table}
 
+\paragraph{What the criterion-9 tolerance is, and what it is not.} The
+\qty{1}{\mas} figure is the \emph{requirement} exit criterion~9 states, not
+a measure of what the implementation achieves and not a physical error
+budget. Both sides of the comparison evaluate the same normative
+equation~\eqref{eq:optical:aberration}, so the residual is an arithmetic
+disagreement between two transcriptions, and the measured worst value is
+\qty{2.576e-8}{\mas} --- some $3.9\times10^{7}$ times inside the gate.
+Setting the assertion at the requirement rather than near the achievable
+agreement has a consequence worth stating plainly: a reference mutation
+that drops the transverse projection from
+equation~\eqref{eq:optical:aberration} (writing $\vv{u} + \vv{\beta}$ for
+$\vv{u} + \vv{\beta} - (\vv{u}\cdot\vv{\beta})\vv{u}$, a change at second
+order only) moves the residual to \qty{0.4696}{\mas} on this fixture and
+therefore survives. It survives because the tolerance is loose relative to
+the achievable agreement, not because \qty{1}{\mas} is forced by anything
+physical; a tolerance anywhere near the measured residual rejects it by
+four orders of magnitude. Tightening the assertion is accordingly a
+tolerance choice available at any time, and is tracked as
+\texttt{KNOWN-ISSUE-P6-2}. As of this commit the committed assertion reads
+\qty{1}{\mas}.
+
+Distinct from the tolerance, and genuinely a modelling choice rather than a
+gate weakness: this chapter declares the first-order
+form~\eqref{eq:optical:aberration} normative, and the gap to the exact
+relativistic form is \qty{0.51}{\mas} at Earth's mean heliocentric speed
+and \qty{0.81}{\mas} once low-Earth-orbit speed is added. Criterion~9
+recomputes the first-order form on both sides deliberately; gating the core
+against the exact form would report a deliberate modelling decision as an
+implementation error. That gap is measured, and asserted against
+assumption~2's own bound, by
+\testid{test_first_order_versus_exact_gap_is_recorded}, which is recorded
+as non-normative for exactly this reason.
+
 Outstanding, recorded rather than tabled:
 \begin{itemize}
-  \item \textbf{Independent aberration recomputation (exit criterion 9).}
-    A NumPy implementation of
-    equations~\eqref{eq:optical:beta}--\eqref{eq:optical:abmag} written
-    from this chapter alone, run against logged truth and ephemeris inputs
-    from a committed scenario, gating agreement at $< \qty{1}{\mas}$. The
-    comparison is first-order form against first-order form: this chapter
-    declares equation~\eqref{eq:optical:aberration} normative, and the gap
-    to the exact relativistic form is \qty{0.51}{\mas} at Earth's mean
-    heliocentric speed and \qty{0.81}{\mas} once low-Earth-orbit speed is
-    added, which would consume most of the \qty{1}{\mas} budget on a
-    formula substitution the chapter does not ask for. The magnitude,
-    direction, and angular law of the implemented formula are covered by
-    the table above; what remains is the independent reimplementation and
-    the in-loop scenario comparison.
+  \item \textbf{Attitude convention inside the criterion-9 gate.} The
+    reference side of \testid{test_aberration_matches_independent_reference}
+    rotates its apparent direction into the body frame with the core's own
+    \texttt{quat\_to\_dcm}, and the residual is an angular separation, which
+    is invariant under a rotation common to both sides. The core DCM
+    therefore cancels exactly and no error in it could be detected there.
+    An independently validated implementation exists at
+    \texttt{tests/refs/quaternions.py} and is already used by the
+    Chapter~\ref{ch:camera} pixel gate; substituting it closes the hole.
+    The convention is not unpinned in the project ---
+    \testid{test_rotation_bindings_match_goldens} gates that same binding
+    against the Chapter~\ref{ch:rotations} goldens to $10^{-15}$ per
+    element --- but it is not pinned \emph{here}, and the criterion-9 row
+    should not be read as evidence for it.
   \item \textbf{Gating geometry.} Deterministic sweeps of the boresight
     across each exclusion boundary and of the rate across
     $\omega_{\max}$, and an umbra transit dropping the sun-sensor flag,

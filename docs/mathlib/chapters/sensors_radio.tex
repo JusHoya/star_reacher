@@ -191,9 +191,15 @@ on the ensemble means:
   \label{eq:radio:bounds}
 \end{equation}
 for $M = 1000$, quantiles evaluated by the Wilson--Hilferty form of
-Chapter~\ref{ch:ekf}, equation~\eqref{eq:ekf:wh}. These are exactly the
-statistics the committed pytest driver computes from the logged
-\texttt{sensors.*} and \texttt{truth} channels; the bias and
+Chapter~\ref{ch:ekf}, equation~\eqref{eq:ekf:wh}. The quoted intervals are
+the $M = 1000$ case, and the criterion's draw count is met by the C++ gate
+\testid{sensors_navfix_altimeter_chi_square_over_1000_draws}. The pytest
+driver recomputes the same statistic~\eqref{eq:radio:chi2} from the logged
+\texttt{sensors.*} and \texttt{truth} channels, but over the $M = 300$
+draws a \qty{60}{\second} mission at \qty{5}{\hertz} yields, against the
+correspondingly wider bounds this same formula gives at that $M$ --- the
+statistic is identical, the interval is not, and the two must not be
+quoted interchangeably. The bias and
 Gauss--Markov terms are pinned separately by deterministic tests (the
 seeded draw values themselves), because a per-run bias makes the
 per-sample statistics of equation~\eqref{eq:radio:chi2} dependent and
@@ -239,7 +245,9 @@ The module implementing this chapter is
 \begin{table}[htbp]
   \centering
   \caption{Validation evidence for the radio-class sensors (doctest,
-    \texttt{cpp/tests/test\_sensors.cpp}).}
+    \texttt{cpp/tests/test\_sensors.cpp}; pytest,
+    \texttt{tests/python/test\_gnc\_missions.py} and
+    \texttt{test\_p6\_optical\_gates.py}).}
   \label{tab:radio:validation}
   \begin{tabular}{lp{8.2cm}}
     \toprule
@@ -266,10 +274,26 @@ The module implementing this chapter is
     \testid{sensors_factory_kind_vocabulary} &
       Both radio kinds construct from the factory at their configured rate
       and report their own \texttt{sensors.*} group names. \\
-    \testid{gnc_cycle_double_run_is_byte_identical} &
-      Exit criterion~1 bit identity at the whole-file level: two runs of
-      the same seeded scenario on the same binary produce byte-identical
-      logs, covering the radio sensor channels. \\
+    \testid{test_full_sensor_suite_reruns_bit_identical} &
+      Exit criterion~1 bit identity, radio half. Two seeded runs of the
+      reference mission with all six FR-23 sensor kinds declared --- the
+      \texttt{sensors.navfix} and \texttt{sensors.altimeter} declarations
+      among them, both carrying nonzero sigmas --- agree on the whole-file
+      SHA-256 and then channel by channel under array bit equality, so both
+      radio streams are pinned individually and not only in aggregate. \\
+    \testid{test_altimeter_statistic_passes_the_reference_gate} &
+      Equation~\eqref{eq:radio:alt} re-gated end to end through
+      \texttt{tests/refs/sensor\_stats.py}, whose truth altitude is
+      recomputed from the logged inertial position through the body-fixed
+      rotation and the WGS84 ellipsoid. The fixture is inclined
+      \qty{45}{\degree} deliberately: on an equatorial orbit the geodetic
+      altitude degenerates to $\norm{\vv{r}} - a$ and the gate could not
+      detect an implementation that never applied the ellipsoid. \\
+    \testid{test_nav_fix_statistics_pass_the_reference_gate} &
+      Equation~\eqref{eq:radio:fix} likewise, with the position and
+      velocity components gated as separate $\chi^2_3$ statistics rather
+      than one $\chi^2_6$, so a fix wired to the wrong truth row cannot be
+      diluted by a healthy companion component. \\
     \bottomrule
   \end{tabular}
 \end{table}

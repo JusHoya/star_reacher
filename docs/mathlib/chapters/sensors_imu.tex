@@ -573,9 +573,14 @@ exact identity, which is itself asserted rather than assumed.
       \texttt{std::invalid\_argument} --- refusal by name rather than a
       stub, so a typo cannot silently enter a run. \\
     \testid{gnc_cycle_double_run_is_byte_identical} &
-      Exit criterion~1 bit identity at the whole-file level: two runs of
-      the same seeded GNC scenario on the same binary produce
-      byte-identical logs, covering the sensor channels. \\
+      Bit identity at the whole-file level: two runs of the same seeded GNC
+      scenario on the same binary produce byte-identical logs. The scenario
+      declares exactly one sensor --- an ideal IMU at \qty{10}{\hertz} with
+      no noise coefficients --- so this row covers the noise-free increment
+      path and the writer, not the stochastic path. Exit criterion~1's
+      every-sensor clause is carried by
+      \testid{test_full_sensor_suite_reruns_bit_identical} in
+      Table~\ref{tab:imu:validation-py}. \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -608,8 +613,9 @@ exact identity, which is itself asserted rather than assumed.
 
 \begin{table}[htbp]
   \centering
-  \caption{Validation evidence for the ideal IMU: in-loop increments
-    (pytest, \texttt{tests/python/}).}
+  \caption{Validation evidence for the ideal IMU: in-loop increments and
+    run-to-run identity (pytest,
+    \texttt{tests/python/test\_gnc\_missions.py}).}
   \label{tab:imu:validation-py}
   \begin{tabular}{lp{7.2cm}}
     \toprule
@@ -621,14 +627,38 @@ exact identity, which is itself asserted rather than assumed.
       the preceding cycle under array bit equality, and $\Delta\vv{v}$ is
       exactly zero --- an accelerometer in free fall reads zero
       (equation~\eqref{eq:imu:specificforce}). \\
+    \testid{test_full_sensor_suite_reruns_bit_identical} &
+      Exit criterion~1's every-sensor clause. Two seeded runs of the
+      reference mission with all six FR-23 sensor kinds declared agree on
+      the whole-file SHA-256, and then channel by channel under array bit
+      equality across every one of the six \texttt{sensors.*} groups, so
+      two groups differing in compensating ways could not hide behind the
+      file hash. The \texttt{sensors.imu} group is included; that mission
+      declares the IMU with a sample rate alone, so the identity it
+      establishes for this chapter is again of the noise-free path. \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-Two items specified by this chapter remain outstanding and are recorded
+Three items specified by this chapter remain outstanding and are recorded
 here rather than tabled, so the evidence tables state only evidence that
 exists:
 \begin{itemize}
+  \item \textbf{Bit identity of the stochastic path (exit criterion 1).}
+    Every committed bit-identity gate that includes an IMU declares it with
+    a sample rate alone. The angle-random-walk draws, the Gauss--Markov
+    recursion~\eqref{eq:imu:gm}, and the quantizer
+    carry~\eqref{eq:imu:quant} therefore sit under no run-to-run identity
+    assertion, and the quantizer carry is the only sensor state in this
+    chapter that persists between samples --- exactly the state a
+    reproducibility defect would live in. Closing this needs
+    \texttt{random\_walk}, \texttt{bias\_instability}, \texttt{bias\_tau\_s},
+    and a nonzero quantizer step added to a bit-identity mission, with the
+    gate shown to go red when the Gauss--Markov state initialization is
+    perturbed. The stochastic terms are covered value-for-value by
+    \testid{sensors_imu_gauss_markov_recursion_and_preset_map} and by the
+    quantizer row of Table~\ref{tab:imu:validation}; what is absent is the
+    identity clause specifically.
   \item \textbf{Gate-preset design (exit criterion 1).} The dispersion
     argument closing Section~\ref{sec:imu:recovery} accounts for the ADEV
     estimator scatter but not for the amplification that
