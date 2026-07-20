@@ -314,13 +314,18 @@ def test_unknown_command_key_raises(tmp_path):
 
 
 def test_reset_rejects_unknown_override(tmp_path):
-    """An override the core would ignore is refused at the boundary."""
+    """An override the core would ignore is refused at the boundary.
+
+    The refusal is what makes a Monte Carlo manifest's per-run ``overrides``
+    entry trustworthy (FR-27): a sweep that silently dropped a dimension
+    would report results for a scenario it never ran.
+    """
     _core_or_fail()
     from star_reacher.sim import Sim, SimError
 
     sim = Sim(MISSION, tmp_path / "override", force=True)
-    with pytest.raises(SimError, match="unknown reset override"):
-        sim.reset(overrides={"gravity": "off"})
+    with pytest.raises(SimError, match="no such key"):
+        sim.reset(overrides={"gravity": 1.0})
 
 
 def test_reset_seed_changes_the_config_hash(tmp_path):
@@ -420,3 +425,136 @@ def test_external_command_changes_the_trajectory(tmp_path):
     assert quiet_rate[2] == pytest.approx(0.0, abs=1e-12)
     # tau_z = 0.02 N*m on I_zz = 11 kg*m^2 for 3.0 s gives ~5.5e-3 rad/s.
     assert pushed_rate[2] > 1e-3
+
+
+# --- FR-24 reset(overrides): the resolved-mission override surface ---------
+
+
+def test_reset_overrides_accept_dotted_paths(tmp_path):
+    """A dotted path reaches any numeric leaf of the resolved mission.
+
+    FR-24 names ``overrides`` without enumerating them, and FR-27 records a
+    per-run ``overrides`` entry in a Monte Carlo manifest, so the surface has
+    to be general enough to express a sweep dimension rather than the two
+    keys a first implementation happened to need.
+    """
+    _core_or_fail()
+    from star_reacher.sim import Sim
+
+    sim = Sim(MISSION, tmp_path / "dotted", force=True)
+    _, base = sim.reset()
+    _, changed = sim.reset(
+        overrides={
+            "mission.duration_s": 5.0,
+            "gnc.control.kp_nm_per_rad": [0.5, 0.5, 0.5],
+        }
+    )
+    assert changed["duration_s"] == 5.0
+    # The override is applied before hashing, so the overridden run is a
+    # distinct, individually reproducible scenario rather than an unrecorded
+    # deviation from the one the hash names.
+    assert changed["config_sha256"] != base["config_sha256"]
+
+
+def test_reset_override_aliases_still_work(tmp_path):
+    """The two bare shorthands predate dotted paths and remain accepted."""
+    _core_or_fail()
+    from star_reacher.sim import Sim
+
+    sim = Sim(MISSION, tmp_path / "alias", force=True)
+    _, info = sim.reset(overrides={"duration_s": 3.0, "latency_cycles": 2})
+    assert info["duration_s"] == 3.0
+
+
+def test_reset_override_preserves_integer_leaves(tmp_path):
+    """An integer leaf stays an integer, so the config bytes stay canonical.
+
+    Letting ``latency_cycles`` become ``2.0`` would change the canonical
+    config JSON -- and therefore config_sha256 -- without changing the run.
+    """
+    _core_or_fail()
+    from star_reacher.sim import Sim
+
+    sim = Sim(MISSION, tmp_path / "intleaf", force=True)
+    _, from_int = sim.reset(overrides={"gnc.latency_cycles": 2})
+    _, from_float = sim.reset(overrides={"gnc.latency_cycles": 2.0})
+    assert from_int["config_sha256"] == from_float["config_sha256"]
+
+
+@pytest.mark.parametrize(
+    "overrides, fragment",
+    [
+        # A path the mission does not already set: the validator never saw it.
+        ({"mission.no_such_key": 1.0}, "no such key"),
+        ({"nope.deeper": 1.0}, "has no 'nope'"),
+        # Structure is not overridable: a component name selects code whose
+        # consequences the mission validator checked and this path cannot.
+        ({"gnc.control.component": "external"}, "only numbers"),
+        ({"mission.name": 3.0}, "only numbers"),
+        # Kind and length must match the leaf being replaced.
+        ({"mission.duration_s": "long"}, "expected a number"),
+        ({"gnc.control.kp_nm_per_rad": [1.0, 2.0]}, "array of 3"),
+        ({"gnc.control.kp_nm_per_rad": 1.0}, "array of 3"),
+    ],
+)
+def test_reset_override_refusals(tmp_path, overrides, fragment):
+    """Every refusal names what was wrong with the override, not just that."""
+    _core_or_fail()
+    from star_reacher.sim import Sim, SimError
+
+    sim = Sim(MISSION, tmp_path / "refuse", force=True)
+    with pytest.raises(SimError, match=fragment):
+        sim.reset(overrides=overrides)
+
+
+def test_out_of_range_override_fails_loudly_in_the_core(tmp_path):
+    """Range is not rechecked here; the core's own checks are the backstop.
+
+    This pins the honest boundary of the override surface: an override can
+    produce a configuration the mission validator never saw, and the run then
+    fails with a named reason rather than propagating something absurd.
+    """
+    _core_or_fail()
+    from star_reacher.sim import Sim
+
+    sim = Sim(MISSION, tmp_path / "range", force=True)
+    with pytest.raises(Exception) as excinfo:
+        sim.reset(overrides={"gnc.control_rate_hz": 0})
+    assert "control_rate_hz" in str(excinfo.value), str(excinfo.value)
+
+
+# --- FR-24 "missing keys hold and are logged" ------------------------------
+
+
+def test_held_command_keys_are_logged_every_cycle(tmp_path):
+    """FR-24: a key omitted from step(commands) holds AND appears in the log.
+
+    The hold half is asserted by test_external_command_applies_and_holds on
+    the observation. This asserts the second half on the artifact that
+    outlives the run: gnc.cmd carries the command as applied on every control
+    cycle, so a held field is written out again rather than being absent from
+    the record for the cycles nobody commanded. Without that, a log reader
+    could not tell a held command from a gap.
+    """
+    _core_or_fail()
+    from star_reacher import load
+    from star_reacher.sim import Sim
+
+    mission_path = _external_control_mission(tmp_path)
+    sim = Sim(mission_path, tmp_path / "heldlog", force=True)
+    sim.reset()
+
+    first = [0.001, -0.002, 0.003]
+    second = [0.004, 0.0, 0.0]
+    sim.step({"torque_b_nm": first})  # cycle 0: commanded
+    sim.step()  # cycle 1: nothing supplied at all
+    sim.step({"torque_b_nm": second})  # cycle 2: commanded
+    sim.step({"valid": True})  # cycle 3: torque_b_nm omitted
+    while not sim.done():
+        sim.step()
+
+    tau = load(tmp_path / "heldlog" / "run.srlog").groups["gnc.cmd"]["tau_b_nm"]
+    assert tau[0] == pytest.approx(first, abs=0.0)
+    assert tau[1] == pytest.approx(first, abs=0.0), "the full hold was not logged"
+    assert tau[2] == pytest.approx(second, abs=0.0)
+    assert tau[3] == pytest.approx(second, abs=0.0), "the partial hold was not logged"

@@ -482,3 +482,125 @@ def test_duplicate_registration_is_refused():
     with pytest.raises(Exception) as excinfo:
         core.register_python_component(name, Trivial)
     assert name in str(excinfo.value)
+
+
+# --- FR-24/FR-25 privileged-truth boundary, probed adversarially -----------
+#
+# FR-24 says truth() is "privileged; never visible to GNC plugins" and FR-25
+# says "truth never appears in GncInput". Reading the loop is not enough to
+# establish that: the interesting question is what a component that is
+# actively trying to obtain truth can reach. These two tests answer it, and
+# they disagree with each other on purpose -- the boundary holds on the input
+# path and is contractual on the analysis-output path, and both halves are
+# pinned here so neither can drift unnoticed.
+
+
+def _make_truth_hunter(core, caught):
+    """A component that tries every route to truth it is offered."""
+
+    class TruthHunter(core.IGncComponent):
+        def __init__(self, cfg):
+            super().__init__()
+            self.q = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+
+        def init(self, ctx):
+            # The init context is configuration and constants; record every
+            # attribute name so a future field carrying truth is noticed.
+            caught["init_attrs"] = sorted(
+                a for a in dir(ctx) if not a.startswith("_")
+            )
+
+        def update(self, inp):
+            caught.setdefault("input_attrs", sorted(
+                a for a in dir(inp) if not a.startswith("_")
+            ))
+            caught.setdefault("oracle_valid", set()).add(inp.oracle.valid)
+            caught.setdefault("oracle_r", []).append(list(inp.oracle.r_i_m))
+            out = core.GncOutput()
+            out.valid = True
+            out.q_i2b = self.q
+            return out
+
+        def state_dim(self):
+            return 4
+
+        def state(self):
+            return self.q
+
+        def covariance_upper(self):
+            return [0.0] * 10
+
+        def error_state(self, truth):
+            # Adversarial: retain the argument the interface tells
+            # implementations not to retain.
+            caught["retained_truth_valid"] = truth.valid
+            caught["retained_truth_r"] = list(truth.r_i_m)
+            return [0.0] * 4
+
+    return TruthHunter
+
+
+def test_truth_is_unreachable_from_a_component_input(tmp_path):
+    """With oracle false, no input a component receives carries truth.
+
+    This is the clause FR-25 states as an invariant of ``GncInput``, checked
+    against a component built to look for truth rather than against a
+    cooperative one. The reference mission does not set oracle, so a
+    conforming loop leaves every truth field empty.
+    """
+    core = _core_or_fail()
+    caught = {}
+    name = _register(core, _make_truth_hunter(core, caught), "truth_hunter")
+    cfg = _swap_component(core, _run_config(core, ATTITUDE_MISSION), "nav", name)
+    assert cfg.oracle is False, "the reference mission must not set oracle"
+    _drive(core, cfg, tmp_path / "hunt.srlog")
+
+    # GncInput.oracle is the only truth-shaped member, and it is empty.
+    assert caught["oracle_valid"] == {False}
+    assert all(r == [0.0, 0.0, 0.0] for r in caught["oracle_r"])
+    # No other member of GncInput or GncInitContext is a truth channel: the
+    # aiding slots carry noisy measurements and env carries ephemeris and
+    # frame context, both of which a real onboard navigator computes for
+    # itself. Pinning the member lists makes a future truth-bearing field a
+    # test failure rather than a silent widening of the boundary.
+    assert caught["input_attrs"] == [
+        "altimeter", "att_cmd", "cycle", "dt_s", "env", "imu", "imu_fresh",
+        "nav_est", "navfix", "oracle", "prev_applied", "startracker", "t_s",
+    ]
+    assert "truth" not in caught["init_attrs"]
+    assert "oracle" not in caught["init_attrs"]
+
+
+def test_error_state_hands_truth_to_a_component_even_without_oracle(tmp_path):
+    """The honest limit of the boundary: error_state() is an open channel.
+
+    ``IGncComponent::error_state(truth, e)`` exists so the loop can log
+    nav.err -- truth minus estimate in the estimator's own state convention,
+    which only the estimator can compute. It is therefore called for every
+    run regardless of the oracle flag, and it is handed the real truth state.
+    The header tells implementations not to retain that argument, but nothing
+    enforces it, and an estimator plugin that retains it has truth available
+    to its next update().
+
+    This test asserts the leak rather than the wish, so the gap between
+    FR-24's "never visible to GNC plugins" and what the code enforces is a
+    recorded, reviewable fact. Closing it mechanically would mean giving up
+    nav.err for plugin estimators; that trade has not been made.
+
+    The exposure is bounded to estimators: error_state() is called only when
+    state_dim() > 0, so a guidance or control plugin is never offered truth.
+    """
+    core = _core_or_fail()
+    caught = {}
+    name = _register(core, _make_truth_hunter(core, caught), "truth_retainer")
+    cfg = _swap_component(core, _run_config(core, ATTITUDE_MISSION), "nav", name)
+    assert cfg.oracle is False
+    _drive(core, cfg, tmp_path / "retain.srlog")
+
+    assert caught["retained_truth_valid"] is True
+    radius = sum(x * x for x in caught["retained_truth_r"]) ** 0.5
+    assert 6.0e6 < radius < 8.0e6, (
+        "error_state() no longer supplies a populated truth state; if the "
+        "channel was deliberately closed, delete this test and tighten "
+        "test_truth_is_unreachable_from_a_component_input to cover it"
+    )
