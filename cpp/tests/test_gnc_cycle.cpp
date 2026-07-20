@@ -541,3 +541,71 @@ TEST_CASE("gnc_cycle_external_component_rejects_parameters") {
                   std::invalid_argument);
   std::remove("test_gnc_external_reject.srlog");
 }
+
+TEST_CASE("gnc_cycle_close_releases_the_log_of_an_abandoned_run") {
+  // A run stopped part way must be able to end its FILE's lifetime without
+  // ending its OBJECT's. Otherwise the log stays open for as long as the
+  // owner lives, and on Windows an open handle makes a later unlink or a
+  // reopen of the same path fail with a sharing violation - which is how
+  // this surfaced, as a PermissionError in an unrelated teardown.
+  const std::string path = "test_gnc_close_abandoned.srlog";
+  {
+    star::VehicleCycle vc(gnc_scenario(false, 0), path);
+    REQUIRE(vc.step());
+    REQUIRE(vc.step());
+    CHECK(vc.done() == false);
+
+    vc.close();
+    vc.close();  // idempotent
+
+    // The abandoned log is a valid PREFIX: real bytes, no run_end event.
+    // Measured after close() because close() is what flushes - before it the
+    // records written so far are still in the stream's buffer, which is the
+    // other half of why an abandoned run must be closable.
+    const std::streamoff written = [&] {
+      std::ifstream in(path, std::ios::binary | std::ios::ate);
+      return in.tellg();
+    }();
+    CHECK(written > 0);
+
+    // The behavioural assertion, and the one that fails if close() stops
+    // reaching the writer: the file can now be REMOVED. On Windows an open
+    // handle refuses this, which is the failure being fixed; on Linux the
+    // unlink succeeds either way, so this case gates on Windows only and
+    // the throw below carries the rest.
+    CHECK(std::remove(path.c_str()) == 0);
+
+    // Stepping a released run is refused by its own message rather than
+    // failing later inside the writer with "write failed".
+    CHECK_THROWS_WITH_AS(vc.step(), doctest::Contains("after close"),
+                         std::logic_error);
+  }
+  std::remove(path.c_str());
+}
+
+TEST_CASE("gnc_cycle_close_after_a_completed_run_is_a_no_op") {
+  // finish() already closed the writer, and SrlogWriter::close() is guarded
+  // by is_open(), so an explicit close on a finished run must neither throw
+  // nor disturb the completed file.
+  const std::string path = "test_gnc_close_finished.srlog";
+  star::VehicleCycle vc(gnc_scenario(false, 0), path);
+  while (vc.step()) {
+  }
+  REQUIRE(vc.done());
+  const std::streamoff before = [&] {
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    return in.tellg();
+  }();
+  CHECK_NOTHROW(vc.close());
+  const std::streamoff after = [&] {
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    return in.tellg();
+  }();
+  CHECK(before == after);
+  // The run-ended message still wins over the closed one: this file is a
+  // complete run, not an abandoned prefix, and the two are different facts.
+  CHECK_THROWS_WITH_AS(vc.step(),
+                       doctest::Contains("after the run ended"),
+                       std::logic_error);
+  std::remove(path.c_str());
+}
