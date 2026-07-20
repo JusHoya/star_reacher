@@ -112,17 +112,48 @@ cost in power is small because genuine inconsistency does not nudge the
 coverage fraction, it collapses it (see
 ``tests/python/test_consistency.py`` for the measured bad-filter cases).
 
-Two honest limits on that guarantee. First, the binomial premise is
-independence *across epochs* of the inside/outside indicator, which holds
-exactly for NIS — innovations of a consistent filter are a white sequence —
-but only approximately for NEES, whose epoch means stay serially
-correlated at any R. The threshold is therefore an exact false-failure
-bound for NIS and a nominal one for NEES; the measured NEES rate is
-recorded in ``test_coverage_threshold_false_failure_rate_is_at_budget``.
-Second, the criterion is one-sided by design: it rejects too few epochs
-inside, never too many. An implausibly high coverage fraction is not a
-consistency failure in the Bar-Shalom sense, and the headline criterion
-above is what constrains the statistic's level.
+**Where the coverage criterion gates, and where it only reports**
+(``epochs_independent``). The binomial premise is that the inside/outside
+indicators are independent *across epochs*. That is a structural property
+of the statistic, known before any data is seen, not something to estimate
+per run:
+
+- **NIS: independent.** The innovation sequence of a consistent filter is
+  white (the orthogonality principle — Bar-Shalom, Li & Kirubarajan ch. 5),
+  so successive NIS epochs are independent and the binomial threshold is an
+  exact false-failure bound. Measured on 20 000 synthetic null trials at
+  T = 60: 0.0750 % spurious failures against the 0.0738 % predicted, and on
+  1000 disjoint ensembles of real reference-EKF output, 0-1 failures per
+  statistic.
+- **NEES: not independent.** The state error is a smooth trajectory and
+  averaging across runs does not whiten it — each run shares the same
+  autocorrelation, so the ensemble mean keeps it at every R. Measured on
+  the reference EKF, the epoch-mean NEES series has an integrated
+  autocorrelation time of about 30 epochs, i.e. roughly 20 effective
+  independent samples in a 601-epoch run rather than 601. The count-inside
+  is correspondingly over-dispersed, and a binomial threshold applied to it
+  rejects consistent output about half the time (21 of 40 disjoint 100-run
+  ensembles).
+
+The coverage criterion therefore gates only when ``epochs_independent`` is
+true, and is computed and reported as a diagnostic otherwise. Deliberately
+no effective-sample-size correction is applied to salvage it in the
+correlated case: the correction would have to estimate the autocorrelation
+time from the same data being judged, and a filter whose error is stuck or
+drifting inflates that estimate and so loosens its own threshold. A gate
+must not be a function the system under test can move. The correlated case
+is instead covered by the headline criterion, which is conservative under
+any correlation whatsoever and cannot be relaxed by the data.
+
+Two further limits, stated so nobody over-reads the guarantee. The
+criterion is one-sided by design: it rejects too few epochs inside, never
+too many; an implausibly high coverage fraction is not a consistency
+failure in the Bar-Shalom sense, and the headline is what constrains the
+statistic's level. And the headline's own false-failure rate is not
+controlled at 1 - c; it is bounded by 1 - q = 5 % and is far below that
+whenever epochs are not perfectly correlated, because averaging over epochs
+shrinks the statistic's variance while the interval stays at its
+single-epoch width.
 
 Covariance packing: symmetric matrices travel as their row-major upper
 triangle, ``[M_00, M_01, ..., M_0(n-1), M_11, ..., M_(n-1)(n-1)]`` — the
@@ -329,7 +360,10 @@ class EnsembleGate:
     - ``coverage_passed``, ``inside_count >= min_inside``, where
       ``min_inside`` is the binomial lower-tail threshold from
       ``inside_count_threshold`` at ``confidence`` and ``min_fraction`` is
-      that count expressed as a fraction for reporting.
+      that count expressed as a fraction for reporting. It contributes to
+      ``passed`` only when ``coverage_gated`` is set, which mirrors the
+      ``epochs_independent`` argument the gate was built with; otherwise it
+      is computed for reporting and ``passed`` rests on ``headline`` alone.
 
     ``pooled`` is the all-epoch statistic at ``dof`` = R T n. It carries its
     own ``passed``, but that flag is a diagnostic: its interval assumes
@@ -349,6 +383,7 @@ class EnsembleGate:
     confidence: float
     headline: IntervalGate
     coverage_passed: bool
+    coverage_gated: bool
     passed: bool
     pooled: IntervalGate
 
@@ -436,6 +471,7 @@ def ensemble_gate(
     dim: int,
     prob: float = 0.95,
     confidence: float = DEFAULT_CONFIDENCE,
+    epochs_independent: bool = True,
 ) -> EnsembleGate:
     """Ensemble NEES/NIS gate over R runs: the FR-26 acceptance instrument.
 
@@ -443,10 +479,19 @@ def ensemble_gate(
     ``dim`` the statistic's chi-square dimension. Each epoch's ensemble
     average is taken against
     [chi2_ppf((1-prob)/2, R*dim)/R, chi2_ppf((1+prob)/2, R*dim)/R], and
-    ``passed`` is the conjunction of the two criteria of ch:ekf
-    eq:ekf:ensemble: the epoch-averaged headline inside that interval, and
-    at least ``inside_count_threshold(T, prob, confidence)`` epochs inside
-    it. The pooled all-epoch mean is computed alongside as a diagnostic.
+    ``passed`` combines the criteria of ch:ekf eq:ekf:ensemble: the
+    epoch-averaged headline inside that interval, and — when
+    ``epochs_independent`` — at least
+    ``inside_count_threshold(T, prob, confidence)`` epochs inside it. The
+    pooled all-epoch mean is computed alongside as a diagnostic.
+
+    ``epochs_independent`` declares whether successive epochs of this
+    statistic are independent under consistency: true for NIS (a consistent
+    filter's innovations are white), false for NEES (the state error is a
+    correlated trajectory). It must reflect the statistic's structure, not
+    a property estimated from the data; see the module docstring for why a
+    data-estimated correction would be a gate the system under test can
+    move.
 
     R = 1 is accepted (the single run is its own ensemble average, still
     chi-square(dim) per epoch), so a one-log invocation stays gated.
@@ -493,6 +538,7 @@ def ensemble_gate(
         passed=pooled_lower <= pooled_mean <= pooled_upper,
     )
     coverage_passed = inside_count >= min_inside
+    coverage_gated = bool(epochs_independent)
     return EnsembleGate(
         epoch_mean=epoch_mean,
         lower=lower,
@@ -507,6 +553,7 @@ def ensemble_gate(
         confidence=float(confidence),
         headline=headline,
         coverage_passed=coverage_passed,
-        passed=headline.passed and coverage_passed,
+        coverage_gated=coverage_gated,
+        passed=headline.passed and (coverage_passed or not coverage_gated),
         pooled=pooled,
     )

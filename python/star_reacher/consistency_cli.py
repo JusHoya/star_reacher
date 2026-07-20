@@ -343,23 +343,31 @@ def _print_ensemble_gate(label: str, gate: EnsembleGate, dim_label: str) -> list
         f"{label} ensemble headline", gate.headline, f"dof {gate.dof}, {dim_label}"
     )
     epochs = gate.epoch_mean.shape[0]
-    if gate.coverage_passed:
-        verdict = "PASS"
+    spread = (
+        f"{100.0 * gate.fraction_below:.1f} % of epochs below, "
+        f"{100.0 * gate.fraction_above:.1f} % above"
+    )
+    if not gate.coverage_gated:
+        # Reported without PASS/FAIL: this statistic's epochs are serially
+        # correlated, so the binomial threshold beside it is indicative.
+        verdict = "inside" if gate.coverage_passed else f"below threshold ({spread})"
+        tail = f"{verdict} [diagnostic, not gated: epochs are serially correlated]"
+    elif gate.coverage_passed:
+        tail = "PASS"
     else:
-        verdict = (
-            f"FAIL ({100.0 * gate.fraction_below:.1f} % of epochs below, "
-            f"{100.0 * gate.fraction_above:.1f} % above)"
-        )
+        tail = f"FAIL ({spread})"
     print(
         f"  {label} ensemble coverage: {gate.inside_count}/{epochs} epochs "
         f"({100.0 * gate.fraction_inside:.1f} %) in [{gate.lower:.4f}, "
         f"{gate.upper:.4f}] (need >= {gate.min_inside}/{epochs} = "
         f"{100.0 * gate.min_fraction:.1f} %, binomial lower tail at "
-        f"{100.0 * gate.confidence:.1f} % confidence): {verdict}"
+        f"{100.0 * gate.confidence:.1f} % confidence): {tail}"
     )
     _print_interval_diagnostic(
         f"{label} pooled", gate.pooled, f"dof {gate.pooled.dof}, {dim_label}"
     )
+    if not gate.coverage_gated:
+        return [headline_ok]
     return [headline_ok, gate.coverage_passed]
 
 
@@ -434,8 +442,13 @@ def cmd_consistency(args) -> int:
                     f"T={eps_nis.shape[0]}, m={m}",
                 )
 
-        series: list[tuple[str, list[np.ndarray], int]] = [
-            ("NEES", nees_runs, per_file[0][1]["e"].shape[-1])
+        # The final flag is the structural epoch-independence declaration:
+        # a consistent filter's innovations are white, so NIS epochs are
+        # independent, while the state error NEES is formed from is a
+        # correlated trajectory. It selects whether the binomial coverage
+        # criterion gates or merely reports (see consistency.ensemble_gate).
+        series: list[tuple[str, list[np.ndarray], int, bool]] = [
+            ("NEES", nees_runs, per_file[0][1]["e"].shape[-1], False)
         ]
         for sid in sensor_ids:
             series.append(
@@ -443,9 +456,10 @@ def cmd_consistency(args) -> int:
                     nis_label(sid),
                     nis_runs[sid],
                     per_file[0][1]["innov"][sid][0].shape[-1],
+                    True,
                 )
             )
-        for label, runs_eps, dim in series:
+        for label, runs_eps, dim, independent in series:
             epoch_counts = {eps.shape[0] for eps in runs_eps}
             if len(epoch_counts) != 1:
                 print(
@@ -458,7 +472,9 @@ def cmd_consistency(args) -> int:
                 return _EXIT_RUNTIME
             plural = "run" if len(runs_eps) == 1 else "runs"
             print(f"ensemble: R={len(runs_eps)} {plural}, {label}")
-            gate = ensemble_gate(np.stack(runs_eps), dim)
+            gate = ensemble_gate(
+                np.stack(runs_eps), dim, epochs_independent=independent
+            )
             results.extend(_print_ensemble_gate(label, gate, f"dim {dim}"))
     except ValueError as exc:
         # Dimension mismatches and non-positive-definite covariances arrive
