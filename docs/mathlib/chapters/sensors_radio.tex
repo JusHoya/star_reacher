@@ -304,9 +304,22 @@ consumed identically on both sides. Outstanding, recorded rather than
 tabled: the enabled Gauss--Markov component of
 equation~\eqref{eq:radio:gm} on the fix is implemented but is pinned only
 by the shared derivation and by the IMU chapter's recursion test, not yet
-by its own committed value-for-value case; and the ellipsoidal ($h = 0$
-state) geodetic consistency case is not yet committed --- the spherical
-case is.
+by its own committed value-for-value case; and the altimeter's own
+ellipsoidal $h = 0$ surface-point case is not yet committed --- the
+altimeter-level case that is committed is the spherical one, asserting
+$h = \norm{\vv{r}} - a$ exactly.
+
+The ellipsoidal path is not thereby unpinned, and the previous sentence
+should not be read as saying so. The conversion itself is gated by
+\testid{ATM-HP-OFFNODE}, which synthesizes Earth-fixed points from exact
+geodetic coordinates at four latitudes and recovers the altitude to
+$< \qty{e-6}{\metre}$; and at sensor level
+\testid{test_altimeter_statistic_passes_the_reference_gate} runs on a
+\qty{45}{\degree}-inclined fixture chosen precisely so that the geodetic
+and spherical altitudes differ by tens of metres against a
+\qty{0.5}{\metre} sigma, so an implementation that never applied the
+ellipsoid is rejected there. What is missing is the boundary case, not
+the model.
 
 \paragraph{Correction to assumption 4.} That assumption states that for a
 spherical body ($f = 0$) the Bowring conversion of

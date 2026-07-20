@@ -23,11 +23,13 @@ is the substrate for the world-model and AI/ML navigation work of the
 later phases: an external renderer or a learned perception model
 consumes the emitted pose stream and produces images or measurements,
 while the core remains small and deterministic. Everything emitted is
-truth: Phase~6 exit criterion~7 gates the pose and intrinsics channels
-\emph{bit-exactly} against the \texttt{truth} channels and the resolved
-configuration, and gates the landmark projections against an independent
-NumPy pinhole script to $< 10^{-6}$ pixels --- which is why every frame,
-axis, and pixel convention in this chapter is stated exactly. Direction
+truth: Phase~6 exit criterion~7 gates the pose channels \emph{bit-exactly}
+against the \texttt{truth} channels, and gates the landmark projections
+against an independent NumPy pinhole script to $< 10^{-6}$ pixels ---
+which is why every frame, axis, and pixel convention in this chapter is
+stated exactly. The criterion also names the intrinsics, which the
+\texttt{sensors.camera} record layout does not carry; that clause is
+uncovered, and Section~\ref{sec:camera:validation} records why. Direction
 outputs carry the FR-23 velocity-aberration correction of
 Chapter~\ref{ch:sensors-optical}, applied through the same shared code
 path.
@@ -100,11 +102,18 @@ a right-handed triad. The chain from inertial to camera is
 \end{equation}
 with $\vv{r}^{I}$, $\quat{q}_{i2b}$ the truth state (composition per
 equation~\eqref{eq:notation:quatcomp}). The emitted pose channels are
-$\vv{r}^{I}$ and $\quat{q}_{i2b}$ themselves --- byte-identical to the
-\texttt{truth} group (exit criterion~7) --- together with the
-configuration constants $\quat{q}_{b2c}$, $\vv{r}_{\mathrm{cam}}^{B}$,
-and the intrinsics, echoed once in the log header so a consumer can
-compose equation~\eqref{eq:camera:pose} without the mission file.
+$\vv{r}^{I}$ and $\quat{q}_{i2b}$ themselves, byte-identical to the
+\texttt{truth} group (exit criterion~7). The constants
+$\quat{q}_{b2c}$, $\vv{r}_{\mathrm{cam}}^{B}$, and the intrinsics are
+\emph{not} carried in the log: a consumer reconstructing
+equation~\eqref{eq:camera:pose} reads them from the resolved
+configuration, which is where \texttt{docs/formats/srlog\_v1.md} places
+them. An earlier revision of this chapter stated that they were echoed
+once in the log header; that echo was never implemented, and verifying
+against a run confirms no intrinsic, extrinsic, or landmark value appears
+anywhere in the header. Adding it would be a log-format change. This is
+the direct cause of the uncovered intrinsics clause recorded after the
+evidence table.
 
 \subsection{Pinhole intrinsics}
 \label{sec:camera:intrinsics}
@@ -260,9 +269,13 @@ Binding implementation notes for the Phase~6 module:
     \texttt{eq:camera:occlusion} verbatim.
   \item \textbf{Bit-exact pose emission.} The pose channels are copies
     of the same doubles the \texttt{truth} writer receives --- not
-    recomputed values --- so exit criterion~7's bit-exactness clause is
-    satisfied by construction; intrinsics and extrinsics are emitted
-    from the resolved configuration verbatim.
+    recomputed values --- so exit criterion~7's \emph{pose} bit-exactness
+    clause is satisfied by construction. The intrinsics and the extrinsics
+    are taken from the resolved configuration verbatim, without
+    recomputation, but they are not written to the record stream: they are
+    configuration, and the \texttt{sensors.camera} layout below carries no
+    channel for them. The criterion's intrinsics clause is uncovered for
+    that reason; see the discussion following the evidence table.
   \item \textbf{Evaluation order.} Per sample: pose copy; per landmark:
     equations~\eqref{eq:camera:landmark}--\eqref{eq:camera:proj}, then
     the four visibility tests in the stated order with short-circuit
@@ -368,10 +381,15 @@ The following remain outstanding:
     only, and the criterion-7 gate reads $f_x$, $f_y$, $c_x$, $c_y$ from
     the mission file it wrote itself, so no intrinsic value is ever
     compared against a core output. The clause is therefore uncovered, not
-    merely untabled. Closing it requires either echoing the resolved
-    intrinsics into the log header and gating that echo, or amending the
-    criterion to drop the clause on the recorded ground that intrinsics are
-    configuration rather than a logged channel. The intrinsics themselves
+    merely untabled. The gap is a specification one and predates the tests:
+    Section~\ref{sec:camera:pose} previously asserted that the intrinsics
+    and extrinsics were echoed once in the log header, and no such echo was
+    ever implemented --- verified against a run, no intrinsic, extrinsic,
+    or landmark value appears anywhere in the header. Closing the clause
+    requires either implementing that echo and gating it, which is a
+    log-format change, or amending the criterion to drop the clause on the
+    recorded ground that intrinsics are configuration rather than a logged
+    channel. The intrinsics themselves
     are not unexercised --- they enter every pixel the clause above gates,
     on a fixture chosen so $f_x$, $f_y$, $c_x$, and $c_y$ are separately
     resolvable --- but that is agreement against a reference, not bit
