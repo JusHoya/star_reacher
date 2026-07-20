@@ -8,13 +8,19 @@ measured excess can be discarded on arithmetic rather than on argument.
 The candidates, and what is computed for each:
 
 ``mechanization``
-    The filter integrates the central-body gravity it does not measure with an
-    explicit Euler velocity step and a trapezoidal position step
-    (``ekf.cpp``, eq:ekf:mech), while the truth trajectory is an RK4 solution
-    of the same dynamics. The difference is a deterministic truncation error
-    that no term of the filter's process noise describes. Measured directly by
-    running the filter's mechanization on a noise-free input and differencing
-    against truth.
+    The filter integrates the central-body gravity it does not measure with
+    its own quadrature (``ekf.cpp``, eq:ekf:mech), while the truth trajectory
+    is an RK4 solution of the same dynamics. Any difference is a deterministic
+    truncation error that no term of the filter's process noise describes.
+    Measured directly by running the filter's mechanization on a noise-free
+    input and differencing against truth.
+
+    Both quadratures are reported: the ``euler`` scheme is the first-order
+    step this diagnosis attributed the NEES excess to, and ``heun`` is the
+    second-order predictor-corrector that replaced it
+    (ch:ekf, sec:ekf:gravityorder). Keeping the superseded scheme here is
+    what makes the row a measurement of the improvement rather than an
+    assertion about it.
 
 ``transition``
     ``Phi = I + F dt`` (eq:ekf:disc) truncates the matrix exponential. Measured
@@ -77,14 +83,22 @@ def gravity_gradient(p: np.ndarray, mu: float = MU_EARTH) -> np.ndarray:
 
 
 def mechanization_truncation(
-    r0: np.ndarray, v0: np.ndarray, dt: float, n_steps: int, mu: float = MU_EARTH
+    r0: np.ndarray,
+    v0: np.ndarray,
+    dt: float,
+    n_steps: int,
+    mu: float = MU_EARTH,
+    scheme: str = "heun",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Run the filter's gravity mechanization noise-free; return its states.
 
     Exactly the arithmetic of ``ErrorStateEkf::propagate`` with the IMU
     increments set to zero, which is what the reference scenario's coasting
-    vehicle measures up to sensor noise: an explicit Euler velocity step on
-    ``gravity(p_pre)`` followed by a trapezoidal position step.
+    vehicle measures up to sensor noise.
+
+    ``heun`` is the shipped second-order predictor-corrector of eq:ekf:mech.
+    ``euler`` is the superseded first-order velocity step, retained so the
+    two can be measured side by side on the same trajectory.
     """
     p = np.array(r0, dtype=float)
     v = np.array(v0, dtype=float)
@@ -92,7 +106,15 @@ def mechanization_truncation(
     vs = np.empty((n_steps + 1, 3))
     ps[0], vs[0] = p, v
     for k in range(n_steps):
-        v_new = v + gravity(p, mu) * dt
+        if scheme == "euler":
+            v_new = v + gravity(p, mu) * dt
+        elif scheme == "heun":
+            g0 = gravity(p, mu)
+            v_pred = v + g0 * dt
+            p_pred = p + 0.5 * (v + v_pred) * dt
+            v_new = v + 0.5 * (g0 + gravity(p_pred, mu)) * dt
+        else:
+            raise ValueError("unknown scheme %r" % scheme)
         p = p + 0.5 * (v + v_new) * dt
         v = v_new
         ps[k + 1], vs[k + 1] = p, v
@@ -220,24 +242,37 @@ def report_mechanization(raw: dict, dt: float) -> None:
     truth_r = raw["truth_r_m"]
     truth_v = raw["truth_v_mps"]
     n = truth_r.shape[0] - 1
-    ps, vs = mechanization_truncation(truth_r[0], truth_v[0], dt, n)
-    dv = vs - truth_v
-    dp = ps - truth_r
+    sigma = REFERENCE_SENSORS["accel_gm_sigma"]
     print("  filter mechanization vs truth, noise-free, from the true state:")
-    for frac in (0.25, 0.5, 1.0):
-        k = int(frac * n)
-        print(
-            "    t = %6.1f s   |dv| = %.4e m/s   |dp| = %.4e m"
-            % (raw["t_s"][k], np.linalg.norm(dv[k]), np.linalg.norm(dp[k]))
+    finals: dict[str, float] = {}
+    for scheme in ("euler", "heun"):
+        ps, vs = mechanization_truncation(
+            truth_r[0], truth_v[0], dt, n, scheme=scheme
         )
-    # The equivalent constant acceleration the truncation looks like, which is
-    # what the filter's accelerometer-bias state would have to absorb.
-    a_eff = np.linalg.norm(dv[n]) / raw["t_s"][n]
-    print(
-        "    equivalent constant acceleration %.4e m/s^2 "
-        "(accel bias 1-sigma %.4e m/s^2)"
-        % (a_eff, REFERENCE_SENSORS["accel_gm_sigma"])
-    )
+        dv = vs - truth_v
+        dp = ps - truth_r
+        label = "%s (superseded)" % scheme if scheme == "euler" else scheme
+        print("    %s:" % label)
+        for frac in (0.25, 0.5, 1.0):
+            k = int(frac * n)
+            print(
+                "      t = %6.1f s   |dv| = %.4e m/s   |dp| = %.4e m"
+                % (raw["t_s"][k], np.linalg.norm(dv[k]), np.linalg.norm(dp[k]))
+            )
+        # The equivalent constant acceleration the truncation looks like,
+        # which is what the accelerometer-bias state would have to absorb.
+        final = float(np.linalg.norm(dv[n]))
+        finals[scheme] = final
+        a_eff = final / raw["t_s"][n]
+        print(
+            "      equivalent constant acceleration %.4e m/s^2 = %.4g x the "
+            "accel bias 1-sigma %.4e m/s^2" % (a_eff, a_eff / sigma, sigma)
+        )
+    if finals["heun"] > 0.0:
+        print(
+            "    shipped scheme improves the 60 s velocity truncation by "
+            "%.0fx" % (finals["euler"] / finals["heun"])
+        )
 
 
 def report_discretization(raw: dict, dt: float, stride: int = 50) -> None:
