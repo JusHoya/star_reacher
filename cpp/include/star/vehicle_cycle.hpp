@@ -61,6 +61,11 @@ namespace star {
 struct CycleObservation {
   std::int64_t cycle = 0;
   double t_s = 0.0;
+  // False for the construction-time snapshot, true once a cycle has been
+  // processed. Cycle 0 is otherwise ambiguous: the initial state and the
+  // result of the first step() both carry index 0, and a driver reading
+  // chain products needs to know which one it is holding.
+  bool processed = false;
   bool done = false;
   bool gnc_active = false;
 
@@ -129,6 +134,12 @@ class VehicleCycle {
   // True when the mission's guidance or control slot is the "external"
   // component, i.e. when set_external_command() has an addressee.
   bool has_external_command() const;
+
+  // The command the external component currently holds. Returned by value
+  // so a caller can amend one field and set the result back, which is how
+  // FR-24's "missing keys hold" is implemented. Returns a neutral hold when
+  // the mission configured no external slot.
+  gnc::GncOutput external_command() const;
 
   // Run summary (final state, record tallies); valid once done().
   const RunSummary& summary() const;

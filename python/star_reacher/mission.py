@@ -277,9 +277,15 @@ _EKF_VEC3_PARAMS = (
 _GNC_GUIDANCE_COMPONENTS = {
     "pitch_program": ("azimuth_deg", "pitch_t_s", "pitch_deg"),
     "attitude_hold": ("q_cmd",),
+    # The FR-24 stepping-API command seam. It takes no parameters because its
+    # numbers come from the driver's Sim.step(commands) call, not the mission
+    # file; a batch `star run` of such a mission therefore flies the initial
+    # hold, which is the honest reading of "nobody is commanding".
+    "external": (),
 }
 _GNC_CONTROL_COMPONENTS = {
     "pd_attitude": ("kp_nm_per_rad", "kd_nm_per_radps", "tau_max_nm"),
+    "external": (),
 }
 # Open-loop attitude sequence actions conflict with GNC attitude authority
 # and are rejected when [gnc] is present.

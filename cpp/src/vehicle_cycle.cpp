@@ -863,7 +863,7 @@ struct VehicleCycle::Impl {
     // composition is the same pure function the cycle uses, so the reported
     // initial mass is the one cycle 0 will see.
     sp = compose_stack(veh);
-    refresh_observation(0, 0.0);
+    refresh_observation(0, 0.0, false);
   }
 
   // Overwrite the FR-24 snapshot with the state of cycle k at time t. Called
@@ -872,9 +872,10 @@ struct VehicleCycle::Impl {
   // 4). Only the non-GNC fields are written here - the GNC block fills its
   // own fields earlier in the same cycle, before the chain products are
   // overwritten by the next one.
-  void refresh_observation(std::int64_t k, double t) {
+  void refresh_observation(std::int64_t k, double t, bool processed) {
     obs.cycle = k;
     obs.t_s = t;
+    obs.processed = processed;
     obs.done = finished;
     obs.gnc_active = gnc_active;
     if (!gnc_active) {
@@ -1524,7 +1525,7 @@ struct VehicleCycle::Impl {
       writer.write_event(t_of(i), 2, "run_end");
       run_summary.event_records += 1;
       finish();
-      refresh_observation(i, t_of(i));
+      refresh_observation(i, t_of(i), true);
       return false;
     }
     if (i == steps) {
@@ -1533,12 +1534,12 @@ struct VehicleCycle::Impl {
       writer.write_event(cfg.duration_s, 2, "run_end");
       run_summary.event_records += 1;
       finish();
-      refresh_observation(i, t_of(i));
+      refresh_observation(i, t_of(i), true);
       return false;
     }
     // Snapshot cycle i BEFORE advancing: every observation field then
     // describes one consistent instant, the cycle just processed.
-    refresh_observation(i, t_of(i));
+    refresh_observation(i, t_of(i), true);
     advance_cycle(i);
     ++i;
     return true;
@@ -1570,6 +1571,12 @@ const gnc::TruthState& VehicleCycle::truth() const { return impl_->obs_truth; }
 
 bool VehicleCycle::has_external_command() const {
   return impl_->ext_guidance != nullptr || impl_->ext_control != nullptr;
+}
+
+gnc::GncOutput VehicleCycle::external_command() const {
+  if (impl_->ext_guidance != nullptr) return impl_->ext_guidance->command();
+  if (impl_->ext_control != nullptr) return impl_->ext_control->command();
+  return gnc::GncOutput();
 }
 
 void VehicleCycle::set_external_command(const gnc::GncOutput& cmd) {

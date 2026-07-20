@@ -219,46 +219,37 @@ def _build_gnc_component(core, spec: dict):
     return cc
 
 
-def run_mission(mission_path, outdir=None, force=False, command_line=None, strict=False) -> RunResult:
-    """Validate, resolve, hash, propagate, and write the run artifacts.
+def mission_is_vehicle(resolved) -> bool:
+    """True when a resolved mission takes the 6DOF vehicle path.
 
-    Raises ``MissionValidationError`` (exit 2 at the CLI) for config errors,
-    ``CoreMissingError`` or ``RunnerError`` (exit 1) for runtime failures.
-    ``strict`` promotes validation warnings (the vehicle plausibility tier)
-    to errors (FR-15).
+    A mission with a vehicle file, an event ``[[sequence]]``, or a geodetic
+    launch state is a vehicle mission; anything else propagates a point mass.
+    Named rather than inlined because the stepping API (FR-24) drives the
+    vehicle cycle core specifically and must answer the same question the
+    batch runner does.
     """
-    start_wall = time.monotonic()
-    start_utc = datetime.now(timezone.utc).isoformat()
-
-    resolved, errors = validate_mission_file(mission_path, strict=strict)
-    if errors:
-        raise MissionValidationError(errors)
-
-    # Path selection. A mission with a vehicle file, an event [[sequence]], or a
-    # geodetic launch state takes the Phase 4 6DOF path (run_vehicle); a mission
-    # that uses any Phase 3 environment surface takes the composed-environment
-    # path (run_env); anything else takes the byte-frozen Phase 1 two-body path
-    # (run), whose output is pinned by the committed determinism record.
-    is_vehicle = (
+    return (
         "vehicle" in resolved
         or "sequence" in resolved
         or "geodetic" in resolved["initial_state"]
     )
 
-    config_bytes = canonical_bytes(resolved)
-    config_sha = hashlib.sha256(config_bytes).hexdigest()
 
-    name = resolved["mission"]["name"]
-    out = Path(outdir) if outdir is not None else Path("out") / name
-    srlog_path = out / "run.srlog"
-    if srlog_path.exists() and not force:
-        raise RunnerError(
-            f"{srlog_path}: output already exists; pass --force to overwrite, "
-            f"or choose another directory with -o"
-        )
+def build_run_config(core, resolved, config_sha, strict=False):
+    """Map a validated, resolved mission onto a core ``RunConfig``.
 
-    core = import_core()
+    Extracted from :func:`run_mission` so a stepped run (FR-24) and a batch
+    run of one mission are configured by the same code. A second copy of this
+    mapping is precisely how a stepped run would quietly stop being the same
+    scenario as its batch twin, which is the property Phase 6 exit criterion
+    4 asserts.
 
+    Returns ``(cfg, resolved_vehicle_toml, uses_env_path)``:
+    ``resolved_vehicle_toml`` is ``None`` for a non-vehicle mission, and
+    ``uses_env_path`` is true when the mission needs the composed-environment
+    entry point rather than the byte-frozen Phase 1 two-body one.
+    """
+    is_vehicle = mission_is_vehicle(resolved)
     env = resolved["environment"]
     integ = resolved["integrator"]
     initial = resolved["initial_state"]
@@ -411,6 +402,49 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None, stric
             gc.sensors = sensor_cfgs
             cfg.gnc = gc
             cfg.oracle = g["oracle"]
+
+    return cfg, resolved_vehicle_toml, new_path
+
+
+def run_mission(mission_path, outdir=None, force=False, command_line=None, strict=False) -> RunResult:
+    """Validate, resolve, hash, propagate, and write the run artifacts.
+
+    Raises ``MissionValidationError`` (exit 2 at the CLI) for config errors,
+    ``CoreMissingError`` or ``RunnerError`` (exit 1) for runtime failures.
+    ``strict`` promotes validation warnings (the vehicle plausibility tier)
+    to errors (FR-15).
+    """
+    start_wall = time.monotonic()
+    start_utc = datetime.now(timezone.utc).isoformat()
+
+    resolved, errors = validate_mission_file(mission_path, strict=strict)
+    if errors:
+        raise MissionValidationError(errors)
+
+    # Path selection. A mission with a vehicle file, an event [[sequence]], or a
+    # geodetic launch state takes the Phase 4 6DOF path (run_vehicle); a mission
+    # that uses any Phase 3 environment surface takes the composed-environment
+    # path (run_env); anything else takes the byte-frozen Phase 1 two-body path
+    # (run), whose output is pinned by the committed determinism record.
+    is_vehicle = mission_is_vehicle(resolved)
+
+    config_bytes = canonical_bytes(resolved)
+    config_sha = hashlib.sha256(config_bytes).hexdigest()
+
+    name = resolved["mission"]["name"]
+    out = Path(outdir) if outdir is not None else Path("out") / name
+    srlog_path = out / "run.srlog"
+    if srlog_path.exists() and not force:
+        raise RunnerError(
+            f"{srlog_path}: output already exists; pass --force to overwrite, "
+            f"or choose another directory with -o"
+        )
+
+    core = import_core()
+
+    cfg, resolved_vehicle_toml, new_path = build_run_config(
+        core, resolved, config_sha, strict=strict
+    )
 
     out.mkdir(parents=True, exist_ok=True)
     # Exactly the hashed bytes, so the file re-hashes to config_sha256.
