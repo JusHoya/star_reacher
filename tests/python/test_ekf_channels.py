@@ -123,13 +123,15 @@ def test_star_consistency_consumes_a_real_ekf_log(reference_run):
 
     The command must apply the documented quaternion-led n -> m reduction
     (16 -> 15) and group innovations per sensor at each sensor's own
-    dimension. Only the NIS gates are asserted to pass: the per-run
-    time-averaged NEES interval assumes epochs within a run are
-    independent, while a filter's state error is a smooth serially
-    correlated trajectory, so ch:ekf sec:ekf:consistency calls that
-    aggregation a diagnostic with indicative bounds rather than a gate.
+    dimension. The per-run time-averaged numbers are checked for shape and
+    labelling only: ch:ekf sec:ekf:consistency calls that aggregation a
+    diagnostic with indicative bounds, because its chi-square interval
+    assumes epochs within a run are independent while a filter's state
+    error is a smooth serially correlated trajectory.
     ``test_per_run_time_average_is_a_diagnostic_not_a_gate`` measures the
-    size of that effect over the full ensemble.
+    size of that effect over the full ensemble. What is asserted to pass
+    is the acceptance instrument itself: the per-sensor NIS gates of
+    eq:ekf:ensemble, evaluated here at R = 1.
     """
     result, _ = reference_run
     proc = subprocess.run(
@@ -141,8 +143,8 @@ def test_star_consistency_consumes_a_real_ekf_log(reference_run):
     # The reduction worked: a 16-dimensional error was gated against a
     # 15-dimensional covariance instead of being rejected as mismatched.
     assert "n=15" in proc.stdout, proc.stdout + proc.stderr
-    # Per-sensor grouping worked: one NIS gate per aiding sensor, each at
-    # its own dimension, and each passing.
+    # Per-sensor grouping worked: one diagnostic line and one pair of
+    # ensemble gate lines per aiding sensor, each at its own dimension.
     for sensor_id, dim in sorted(NIS_DIM_BY_SENSOR.items()):
         line = [
             ln
@@ -151,4 +153,14 @@ def test_star_consistency_consumes_a_real_ekf_log(reference_run):
         ]
         assert len(line) == 1, proc.stdout
         assert f"m={dim}" in line[0], line[0]
-        assert line[0].rstrip().endswith("PASS"), line[0]
+        # A diagnostic never carries a verdict word, whichever side of its
+        # indicative interval it lands on.
+        assert line[0].rstrip().endswith("[diagnostic, not gated]"), line[0]
+        for criterion in ("headline", "coverage"):
+            gate = [
+                ln
+                for ln in proc.stdout.splitlines()
+                if f"NIS[sensor {sensor_id}] ensemble {criterion}" in ln
+            ]
+            assert len(gate) == 1, proc.stdout
+            assert gate[0].rstrip().endswith("PASS"), gate[0]

@@ -463,7 +463,7 @@ squared,
   \label{eq:ekf:nis}
 \end{equation}
 each distributed $\chi^2_n$ at every epoch for a consistent filter.
-Two aggregations are computed:
+Three aggregations are computed, of which exactly one gates:
 \begin{itemize}
   \item \textbf{Per-run time average} $\bar\epsilon = \tfrac1K
     \sum_k \epsilon_k$ (and likewise per sensor for $\nu$): reported as
@@ -474,18 +474,22 @@ Two aggregations are computed:
     marginal, and is measured rather than assumed: on the
     exit-criterion-3 ensemble --- whose per-epoch statistic lies inside
     the acceptance bounds at \emph{every} epoch --- the per-run interval
-    evaluated at $\mathrm{dof} = K n$ admits only a small minority of
-    those same consistent runs, because serial correlation inflates the
+    evaluated at $\mathrm{dof} = K n$ admits only 7 of those 100
+    consistent runs, because serial correlation inflates the
     spread of $\bar\epsilon$ far beyond the width such an interval
     assumes while leaving its expectation at $n$. The same caveat
     applies to any statistic pooled across epochs at
     $\mathrm{dof} = N K n$. Neither aggregation is an acceptance gate;
-    equation~\eqref{eq:ekf:ensemble} applied across runs is.
-  \item \textbf{$N$-run ensemble average} at each epoch (and averaged
-    over epochs for the headline number): for $N$ independent seeded
-    runs, $N\bar\epsilon_N = \sum_{i=1}^{N}\epsilon^{(i)} \sim
-    \chi^2_{Nn}$ exactly under consistency, giving the two-sided
-    95\,\% acceptance gate
+    equation~\eqref{eq:ekf:ensemble} applied across runs is. A command
+    that gated on either would report \texttt{FAIL} on a filter this
+    chapter certifies as consistent, so \texttt{star consistency}
+    prints both without letting them reach its exit code.
+  \item \textbf{$N$-run ensemble average} at each epoch: for $N$
+    independent seeded runs, $N\bar\epsilon_N =
+    \sum_{i=1}^{N}\epsilon^{(i)} \sim \chi^2_{Nn}$ exactly under
+    consistency --- the averaging is across runs, which are independent
+    by construction, so no across-time premise enters --- giving the
+    two-sided 95\,\% acceptance interval
     \begin{equation}
       \boxed{\;
       \frac{\chi^2_{0.025}(Nn)}{N}
@@ -499,7 +503,80 @@ Two aggregations are computed:
     $[13.95,\; 16.09]$; NIS bounds $[5.34,\; 6.70]$ for the nav fix
     ($n = 6$), $[2.54,\; 3.50]$ for the star tracker ($n = 3$), and
     $[0.74,\; 1.30]$ for the altimeter ($n = 1$).
+  \item \textbf{Epoch coverage} against that same interval: the count
+    of epochs whose $\bar\epsilon_N$ falls inside it. This is the
+    companion criterion to the headline, sensitive to a defect confined
+    to part of a run that an epoch average would dilute.
 \end{itemize}
+The gate is taken in two parts. The \emph{headline} applies
+equation~\eqref{eq:ekf:ensemble} to $\bar\epsilon_N$ averaged over
+epochs. Averaging over epochs cannot increase that statistic's variance
+above a single epoch's --- equality would require perfectly correlated
+epochs --- so judging it against the single-epoch interval is
+conservative whatever the across-time correlation is, and it is the
+criterion that catches a shifted level: a mis-scaled covariance or a
+biased estimator displaces $\bar\epsilon_N$ by a multiple of the
+interval width.
+
+The \emph{coverage} criterion needs a threshold, and the natural-looking
+choice is wrong. Under consistency each epoch falls inside a two-sided
+95\,\% interval with probability $q = 0.95$, so the count inside is
+$X \sim \mathrm{Binomial}(K, q)$ with $\mathbb{E}[X] = qK$: a rule of
+``at least 95\,\% of epochs inside'' tests $X$ against its own mean and
+a correct filter passes it only about half the time. Measured on the
+exit-criterion-3 ensemble, the three NIS statistics landed at
+93.3\,\%, 93.3\,\% and 95.0\,\% inside --- two of the three would
+``fail'' a rule they had even odds of meeting. The threshold is placed
+in the lower tail of that binomial instead: at confidence $c$,
+\begin{equation}
+  \boxed{\;
+  t = 1 + \max\{\, j : \Pr[X \le j] \le 1 - c \,\},
+  \qquad X \sim \mathrm{Binomial}(K, q),
+  \;}
+  \label{eq:ekf:coverage}
+\end{equation}
+so that $\Pr[\text{reject} \mid \text{consistent}] = \Pr[X < t] \le
+1 - c$ by construction. The default $c = 0.999$ follows from the
+instrument's role rather than from convention: \texttt{star
+consistency} is an automated gate reporting one coverage criterion per
+statistic --- four for the reference filter --- so a per-criterion
+budget of $10^{-3}$ holds a whole report's spurious-failure rate near
+$4 \times 10^{-3}$, about one false red in 250 clean runs. At $K = 60$
+this gives $t = 51$ ($\Pr[X < t] = 7.4 \times 10^{-4}$) and at
+$K = 601$, $t = 553$ ($6.7 \times 10^{-4}$). The cost in power is small
+because genuine inconsistency does not nudge the coverage fraction, it
+collapses it.
+
+Equation~\eqref{eq:ekf:coverage} gates only where its independence
+premise holds, and that is a structural property of the statistic known
+before any data is seen. For \textbf{NIS} it holds exactly: the
+innovation sequence of a consistent filter is white~\cite{barshalom2001},
+so successive epochs are independent. Measured over 20\,000 synthetic
+null trials at $K = 60$, the spurious-failure rate was 0.0750\,\%
+against the 0.0738\,\% predicted. For \textbf{NEES} it fails: the state
+error is a smooth trajectory, and averaging across runs does not whiten
+it, since every run carries the same autocorrelation. Measured on the
+reference filter, the epoch-mean NEES series has an integrated
+autocorrelation time near 30 epochs --- roughly 20 effective samples in
+a 601-epoch run rather than 601 --- and a binomial threshold applied to
+its inside-count rejected 21 of 40 disjoint consistent 100-run
+ensembles. The coverage criterion is therefore \emph{gated} for NIS and
+\emph{reported} for NEES, with the headline gating both.
+
+No effective-sample-size correction is applied to rescue the correlated
+case, for two reasons. Such a correction must estimate the
+autocorrelation time from the same data it judges, and an error that is
+stuck or drifting inflates that estimate and so loosens its own
+threshold; a gate must not be a function the system under test can move.
+And measurement shows no threshold would work regardless: over 40
+disjoint consistent 100-run ensembles the NEES inside-fraction ranged
+from 0.100 to 1.000 with a 5th percentile of 0.363, so any threshold
+loose enough to admit correct output at the $10^{-3}$ level admits
+nearly everything. The consequence is stated plainly rather than hidden:
+a sustained NEES defect that leaves the epoch average inside
+equation~\eqref{eq:ekf:ensemble} while pushing many individual epochs
+out is visible in the reported coverage number but does not set the exit
+code. Section~\ref{sec:ekf:validation} records a measured instance.
 Chi-square quantiles are evaluated without external dependencies
 (D-12) by the Wilson--Hilferty transformation~\cite{wilson1931},
 \begin{equation}
@@ -534,7 +611,8 @@ Binding implementation notes for the Phase~6 module:
     \texttt{eq:ekf:stinnov}, \texttt{eq:ekf:altH},
     \texttt{eq:ekf:reset}, and the consistency evaluator echoes
     \texttt{eq:ekf:nees}, \texttt{eq:ekf:nis},
-    \texttt{eq:ekf:ensemble}, \texttt{eq:ekf:wh}.
+    \texttt{eq:ekf:ensemble}, \texttt{eq:ekf:coverage},
+    \texttt{eq:ekf:wh}.
   \item \textbf{Cycle order, normative.} (1) mechanize the nominal
     state, equation~\eqref{eq:ekf:mech}; (2) propagate the covariance,
     equation~\eqref{eq:ekf:disc}, with $\mat{F}$ evaluated at the
@@ -566,13 +644,44 @@ Binding implementation notes for the Phase~6 module:
 This chapter specifies two separable pieces, both now implemented. The
 consistency statistics of Section~\ref{sec:ekf:consistency} ---
 equations~\eqref{eq:ekf:nees}, \eqref{eq:ekf:nis},
-\eqref{eq:ekf:ensemble}, and~\eqref{eq:ekf:wh} --- are implemented in
-\texttt{python/star\_reacher/consistency.py} (with the quantile evaluator
-in \texttt{chi2.py}) and are covered by
+\eqref{eq:ekf:ensemble}, \eqref{eq:ekf:coverage},
+and~\eqref{eq:ekf:wh} --- are implemented in
+\texttt{python/star\_reacher/consistency.py} (with the quantile and
+binomial evaluators in \texttt{chi2.py}) and are covered by
 Table~\ref{tab:ekf:validation-py}. The reference error-state filter of
 Sections~\ref{sec:ekf:purpose}--\ref{sec:ekf:implementation} is
 implemented in \texttt{cpp/src/gnc/ekf.cpp} and is covered by
 Table~\ref{tab:ekf:validation-filter}.
+
+\paragraph{Measured sensitivity of the gate.} The gate was exercised
+against deliberately broken filters produced by perturbing the reference
+mission only --- no source change, the same binary --- each judged by
+\texttt{star consistency} over its own 100-run ensemble. An unmodelled
+gyro turn-on bias (NEES $5.7 \times 10^{3}$), an unmodelled accelerometer
+turn-on bias ($6.8 \times 10^{3}$), an unmodelled nav-fix Gauss--Markov
+error ($68.0$) and a 500\,m biased initial estimate ($21.0$, with nav-fix
+NIS at $10.97$) were all rejected with a nonzero exit code. Against the
+same ensembles the covariance-scaling detection floor of the headline
+criterion at $N = 100$ is about $\pm 7\,\%$, matching the interval
+half-width: reported covariance at $0.9\times$ and $1.1\times$ truth is
+caught, $0.95\times$ and $1.05\times$ are not.
+
+Two classes are measured as \emph{not} caught, and are recorded here
+rather than left to be rediscovered. A defect confined to a short
+transient escapes both criteria: initializing the filter fourfold
+over-confident drives ensemble NEES to $41.7$ over the first ten epochs
+--- far outside the bounds --- yet the 601-epoch average is $15.68$ and
+the coverage count $574/601$, so both criteria pass. And a sustained
+defect that lands just inside the interval escapes the headline while
+being plainly visible in the reported coverage number: a 10\,m
+unmodelled altimeter turn-on bias gives ensemble NEES $15.96$ against an
+upper bound of $16.09$ (pass) with coverage $343/601$ against an
+indicative threshold of 553 --- the case
+Section~\ref{sec:ekf:consistency} says the NEES coverage number reports
+but does not gate. A campaign that needs either class covered should
+gate on a windowed statistic over a segment short enough to resolve the
+transient, which is separate work from this chapter's whole-run
+aggregates.
 
 \begin{table}[htbp]
   \centering
@@ -604,9 +713,8 @@ Table~\ref{tab:ekf:validation-filter}.
       channels and the engine share. \\
     \testid{test_consistent_ensemble_nees_gate_passes} &
       A 100-run, 200-epoch consistent ensemble passes the
-      gate~\eqref{eq:ekf:ensemble}: pooled statistic inside its bounds and
-      at least 95\,\% of epochs inside, with the per-run time-averaged
-      diagnostic holding for about 95\,\% of runs. \\
+      gate~\eqref{eq:ekf:ensemble} on both criteria, headline and
+      coverage. \\
     \testid{test_miscalibrated_covariance_fails_nees_gate} &
       The gate is shown able to fail, in the correct direction: covariance
       reported at $0.7\times$ truth fails high (overconfident) and
@@ -621,11 +729,60 @@ Table~\ref{tab:ekf:validation-filter}.
     \testid{test_gate_functions_are_deterministic} &
       Repeated evaluation reproduces every statistic exactly; the engine
       draws no random numbers (FR-21). \\
+    \testid{test_binom_cdf_matches_exact_rational_arithmetic} &
+      The binomial evaluator behind~\eqref{eq:ekf:coverage} agrees to
+      $10^{-12}$ with exact rational arithmetic over $n \le 200$ and
+      $p \in \{0.05, 0.5, 0.95\}$ --- a reference sharing no code with the
+      log-gamma implementation. \\
+    \testid{test_inside_count_threshold_is_the_binomial_lower_tail} &
+      The threshold solves~\eqref{eq:ekf:coverage} exactly: admitting one
+      fewer epoch would breach the budget and the threshold itself does
+      not, and it lies strictly below $qK$, so it can never degenerate
+      into the coin flip it replaced. \\
+    \testid{test_coverage_threshold_false_failure_rate_is_at_budget} &
+      20\,000-trial Monte Carlo of the coverage criterion under the exact
+      null with independent epochs: the spurious-failure rate matches the
+      binomial prediction of~\eqref{eq:ekf:coverage} within three sigma,
+      while the superseded ``$\ge 95\,\%$ of epochs'' rule rejects more
+      than 30\,\% of the same consistent draws. \\
+    \testid{test_headline_criterion_does_not_spuriously_fail} &
+      The headline's conservatism is measured, not assumed: zero
+      spurious failures in 4000 null trials. \\
+    \testid{test_biased_estimator_fails_the_gate} &
+      The gate is shown able to fail against a biased estimator: a
+      constant offset of one and two reported sigmas is rejected, high,
+      as an overconfident covariance would be. \\
+    \testid{test_wrong_measurement_noise_model_fails_the_gate} &
+      An anisotropic wrong $\mat{R}$ --- one component's assumed variance
+      inflated $2\times$ and $5\times$, the rest correct --- is rejected,
+      so the gate responds to a partial covariance error and not only to
+      a global rescale. \\
+    \testid{test_defect_confined_to_part_of_the_run_fails_the_gate} &
+      A covariance defect over the last quarter of a run is rejected on
+      both paths: where coverage gates, and where only the headline
+      does. \\
+    \testid{test_coverage_is_reported_but_not_gated_for_correlated_epochs} &
+      Declaring epochs correlated leaves the measured inside-count
+      unchanged but removes it from the verdict, which then rests on the
+      headline alone --- the NEES configuration of
+      Section~\ref{sec:ekf:consistency}. \\
+    \testid{test_ensemble_gate_accepts_a_single_run} &
+      A lone run is gated as its own $N = 1$ ensemble, so a single-log
+      invocation is low-powered rather than ungated. \\
     \testid{test_cli_single_run_overconfident_fails} &
       FR-26 at the command level: \texttt{star consistency} on a run whose
       covariance is logged at half its true value reports
       \texttt{CONSISTENCY: FAIL} and exits nonzero, naming the failure as
       overconfident. \\
+    \testid{test_cli_ensemble_overconfident_directory_fails} &
+      The same at ensemble scale: a directory of runs whose covariances
+      are all logged at half truth exits nonzero, so narrowing what gates
+      has not left the instrument unable to fail. \\
+    \testid{test_cli_time_averaged_numbers_never_set_the_exit_code} &
+      The regression this revision prevents: a run whose time-averaged
+      diagnostic lands outside its indicative interval, with every gate
+      passing, still exits 0, and no diagnostic line carries the words
+      \texttt{PASS} or \texttt{FAIL}. \\
     \testid{test_cli_ensemble_over_directory} &
       The command evaluates an ensemble over a directory of runs, the form
       the exit-criterion-3 driver will invoke. \\
@@ -648,8 +805,7 @@ Table~\ref{tab:ekf:validation-filter}.
       Phase~6 exit criterion~3, NEES half. A 100-run seeded ensemble of the
       reference consistency scenario satisfies the
       gate~\eqref{eq:ekf:ensemble} at $n = 15$: the ensemble average is
-      inside the two-sided 95\,\% bounds, and so is the per-epoch ensemble
-      average at no fewer than 95\,\% of epochs. Bounds are evaluated with
+      inside the two-sided 95\,\% bounds. Bounds are evaluated with
       the project's exact quantile function, not the
       approximation~\eqref{eq:ekf:wh}. \\
     \testid{test_ensemble_nis_gate_passes} &
