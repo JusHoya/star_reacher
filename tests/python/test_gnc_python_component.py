@@ -907,3 +907,90 @@ def test_oracle_true_still_injects_truth_and_stamps_the_header(tmp_path):
         "test_gnc_missions.test_oracle_flag_stamped_in_header covers the "
         "built-in chain, this covers a plugin component"
     )
+
+
+def test_stack_walking_reaches_truth_under_a_python_stepping_driver(tmp_path):
+    """A KNOWN-OPEN route, pinned rather than wished away.
+
+    The boundary above governs what the component *interface* hands over. It
+    does not, and cannot, govern what arbitrary Python in the same process
+    can reach by other means, and one such means is concrete enough to be
+    worth recording: when the run is driven from Python through ``Sim``, the
+    driver's own ``Sim`` handle is a local on the interpreter stack. A
+    component that walks the stack finds it and may call ``Sim.truth()`` --
+    the privileged FR-24 accessor -- getting the full evolving true state.
+
+    This is a different animal from the ``error_state(truth)`` channel this
+    module's other tests replaced. That one was unconditional: the loop
+    pushed truth to every estimator on every cycle of every run, batch or
+    stepped, with no action by the plugin author. This one requires a Python
+    stepping driver and a plugin that deliberately introspects frames. It is
+    the "a plugin is a program, not data" limit already stated in
+    docs/gnc_plugins.md sections 6 and 7, and closing it would take
+    sandboxing that this project does not attempt.
+
+    The batch path is checked alongside it: under ``star run`` the loop is
+    owned by the core, no ``Sim`` is on the Python stack, and the route
+    finds nothing. The test asserts today's behaviour on both paths, so a
+    future change in either direction is visible rather than silent.
+    """
+    core = _core_or_fail()
+
+    reached = []
+
+    class FrameHunter(core.IGncComponent):
+        def __init__(self, cfg):
+            super().__init__()
+            self.q = [1.0, 0.0, 0.0, 0.0]
+
+        def init(self, ctx):
+            self.q = list(ctx.q0_i2b)
+
+        def update(self, inp):
+            import sys
+
+            depth = 0
+            try:
+                while True:
+                    frame = sys._getframe(depth)
+                    for value in list(frame.f_locals.values()):
+                        if isinstance(value, core.Sim):
+                            reached.append(list(value.truth()["r_i_m"]))
+                            raise StopIteration
+                    depth += 1
+            except (ValueError, StopIteration):
+                pass
+            out = core.GncOutput()
+            out.valid = True
+            out.q_i2b = self.q
+            return out
+
+        def state_dim(self):
+            return 4
+
+        def state(self):
+            return self.q
+
+        def covariance_upper(self):
+            return [0.0] * 10
+
+    name = _register(core, FrameHunter, "frame_hunter")
+    cfg = _swap_component(core, _run_config(core, ATTITUDE_MISSION), "nav", name)
+    assert cfg.oracle is False
+
+    truth_r = []
+    sim = core.Sim(cfg, str(tmp_path / "frames.srlog"))
+    while not sim.done():
+        sim.step()
+        truth_r.append(list(sim.truth()["r_i_m"]))
+    sim.summary()
+
+    assert reached, (
+        "the stack-walk route found no Sim handle. If the stepping API was "
+        "changed so a component can no longer reach the driver, that is an "
+        "improvement -- delete this test and say so in docs/gnc_plugins.md "
+        "section 7, which currently documents the route as open."
+    )
+    # It is the real, evolving state, not a stale or placeholder value.
+    assert len({tuple(r) for r in reached}) > 100
+    assert reached[-1] in truth_r

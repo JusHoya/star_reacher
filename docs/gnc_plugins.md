@@ -311,10 +311,31 @@ per-cycle input, and every argument of every virtual it can override, and
 requires the harvest to contain none of the evolving true state read from
 `Sim.truth()` on the same cycles.
 
-Two limits are worth stating plainly. A plugin runs in-process with the full
-privileges of the process (section 6), so what is guaranteed is that the
-*interface* hands over no truth — not that arbitrary Python cannot reach it
-by other means, such as the filesystem or the interpreter itself. Nothing
-here sandboxes a plugin, and the determinism contract has the same character.
-And a plugin estimator remains free to be dishonest about its own state; an
-implausibly good `nav.err` is what a reviewer should look at.
+### What this does not cover
+
+A plugin runs in-process with the full privileges of the process (section 6),
+so what is guaranteed is that the *interface* hands over no truth — not that
+arbitrary Python cannot reach it by other means. Nothing here sandboxes a
+plugin, and the determinism contract has the same character. One such route
+is concrete enough to name rather than leave to the imagination:
+
+> **Stack walking under a Python stepping driver.** When a run is driven from
+> Python through `Sim`, the driver's own `Sim` handle is a local on the
+> interpreter stack. A component that walks frames with `sys._getframe` finds
+> it and can call `Sim.truth()`, obtaining the full evolving true state
+> regardless of the oracle flag. Under the batch path (`star run`) the loop is
+> owned by the core, no `Sim` is on the Python stack, and the route finds
+> nothing.
+
+This differs in kind from the `error_state(truth)` channel described above.
+That one was unconditional — the loop pushed truth to every estimator on
+every cycle of every run, batch or stepped, with no action by the plugin
+author, so an ordinary implementation held truth whether or not it wanted
+it. This one takes a Python stepping driver plus a plugin that deliberately
+introspects the interpreter. Closing it would take sandboxing, which this
+project does not attempt. It is pinned by
+`test_stack_walking_reaches_truth_under_a_python_stepping_driver` so the
+current behaviour is a recorded fact rather than an assumption.
+
+Finally, a plugin estimator remains free to be dishonest about its own state;
+an implausibly good `nav.err` is what a reviewer should look at.
