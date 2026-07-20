@@ -279,11 +279,19 @@ class ErrorStateEkf final : public IGncComponent {
     q_hat_ = rotation::quat_normalize(rotation::quat_multiply(q_hat_, dq));
     omega_hat_ = omega_avg;
 
-    // Velocity with the rotation-of-frame compensation, then trapezoidal
-    // position (eq:ekf:mech).
+    // Velocity and position both trapezoidal, the predictor-corrector of
+    // eq:ekf:mech. Gravity is the one acceleration the IMU cannot sense, so
+    // it is the filter's own quadrature - not a sensor - that sets its
+    // truncation error. An explicit Euler step here leaves a deterministic
+    // velocity drift no term of Q describes (sec:ekf:gravityorder), so the
+    // step is closed to second order to match the position step's order.
     const Eigen::Vector3d dv_rot = dv + 0.5 * dtheta.cross(dv);
-    const Eigen::Vector3d grav = gravity(p_pre);
-    const Eigen::Vector3d v_new = v_pre + c_hat * dv_rot + grav * dt;
+    const Eigen::Vector3d sensed = c_hat * dv_rot;
+    const Eigen::Vector3d g_pre = gravity(p_pre);
+    const Eigen::Vector3d v_pred = v_pre + sensed + g_pre * dt;
+    const Eigen::Vector3d p_pred = p_pre + 0.5 * (v_pre + v_pred) * dt;
+    const Eigen::Vector3d v_new =
+        v_pre + sensed + 0.5 * (g_pre + gravity(p_pred)) * dt;
     p_hat_ = p_pre + 0.5 * (v_pre + v_new) * dt;
     v_hat_ = v_new;
 
