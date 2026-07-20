@@ -133,6 +133,22 @@ The applied defaults (``latency_cycles``, ``oracle``) are recorded in the
 resolved config, and the ``[gnc]``/``[sensors]`` keys enter it only when
 present, so pre-Phase-6 missions resolve byte-identically.
 
+Any of the three slots may instead name a Python-authored component in the
+reserved ``python:`` namespace (FR-25)::
+
+    [gnc.control]
+    component = "python:my_pd"      # loaded with star run --gnc-plugin my.py
+    kp_nm_per_rad = 40.0
+
+Because validation must work core-less and without the plugin file, the name
+after the prefix is checked here only against a grammar; that it names a
+component the plugin really declares is checked by ``star_reacher.plugin``
+once the file is loaded. The prefix is what makes the split safe rather than
+a loophole: an unprefixed name is still measured against the built-in
+vocabularies, so ``dead_reckonning`` stays an error. A plugin slot's
+parameter keys are the plugin's contract and are not whitelisted, but their
+values are still held to the numbers-only rule ``GncComponentCfg`` imposes.
+
 Phase 5 additions (FR-32 example missions): the heliocentric regime
 ===================================================================
 
@@ -158,6 +174,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import tomllib
 import warnings
 from datetime import datetime, timezone
@@ -287,6 +304,17 @@ _GNC_CONTROL_COMPONENTS = {
     "pd_attitude": ("kp_nm_per_rad", "kd_nm_per_radps", "tau_max_nm"),
     "external": (),
 }
+# FR-25 plugin namespace: a mission selects a Python-authored component
+# (loaded with `star run --gnc-plugin`) as "python:<name>" in any of the three
+# chain slots. Reserving a prefix rather than accepting bare names keeps this
+# validator strict core-less -- an unprefixed name is still measured against
+# the vocabularies above, so a typo'd built-in remains a hard error instead of
+# being waved through as a possible plugin -- and it makes a plugin unable to
+# shadow a built-in, since the two live in disjoint registry namespaces. The
+# name is proved real against the loaded plugin by star_reacher.plugin, which
+# owns the matching constant.
+_GNC_PLUGIN_PREFIX = "python:"
+_GNC_PLUGIN_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # Open-loop attitude sequence actions conflict with GNC attitude authority
 # and are rejected when [gnc] is present.
 _GNC_ATTITUDE_ACTIONS = (
@@ -1580,6 +1608,90 @@ def _validate_environment(
     return resolved
 
 
+def _validate_gnc_plugin_component(
+    table: dict, path: str, component: str, errs: _Errors
+) -> dict | None:
+    """One ``[gnc.*]`` slot naming a plugin component (FR-25 ``--gnc-plugin``).
+
+    Validation must work core-less and without the plugin file, so the name
+    after the ``python:`` prefix cannot be checked against a registry here.
+    It is checked against a grammar instead, and against the plugin's declared
+    components at run time by ``star_reacher.plugin``. The prefix is what
+    keeps that two-stage split honest: an unprefixed typo is still measured
+    against the built-in vocabulary and still fails here.
+
+    Parameter KEYS are the plugin's own contract and are therefore not
+    whitelisted -- this validator cannot know them. Their VALUES are still
+    held to the plain-data rule of ``star/gnc/config.hpp``: a finite number,
+    or an array of finite numbers, because that is all the bound
+    ``GncComponentCfg`` can carry. A parameter the plugin does not recognize
+    is the plugin's to reject.
+    """
+    name = component[len(_GNC_PLUGIN_PREFIX) :]
+    if not _GNC_PLUGIN_NAME_RE.fullmatch(name):
+        errs.add(
+            path,
+            "component",
+            f"malformed plugin component name {component!r}",
+            hint=(
+                f'the name after "{_GNC_PLUGIN_PREFIX}" must match '
+                f"{_GNC_PLUGIN_NAME_RE.pattern} (a letter or underscore "
+                f"followed by letters, digits, or underscores)"
+            ),
+        )
+        return None
+
+    resolved: dict = {"component": component}
+    ok = True
+    for key, value in table.items():
+        if key == "component":
+            continue
+        if _is_number(value):
+            if not math.isfinite(float(value)):
+                errs.add(
+                    path,
+                    key,
+                    f"expected a finite number, got {value!r}",
+                    hint="plugin component parameters are finite scalars",
+                )
+                ok = False
+                continue
+            resolved[key] = value
+        elif isinstance(value, list):
+            if not value or not all(_is_number(v) for v in value):
+                errs.add(
+                    path,
+                    key,
+                    "expected a non-empty array of numbers",
+                    hint="plugin component parameters are numbers or arrays of numbers",
+                )
+                ok = False
+                continue
+            if not all(math.isfinite(float(v)) for v in value):
+                errs.add(
+                    path,
+                    key,
+                    "all components must be finite",
+                    hint="plugin component parameters are finite",
+                )
+                ok = False
+                continue
+            resolved[key] = [float(v) for v in value]
+        else:
+            errs.add(
+                path,
+                key,
+                f"expected a number or an array of numbers, got "
+                f"{type(value).__name__}",
+                hint=(
+                    "a plugin component's parameters ride in the scalar and "
+                    "vector maps of GncComponentCfg, which carry numbers only"
+                ),
+            )
+            ok = False
+    return resolved if ok else None
+
+
 def _validate_gnc_component(
     table: object, path: str, vocab: dict, errs: _Errors
 ) -> dict | None:
@@ -1598,18 +1710,22 @@ def _validate_gnc_component(
         )
         return None
     accepted = ", ".join(sorted(vocab))
-    component = _req_str(
-        table, path, "component", errs, hint=f"accepted components: {accepted}"
+    offered = (
+        f'accepted components: {accepted}, or "{_GNC_PLUGIN_PREFIX}<name>" for '
+        f"a component loaded with star run --gnc-plugin"
     )
-    if component is not None and component not in vocab:
+    component = _req_str(table, path, "component", errs, hint=offered)
+    if component is None:
+        return None
+    if component.startswith(_GNC_PLUGIN_PREFIX):
+        return _validate_gnc_plugin_component(table, path, component, errs)
+    if component not in vocab:
         errs.add(
             path,
             "component",
             f"unknown component {component!r}",
-            hint=f"accepted components: {accepted}",
+            hint=offered,
         )
-        component = None
-    if component is None:
         return None
     _reject_unknown(table, path, {"component", *vocab[component]}, errs)
     resolved: dict = {"component": component}

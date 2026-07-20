@@ -27,6 +27,7 @@ from star_reacher.mission import (
     keplerian_to_cartesian,
     validate_mission_file,
 )
+from star_reacher.plugin import check_plugin_selections, load_plugins
 
 
 class RunnerError(Exception):
@@ -406,13 +407,42 @@ def build_run_config(core, resolved, config_sha, strict=False):
     return cfg, resolved_vehicle_toml, new_path
 
 
-def run_mission(mission_path, outdir=None, force=False, command_line=None, strict=False) -> RunResult:
+def _plugin_provenance(gnc_plugins) -> list[dict]:
+    """Record each loaded plugin file's path and SHA-256 for meta.json.
+
+    The resolved-config hash covers the mission, not the plugin source, so a
+    plugin run's reproducibility anchor is incomplete without this: two runs
+    of one mission with two revisions of a plugin are different experiments
+    that would otherwise carry the same config_sha256.
+    """
+    out = []
+    for raw in gnc_plugins or ():
+        path = Path(raw)
+        out.append(
+            {
+                "path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    return out
+
+
+def run_mission(
+    mission_path,
+    outdir=None,
+    force=False,
+    command_line=None,
+    strict=False,
+    gnc_plugins=None,
+) -> RunResult:
     """Validate, resolve, hash, propagate, and write the run artifacts.
 
     Raises ``MissionValidationError`` (exit 2 at the CLI) for config errors,
     ``CoreMissingError`` or ``RunnerError`` (exit 1) for runtime failures.
     ``strict`` promotes validation warnings (the vehicle plausibility tier)
-    to errors (FR-15).
+    to errors (FR-15). ``gnc_plugins`` is a sequence of Python files declaring
+    GNC components the mission selects as ``python:<name>`` (FR-25); loading
+    one executes it, so the paths come only from an explicit ``--gnc-plugin``.
     """
     start_wall = time.monotonic()
     start_utc = datetime.now(timezone.utc).isoformat()
@@ -442,6 +472,14 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None, stric
 
     core = import_core()
 
+    # FR-25: register plugin components before the config is built, because
+    # build_run_config hands component names to a core that resolves them
+    # against its registry. The selection check runs unconditionally - with no
+    # plugin loaded it is what turns a mission naming "python:x" into an error
+    # that says which slot needs a --gnc-plugin.
+    loaded_plugins = load_plugins(gnc_plugins, core)
+    check_plugin_selections(resolved, loaded_plugins)
+
     cfg, resolved_vehicle_toml, new_path = build_run_config(
         core, resolved, config_sha, strict=strict
     )
@@ -469,6 +507,10 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None, stric
         "command_line": list(command_line) if command_line else [],
         "config_sha256": config_sha,
         "srlog_sha256": srlog_sha,
+        # FR-25 provenance: a plugin's code is not covered by config_sha256,
+        # so a run that flew one is only reproducible if the reader can tell
+        # which file supplied it and that the file has not changed since.
+        "gnc_plugins": _plugin_provenance(gnc_plugins),
         "host": {
             "node": platform.node(),
             "platform": platform.platform(),

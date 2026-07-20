@@ -64,6 +64,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="promote validation warnings (the FR-15 vehicle plausibility tier) "
         "to errors",
     )
+    p_run.add_argument(
+        "--gnc-plugin",
+        action="append",
+        default=None,
+        metavar="PATH.PY",
+        dest="gnc_plugin",
+        help="load a Python file declaring GNC components (FR-25), which the "
+        'mission selects as component = "python:<name>" in [gnc.nav], '
+        "[gnc.guidance], or [gnc.control]. Repeatable. SECURITY: the file is "
+        "imported, so its code runs with this process's privileges - pass "
+        "only files you trust. Plugins are never fetched over a network nor "
+        "discovered automatically; a mission file alone can never cause code "
+        "to be executed. DETERMINISM: a plugin runs inside the deterministic "
+        "time loop, so D-10 reproducibility holds only as far as the "
+        "plugin's own code does (no clock, no I/O, no unseeded RNG, no "
+        "set iteration, no mutable global state)",
+    )
 
     p_verify = sub.add_parser(
         "verify",
@@ -226,7 +243,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_run(args: argparse.Namespace, argv: list[str]) -> int:
+    from star_reacher.plugin import DETERMINISM_NOTICE, PluginError
     from star_reacher.runner import RunnerError, run_mission
+
+    if args.gnc_plugin:
+        # Printed before the run, not buried in a docstring: someone loading a
+        # plugin from a shell may never open the Python API docs, and the
+        # contract they are accepting is exactly the one that decides whether
+        # this run is reproducible at all.
+        for line in DETERMINISM_NOTICE.splitlines():
+            print(f"star run: {line}", file=sys.stderr)
 
     try:
         result = run_mission(
@@ -235,6 +261,7 @@ def _cmd_run(args: argparse.Namespace, argv: list[str]) -> int:
             force=args.force,
             command_line=["star", *argv],
             strict=args.strict,
+            gnc_plugins=args.gnc_plugin,
         )
     except MissionValidationError as exc:
         for line in exc.errors:
@@ -246,6 +273,11 @@ def _cmd_run(args: argparse.Namespace, argv: list[str]) -> int:
         )
         return _EXIT_VALIDATION
     except CoreMissingError as exc:
+        print(f"star run: {exc}", file=sys.stderr)
+        return _EXIT_RUNTIME
+    except PluginError as exc:
+        # A runtime failure, not a validation one: the mission file may be
+        # perfectly valid and the plugin argument the thing that is wrong.
         print(f"star run: {exc}", file=sys.stderr)
         return _EXIT_RUNTIME
     except (RunnerError, OSError) as exc:
