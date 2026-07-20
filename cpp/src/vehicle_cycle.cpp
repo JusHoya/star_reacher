@@ -635,6 +635,10 @@ struct VehicleCycle::Impl {
   int aero_sep_count = 0;
   std::int64_t i = 0;      // current cycle index
   bool finished = false;
+  // The log handle has been released, either by finish() or by an explicit
+  // close() on an abandoned run. Tracked separately from `finished` because
+  // only the former means the file is a complete run.
+  bool closed = false;
 
   // Per-cycle products carried from process_cycle() into advance_cycle().
   StackProps sp;
@@ -1573,8 +1577,15 @@ struct VehicleCycle::Impl {
            (loads.f_thrust + loads.f_aero) / ctx.mass_kg;
   }
 
-  void finish() {
+  void close_log() {
+    // SrlogWriter::close() is guarded by is_open(), so this is idempotent
+    // and a second call after finish() is a no-op rather than an error.
     writer.close();
+    closed = true;
+  }
+
+  void finish() {
+    close_log();
     for (int c = 0; c < 3; ++c) {
       run_summary.final_r_m[static_cast<std::size_t>(c)] = r_m[c];
       run_summary.final_v_mps[static_cast<std::size_t>(c)] = v_mps[c];
@@ -1587,6 +1598,14 @@ struct VehicleCycle::Impl {
       throw std::logic_error(
           "VehicleCycle::step called after the run ended; the log is "
           "complete and closed");
+    }
+    if (closed) {
+      // Distinguished from the finished case: this run was abandoned, so
+      // its log is a valid prefix rather than a complete file, and no
+      // run_end event was written.
+      throw std::logic_error(
+          "VehicleCycle::step called after close(); the log has been "
+          "released and an abandoned run cannot be resumed");
     }
     process_cycle(i);
     if (stop) {
@@ -1622,6 +1641,8 @@ VehicleCycle::VehicleCycle(const RunConfig& cfg, const std::string& out_path) {
 VehicleCycle::~VehicleCycle() = default;
 
 bool VehicleCycle::step() { return impl_->step_once(); }
+
+void VehicleCycle::close() { impl_->close_log(); }
 
 bool VehicleCycle::done() const { return impl_->finished; }
 

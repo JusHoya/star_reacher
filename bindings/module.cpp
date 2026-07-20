@@ -1468,7 +1468,16 @@ PYBIND11_MODULE(_core, m) {
           "done().")
       .def("has_external_command", &star::VehicleCycle::has_external_command,
            "True when the mission configures an 'external' guidance or "
-           "control component, i.e. when step(commands) has an addressee.");
+           "control component, i.e. when step(commands) has an addressee.")
+      .def("close", &star::VehicleCycle::close,
+           "Flush and release the SRLOG handle without completing the run. "
+           "Idempotent, and implied by a run that ends normally. An "
+           "abandoned run otherwise holds its log open for as long as the "
+           "object lives, which on Windows makes a later unlink or a reopen "
+           "of the same path fail with a sharing violation - the object's "
+           "lifetime is governed by refcounting and by whether a traceback "
+           "still pins the frame that holds it, neither of which a driver "
+           "controls. step() after close() raises.");
 
   m.def("gnc_component_names", &star::gnc::component_names,
         "Registered GNC component names (FR-25 registry), sorted. Exposed "

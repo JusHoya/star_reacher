@@ -528,14 +528,28 @@ SrlogWriter::SrlogWriter(const std::string& path,
   put_bytes(json.data(), json.size());
 }
 
-SrlogWriter::~SrlogWriter() { close(); }
+SrlogWriter::~SrlogWriter() {
+  // A destructor is implicitly noexcept, so a throw escaping here would call
+  // std::terminate: an immediate process abort with no unwinding and no
+  // Python traceback, on exactly the I/O failure - a full disk, a dropped
+  // share - where a diagnostic matters most. The release of the file handle
+  // is what the destructor is responsible for, and close() below performs it
+  // before it throws; the failure itself is reported from the explicit
+  // close() on the normal path, which VehicleCycle::finish() and
+  // VehicleCycle::close() both call.
+  try {
+    close();
+  } catch (...) {  // NOLINT(bugprone-empty-catch) - see above
+  }
+}
 
 void SrlogWriter::close() {
   if (out_.is_open()) {
     out_.flush();
     if (!out_) {
-      // Failing loudly here (not silently in the destructor path) is why
-      // close() should be called explicitly on the success path.
+      // The handle is released before throwing, so a caller that reports
+      // this error still gets the file closed - the destructor swallows the
+      // throw but must never be the thing that leaks the handle.
       out_.close();
       throw std::runtime_error("SRLOG writer: flush failed on close");
     }

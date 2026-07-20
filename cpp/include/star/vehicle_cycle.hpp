@@ -108,6 +108,18 @@ class VehicleCycle {
   // log is then complete and closed, and step() must not be called again.
   bool step();
 
+  // Flush and release the SRLOG handle without completing the run, and
+  // report a failed final flush by throwing. Idempotent, and implied by a
+  // run that ends normally.
+  //
+  // A run abandoned part way - a driver that stops early, or any exception
+  // escaping step() - otherwise holds its log open for as long as the object
+  // lives, and on Windows an open handle makes a later unlink or a reopen of
+  // the same path fail with a sharing violation. Ending the file's lifetime
+  // must therefore be expressible without ending the object's. step() after
+  // close() throws std::logic_error rather than writing to a closed stream.
+  void close();
+
   bool done() const;
   std::int64_t cycle() const;   // current cycle index (0-based)
   double time_s() const;        // current cycle time, cycle() * dt_s

@@ -270,11 +270,30 @@ def _extract_arrays(run: Run, source: str) -> tuple[dict[str, np.ndarray], list[
 
     innov = run.groups.get("nav.innov")
     if innov is None:
-        problems.append(
-            f"{source}: missing channel group 'nav.innov' (needs channels "
-            f"'y' and 'S', the innovation and its packed covariance per "
-            f"FR-26)"
-        )
+        # An estimator that declares innov_max_dim() == 0 folds no
+        # measurements, and the loop then declares no nav.innov group at all.
+        # That is a legitimate configuration - dead reckoning is the shipped
+        # example - and it is distinguishable from a broken one WITHOUT
+        # inferring anything from absence: the v1.2 header carries a "gnc"
+        # object exactly when GNC ran, so a GNC run with no nav.innov group
+        # is a positive declaration of "no aiding", while a file with no
+        # "gnc" object at all predates the Phase 6 channels or was produced
+        # with no estimator in the loop.
+        if run.header.get("gnc") is None:
+            problems.append(
+                f"{source}: missing channel group 'nav.innov' (needs channels "
+                f"'y' and 'S', the innovation and its packed covariance per "
+                f"FR-26); this log carries no 'gnc' header object, so it "
+                f"predates the Phase 6 navigation channels or was produced "
+                f"without an estimator in the loop"
+            )
+        else:
+            # No NIS series exists to gate. Recorded as an explicit empty
+            # mapping, which reaches the caller ONLY on this branch: a
+            # declared-but-empty channel is turned into a problem below, so
+            # an empty mapping unambiguously means "declared no aiding"
+            # rather than "aided and produced nothing".
+            arrays["innov"] = {}
     else:
         missing = [n for n in ("y", "S") if n not in (innov.dtype.names or ())]
         for name in missing:
@@ -286,6 +305,29 @@ def _extract_arrays(run: Run, source: str) -> tuple[dict[str, np.ndarray], list[
         if not missing:
             groups, group_problems = _group_innovations(innov, source)
             problems.extend(group_problems)
+            # A DECLARED innovation channel that carries no records is a
+            # broken filter, not a passing one. The estimator asserted an
+            # aiding dimension at construction and then never folded a
+            # measurement - the update was gated out, the sensor was never
+            # sampled, or innovations() is miswired - and the NIS half of
+            # FR-26 silently does not exist. Reported here so it cannot
+            # reach the gate as "one gate, passed"; the shape this guards
+            # against is the gate that reports success BECAUSE the thing it
+            # measures is broken.
+            if not group_problems and not groups:
+                problems.append(
+                    f"{source}: group 'nav.innov' is declared (the estimator "
+                    f"reported a nonzero innov_max_dim) but carries no "
+                    f"records, so no measurement update ever fired and NIS "
+                    f"cannot be evaluated; an estimator that does no aiding "
+                    f"should declare innov_max_dim() == 0 instead"
+                )
+            empty = sorted(sid for sid, (y, _s) in groups.items() if len(y) == 0)
+            if empty:
+                problems.append(
+                    f"{source}: group 'nav.innov' carries no records for "
+                    f"sensor(s) {empty}, so their NIS cannot be evaluated"
+                )
             arrays["innov"] = groups
 
     if "e" in arrays and "P" in arrays and len(arrays["e"]) != len(arrays["P"]):
@@ -405,6 +447,20 @@ def cmd_consistency(args) -> int:
 
     # Every run must expose the same sensor set for the ensemble to stack.
     sensor_ids = sorted(per_file[0][1]["innov"].keys())
+    # Reaching here with no sensors means every run declared no aiding
+    # (_extract_arrays turned every other route to an empty set into a
+    # problem above). NEES alone is a real result and is gated below, but it
+    # is HALF of FR-26, so the report says so in words: a reader who sees
+    # "PASS (1/1 gates)" with no further comment would reasonably read it as
+    # the whole acceptance criterion having been met.
+    if not sensor_ids:
+        print(
+            "note: no NIS gate. Every run's estimator declares "
+            "innov_max_dim() == 0, so it folds no measurements and logs no "
+            "nav.innov channel. Only the NEES half of FR-26 is evaluated "
+            "below; this is a complete result for a non-aiding estimator "
+            "and an incomplete one for any filter that was meant to aid."
+        )
     for path, arrays in per_file:
         if sorted(arrays["innov"].keys()) != sensor_ids:
             print(
@@ -419,6 +475,31 @@ def cmd_consistency(args) -> int:
     # reads the same as it always has.
     def nis_label(sensor_id: int) -> str:
         return "NIS" if len(sensor_ids) == 1 else f"NIS[sensor {sensor_id}]"
+
+    # Each ensemble series is gated at ONE dimension, and that dimension is
+    # read off run 0. Check every run agrees, because nothing downstream
+    # would notice: nees() and nis() both return a (T,) array whatever
+    # dimension they were formed from, so runs at m = 3 and m = 6 stack
+    # without error and the whole ensemble would be gated at dof = R*3 - a
+    # factor-of-two error in the headline statistic, and a confident verdict
+    # in whichever direction the first run happened to point.
+    dim_series: list[tuple[str, list[int]]] = [
+        ("NEES", [a["e"].shape[-1] for _p, a in per_file])
+    ]
+    for sid in sensor_ids:
+        dim_series.append(
+            (nis_label(sid), [a["innov"][sid][0].shape[-1] for _p, a in per_file])
+        )
+    for label, dims in dim_series:
+        if len(set(dims)) != 1:
+            print(
+                f"star consistency: the {label} dimensions differ across "
+                f"runs ({sorted(set(dims))}); ensemble statistics need one "
+                f"common dimension, because the chi-square bound is taken at "
+                f"a single degrees-of-freedom count",
+                file=sys.stderr,
+            )
+            return _EXIT_RUNTIME
 
     results: list[bool] = []
     nees_runs: list[np.ndarray] = []

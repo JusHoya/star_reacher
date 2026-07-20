@@ -21,11 +21,15 @@ Typical use::
 
     from star_reacher.sim import Sim
 
-    sim = Sim("missions/leo_gnc.toml", "out/stepped")
-    obs, info = sim.reset()
-    while not sim.done():
-        obs = sim.step()
-    print(sim.summary())
+    with Sim("missions/leo_gnc.toml", "out/stepped") as sim:
+        obs, info = sim.reset()
+        while not sim.done():
+            obs = sim.step()
+        print(sim.summary())
+
+The context manager is the recommended form because it releases the log
+handle on the way out whether the run ended or an exception escaped
+``step()``; see :meth:`Sim.close`.
 
 ``observe()`` idempotence
 ------------------------
@@ -133,6 +137,10 @@ class Sim:
     ``mission_path`` is a mission TOML file; ``outdir`` receives ``run.srlog``
     exactly as ``star run`` would write it. The mission is validated and
     resolved on construction, and the run is opened by :meth:`reset`.
+
+    Usable as a context manager, which is the recommended form: ``__exit__``
+    calls :meth:`close`, so the log handle is released even when an exception
+    escapes :meth:`step`.
     """
 
     def __init__(
@@ -144,6 +152,10 @@ class Sim:
         self._strict = bool(strict)
         self._core = import_core()
         self._sim = None
+        # True once this Sim has opened its output path itself, which is what
+        # makes a later reset() over the same path its own run rather than
+        # someone else's file.
+        self._opened = False
 
         resolved, errors = validate_mission_file(
             self._mission_path, strict=self._strict
@@ -205,11 +217,21 @@ class Sim:
         An override is therefore capable of failing the run loudly, never of
         producing a run whose configuration was never validated at all.
 
-        Calling ``reset`` again starts a new run over the same output path.
+        Calling ``reset`` again starts a new run over the same output path,
+        which is the FR-24 episode loop -- ``for ep in range(N):
+        sim.reset()`` -- and works at the default ``force=False``. The
+        ``force`` guard exists to protect an output this ``Sim`` did not
+        write; once it has opened that path itself, a later ``reset``
+        overwrites its own previous run. Each episode therefore leaves only
+        the last episode's ``run.srlog`` behind: a driver that needs one log
+        per episode constructs a ``Sim`` per output directory.
         """
         resolved = _deep_copy_resolved(self._resolved)
         if seed is not None:
-            resolved["run"]["seed"] = int(seed)
+            # Through the same path as any other integer override, so a
+            # fractional seed is refused here for the reason it is refused
+            # there rather than silently truncated.
+            _apply_override(resolved, "run.seed", seed)
         for key, value in dict(overrides or {}).items():
             _apply_override(resolved, _OVERRIDE_ALIASES.get(key, key), value)
 
@@ -220,7 +242,12 @@ class Sim:
         )
 
         srlog_path = self._outdir / "run.srlog"
-        if srlog_path.exists() and not self._force:
+        # The guard is against clobbering a log this Sim did not write. A
+        # second reset() over a path this Sim already opened is the
+        # documented episode loop, not an accident, so it is not refused --
+        # otherwise the default-constructed Gym-style driver FR-24 describes
+        # fails on its second episode.
+        if srlog_path.exists() and not self._force and not self._opened:
             raise RunnerError(
                 f"{srlog_path}: output already exists; construct the Sim with "
                 f"force=True to overwrite, or choose another directory"
@@ -235,10 +262,13 @@ class Sim:
                 resolved_vehicle_toml, encoding="utf-8"
             )
 
-        # Dropping the previous Sim closes its log before the new one opens
-        # the same path.
-        self._sim = None
+        # Close explicitly rather than relying on the drop below to do it:
+        # refcounting releases the previous run's handle only if nothing else
+        # still references it, and a traceback pinning a frame is enough to
+        # keep it alive past the point the new run needs the path.
+        self.close()
         self._sim = self._core.Sim(cfg, str(srlog_path))
+        self._opened = True
         info = {
             "config_sha256": config_sha,
             "srlog_path": str(srlog_path),
@@ -305,8 +335,41 @@ class Sim:
             sim.step()
         return sim.summary()
 
+    def close(self):
+        """Release the open run's log handle. Idempotent.
+
+        A run abandoned part way -- a driver that stops early, or any
+        exception escaping :meth:`step` -- holds ``run.srlog`` open for as
+        long as the core ``Sim`` lives, and how long that is depends on
+        refcount timing and on whether a traceback still pins the frame
+        holding it. On Windows the open handle then makes a later unlink of
+        the directory, or a reopen of the same path, fail with
+        ``PermissionError: [WinError 32]``; on Linux the unlink silently
+        succeeds, so this reproduces under MSVC only. Closing explicitly
+        makes the file's lifetime something a driver states rather than
+        something it infers.
+
+        The log of a run closed before it ended is a valid PREFIX, not a
+        complete run: it carries no ``run_end`` event, and stepping after
+        close raises rather than resuming.
+        """
+        sim, self._sim = self._sim, None
+        if sim is not None:
+            sim.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
     def _active(self):
         if self._sim is None:
+            if self._opened:
+                raise SimError(
+                    "the run was closed; call reset() to start a new one"
+                )
             raise SimError("call reset() before stepping the simulation")
         return self._sim
 
@@ -387,8 +450,19 @@ def _apply_override(resolved, path, value):
         # An integer leaf keeps its type: control_rate_hz, latency_cycles and
         # seed are counts, and letting one become 10.0 would change the
         # canonical config bytes - and so the config hash - without changing
-        # the run.
-        container[key] = int(value) if isinstance(current, int) else float(value)
+        # the run. A fractional value is REFUSED rather than truncated: the
+        # truncated run is perfectly reproducible and is not the run the
+        # driver asked for, which is the worst of both.
+        if isinstance(current, int):
+            if float(value) != int(value):
+                raise SimError(
+                    f"override {path!r}: {current!r} is an integer count, so "
+                    f"it takes an integer; {value!r} would be truncated to "
+                    f"{int(value)}"
+                )
+            container[key] = int(value)
+        else:
+            container[key] = float(value)
         return
 
     if isinstance(current, list) and current and all(_is_number(v) for v in current):
@@ -401,6 +475,17 @@ def _apply_override(resolved, path, value):
             raise SimError(
                 f"override {path!r}: every element must be a number, got "
                 f"{value!r}"
+            )
+        # Same rule as the scalar branch, element by element.
+        fractional = [
+            v for c, v in zip(current, value)
+            if isinstance(c, int) and float(v) != int(v)
+        ]
+        if fractional:
+            raise SimError(
+                f"override {path!r}: {current!r} is an array of integer "
+                f"counts, so every element takes an integer; {fractional!r} "
+                f"would be truncated"
             )
         container[key] = [
             int(v) if isinstance(c, int) else float(v)
