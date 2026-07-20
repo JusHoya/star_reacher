@@ -441,7 +441,9 @@ Binding implementation notes for the Phase~6 modules:
 \section{Validation evidence}
 \label{sec:gnc:validation}
 
-Tables~\ref{tab:gnc:validation} and~\ref{tab:gnc:validation-py} list the
+Tables~\ref{tab:gnc:validation}, \ref{tab:gnc:validation-crit2},
+\ref{tab:gnc:validation-crit2-guards},
+and~\ref{tab:gnc:validation-py} list the
 tests that constitute this chapter's validation evidence. Each test
 identifier is machine-checked to exist in the test tree by
 \texttt{scripts/lint\_chapters.py}. The one planned gate not yet
@@ -498,9 +500,11 @@ after the tables.
 
 \begin{table}[htbp]
   \centering
-  \caption{Validation evidence for the built-in GNC components: in-loop
-    behavior (pytest, \texttt{tests/python/}).}
-  \label{tab:gnc:validation-py}
+  \caption{Validation evidence for the built-in GNC components: exit
+    criterion~2, both halves and their non-vacuity guards (pytest,
+    \texttt{tests/python/test\_gnc\_missions.py} and
+    \texttt{test\_gnc\_pd\_golden.py}).}
+  \label{tab:gnc:validation-crit2}
   \begin{tabular}{lp{7.2cm}}
     \toprule
     Test ID & Acceptance basis \\
@@ -518,23 +522,33 @@ after the tables.
       evaluated against the committed \texttt{mpmath} goldens, one
       parametrization per case, to the golden manifest's
       $\max(5\times10^{-15}\lvert\tau\rvert, 10^{-18})$ bound, with the
-      criterion's own \qty{e-9}{\newton\metre} asserted alongside. The two
-      halves together are the criterion's conjunction: the Python
-      controller matches the specification's extended-precision answer, and
-      the compiled controller matches the Python controller in the loop.
-      Requires no compiled core, so this half is gated even on a core-less
+      criterion's own \qty{e-9}{\newton\metre} asserted alongside. Requires
+      no compiled core, so this half is gated even on a core-less
       checkout. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the built-in GNC components: the
+    non-vacuity guards on exit criterion~2, which assert that the two gates
+    above are sensitive to every equation they claim to cover (pytest).}
+  \label{tab:gnc:validation-crit2-guards}
+  \begin{tabular}{lp{7.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
     \testid{test_golden_cases_cover_every_branch} &
-      Non-vacuity of the golden half. Asserts from the file itself that the
+      Non-vacuity of the golden half, asserted from the file itself: the
       committed set contains a case with $\delta q_w < 0$, one with
       $\delta q_w$ exactly zero, one with $\delta q_w > 0$, one clamping
-      some axes but not all (without which
-      equation~\eqref{eq:gnc:sat} would be indistinguishable from an
-      unsaturated law), and one combining a non-zero commanded rate with a
-      non-identity error DCM (without which
-      equation~\eqref{eq:gnc:werr}'s rotation would be untested), so a
-      regenerated golden set that quietly lost a branch fails here rather
-      than silently weakening the gate. \\
+      some axes but not all (without which equation~\eqref{eq:gnc:sat}
+      would be indistinguishable from an unsaturated law), and one
+      combining a non-zero commanded rate with a non-identity error DCM
+      (without which equation~\eqref{eq:gnc:werr}'s rotation would be
+      untested), so a regenerated golden set that quietly lost a branch
+      fails here rather than silently weakening the gate. \\
     \testid{test_pd_scenario_exercises_every_equation} &
       Non-vacuity of the mission half, asserted on the measured log rather
       than assumed from the fixture's construction: commanded rate up to
@@ -544,6 +558,19 @@ after the tables.
       the $\delta q_w < 0$ branch and 301 on the other; the clamp catching
       on 92 cycles; and every body axis carrying torque, so no per-axis
       gain path is multiplied by zero. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the built-in GNC components: remaining
+    in-loop behavior (pytest, \texttt{tests/python/}).}
+  \label{tab:gnc:validation-py}
+  \begin{tabular}{lp{7.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
     \testid{test_dead_reckoning_tracks_torque_driven_truth} &
       Against torque-driven truth the logged estimate error stays below
       $5\times10^{-3}$ in both the quaternion and rate components --- the
