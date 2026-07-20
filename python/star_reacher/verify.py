@@ -26,6 +26,7 @@ golden suite in ``tests/python/test_plot_golden.py``.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random
 import struct
@@ -1283,6 +1284,248 @@ def _check_v021(ctx: dict) -> None:
             raise CheckFailure("re-rendering the same log produced different PNG bytes")
 
 
+# --------------------------------------------------------------------------
+# Phase 6 checks (V022-V024): the exit-criterion battery.
+#
+# Only criteria whose gates were shown able to fail are wired here. The Phase
+# 6 evidence audit (docs/audit/phase6_evidence_audit.md) found several of the
+# phase's gates unsound - criterion 2's golden scenario leaves three of its
+# five equations unexercised, criterion 3's driver gates on a rule its own
+# consistency module documents as a coin flip, criterion 9's tolerance sits
+# about seven orders above the residual it measures, and criterion 7's
+# intrinsics clause has no channel to gate at all. Wiring those into the
+# acceptance suite would launder a known-weak check into a green line, so
+# they are deliberately absent and are listed as gaps in the Phase 6
+# roadmap entry instead. What lands here is criteria 4 and 5, which the
+# audit found solid, plus the version coherence that the 0.6.0 bump makes
+# checkable from a bare wheel.
+#
+# The wheel carries no missions/ or vehicles/ tree, so the GNC fixture is
+# synthesized in a temp directory like every other fixture in this module.
+# Vehicle references resolve against the process working directory, so the
+# checks below chdir into that temp directory and restore unconditionally.
+
+_P6_VEHICLE = """\
+schema_version = 1
+provenance = "representative"
+
+[vehicle]
+name = "verify-bus-150"
+description = "150 kg smallsat bus, inline fixture for the acceptance suite"
+
+[[stage]]
+name = "bus"
+dry_mass_kg = 150.0
+dry_cg_m = [0.3, 0.0, 0.0]
+dry_inertia_kgm2 = [[9.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 11.0]]
+
+[[stage.sensor]]
+name = "imu0"
+preset = "presets/imu_tactical.toml"
+position_m = [0.3, 0.0, 0.0]
+axis = [1.0, 0.0, 0.0]
+"""
+
+# The closed-loop attitude-acquisition scenario of missions/leo_attitude_gnc
+# .toml, shortened to 20 s: q0 is the exact initial attitude the Phase 4
+# rule assigns to this state ([0, sqrt(1/2), sqrt(1/2), 0]) and q_cmd is that
+# attitude rotated 10 degrees about body +Z, so the run opens with a pure
+# 10-degree tracking error and commands a non-trivial torque from cycle one.
+_P6_GNC_MISSION = """\
+schema_version = 1
+vehicle = "verify_vehicle.toml"
+
+[mission]
+name = "verify-p6-gnc"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 20.0
+
+[run]
+seed = 20260601
+
+[integrator]
+type = "rk4"
+dt_s = 0.1
+
+[environment]
+central_body = "earth"
+
+[logging]
+truth_rate_hz = 10
+
+[initial_state.cartesian]
+r_m = [7.0e6, 0.0, 0.0]
+v_mps = [0.0, 7546.0, 0.0]
+frame = "GCRF"
+
+[gnc]
+control_rate_hz = 10
+latency_cycles = 0
+{oracle}
+[gnc.nav]
+component = "dead_reckoning"
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+
+[gnc.guidance]
+component = "attitude_hold"
+q_cmd = [0.0, 0.7660444431189781, 0.6427876096865393, 0.0]
+
+[gnc.control]
+component = "pd_attitude"
+kp_nm_per_rad = [0.4, 0.4, 0.4]
+kd_nm_per_radps = [3.6, 3.6, 3.6]
+tau_max_nm = [0.05, 0.05, 0.05]
+
+[sensors.imu]
+sample_rate_hz = 10
+"""
+
+
+def _p6_fixture(tdp: Path, oracle: bool = False) -> Path:
+    """Write the inline vehicle + GNC mission and return the mission path."""
+    (tdp / "verify_vehicle.toml").write_text(_P6_VEHICLE, encoding="utf-8")
+    name = "gnc_oracle.toml" if oracle else "gnc.toml"
+    mission = tdp / name
+    mission.write_text(
+        _P6_GNC_MISSION.format(oracle="oracle = true\n" if oracle else ""),
+        encoding="utf-8",
+    )
+    return mission
+
+
+def _check_v022(ctx: dict) -> None:
+    """Phase 6 exit criterion 4: stepping and batch agree, observe() is pure."""
+    import os
+
+    from star_reacher.sim import Sim
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        mission = _p6_fixture(tdp)
+        cwd = os.getcwd()
+        sim = None
+        os.chdir(tdp)
+        try:
+            batch = run_mission(mission, tdp / "batch")
+            sim = Sim(str(mission), str(tdp / "stepped"))
+            sim.reset()
+            # observe() must be idempotent: no component runs, no random draw,
+            # no sensor sample is consumed. Checked at several depths so a
+            # first-cycle special case cannot hide.
+            checkpoints = {0, 1, 5, 17}
+            steps = 0
+            while not sim.done():
+                if steps in checkpoints:
+                    first = sim.observe()
+                    if sim.observe() != first or sim.observe() != first:
+                        raise CheckFailure(
+                            f"observe() differed across calls without step() "
+                            f"at cycle {steps}"
+                        )
+                sim.step()
+                steps += 1
+            summary = sim.summary()
+        finally:
+            # Drop the Sim before the temp tree is removed. A run abandoned
+            # part-way still holds its log open, and on Windows that turns
+            # any failure here into a PermissionError from the directory
+            # cleanup, hiding the evidence this check exists to report.
+            sim = None
+            os.chdir(cwd)
+
+        if steps <= 0:
+            raise CheckFailure("the stepped run advanced zero cycles")
+        stepped_sha = hashlib.sha256(
+            (tdp / "stepped" / "run.srlog").read_bytes()
+        ).hexdigest()
+        if stepped_sha != batch.srlog_sha256:
+            raise CheckFailure(
+                f"stepped and batch logs differ: {stepped_sha} != "
+                f"{batch.srlog_sha256} over {steps} cycles"
+            )
+        if summary["steps"] != batch.summary["steps"]:
+            raise CheckFailure(
+                f"step tally {summary['steps']} != batch "
+                f"{batch.summary['steps']}"
+            )
+
+
+def _check_v023(ctx: dict) -> None:
+    """Phase 6 exit criterion 5: major unchanged by v1.2 channels; oracle
+    identifiable from the log header alone."""
+    import os
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        plain = _p6_fixture(tdp, oracle=False)
+        oracle = _p6_fixture(tdp, oracle=True)
+        cwd = os.getcwd()
+        os.chdir(tdp)
+        try:
+            a = run_mission(plain, tdp / "plain")
+            b = run_mission(oracle, tdp / "oracle")
+        finally:
+            os.chdir(cwd)
+
+        run = load(a.srlog_path)
+        # The new channels are the point of the criterion: if they are absent
+        # the major-version claim is trivially true and proves nothing.
+        added = ("gnc.cmd", "nav.est", "sensors.imu")
+        missing = [g for g in added if g not in run.groups]
+        if missing:
+            raise CheckFailure(
+                f"the Phase 6 channels are absent, so the schema claim is "
+                f"vacuous: missing {missing}"
+            )
+        fmt = run.header["format"]
+        if fmt != {"name": "SRLOG", "major": 1, "minor": 2}:
+            raise CheckFailure(
+                f"expected SRLOG v1.2 with major unchanged at 1, got {fmt}"
+            )
+        # Identifiable from the HEADER ALONE: read the flag off both headers
+        # without touching a single record.
+        if run.header.get("oracle") is not False:
+            raise CheckFailure(
+                f"a non-oracle run reports oracle="
+                f"{run.header.get('oracle')!r} in its header"
+            )
+        if load(b.srlog_path).header.get("oracle") is not True:
+            raise CheckFailure(
+                "an oracle run is not identifiable from its header alone"
+            )
+
+
+def _check_v024(ctx: dict) -> None:
+    """The package and the compiled core report the same version.
+
+    These are separate sources - pyproject.toml and the CMake project()
+    VERSION - kept in sync by hand, and every SRLOG header stamps the core's
+    value into producer.core_version. When they drifted at the Phase 6 close
+    a v1.2 log self-reported a 0.5.0 producer.
+    """
+    import star_reacher
+
+    core = import_core()
+    pkg_version = star_reacher.__version__
+    core_version = core.core_version()
+    if pkg_version != core_version:
+        raise CheckFailure(
+            f"package __version__ {pkg_version!r} != compiled "
+            f"core_version() {core_version!r}"
+        )
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        mission = tdp / "v024.toml"
+        mission.write_text(_V001_MISSION, encoding="utf-8")
+        result = run_mission(mission, tdp / "run")
+        stamped = load(result.srlog_path).header["producer"]["core_version"]
+    if stamped != core_version:
+        raise CheckFailure(
+            f"log header stamped producer.core_version {stamped!r}, core "
+            f"reports {core_version!r}"
+        )
+
+
 _CHECKS = [
     ("V001", "two-body double-run SHA-256 bit-identity", _check_v001),
     ("V002", "minor-version-forward read (v1.999 file with one added channel)", _check_v002),
@@ -1305,6 +1548,9 @@ _CHECKS = [
     ("V019", "NPZ export round-trips bit-exactly (+ Parquet when available)", _check_v019),
     ("V020", "viewer HTML self-contained, epochs exact, decimation bound held", _check_v020),
     ("V021", "plot arrays match closed-form elements; headless PNG render", _check_v021),
+    ("V022", "P6 EC-4: stepped and batch log hashes identical; observe() pure", _check_v022),
+    ("V023", "P6 EC-5: v1.2 channels leave major at 1; oracle read from header", _check_v023),
+    ("V024", "package, compiled core, and log header report one version", _check_v024),
 ]
 
 
