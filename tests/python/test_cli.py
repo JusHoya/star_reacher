@@ -272,5 +272,8 @@ def test_verify_help_documents_what_quick_gives_up():
     """
     proc = _run_cli("verify", "--help")
     assert proc.returncode == 0
-    for token in ("V027", "V028", "R = 100", "R = 28"):
-        assert token in proc.stdout, f"{token!r} missing from the verify help"
+    # argparse rewraps the description to the terminal width, so a phrase can
+    # be split across lines; compare against whitespace-collapsed text.
+    text = " ".join(proc.stdout.split())
+    for token in ("V027", "V028", "R = 100", "R = 28", "blind"):
+        assert token in text, f"{token!r} missing from the verify help"

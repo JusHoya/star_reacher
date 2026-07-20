@@ -1297,20 +1297,18 @@ def _check_v021(ctx: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-# Phase 6 checks (V022-V024): the exit-criterion battery.
+# Phase 6 checks (V022-V024): the exit-criterion battery, first tranche.
 #
 # Only criteria whose gates were shown able to fail are wired here. The Phase
 # 6 evidence audit (docs/audit/phase6_evidence_audit.md) found several of the
-# phase's gates unsound - criterion 2's golden scenario leaves three of its
-# five equations unexercised, criterion 3's driver gates on a rule its own
-# consistency module documents as a coin flip, criterion 9's tolerance sits
-# about seven orders above the residual it measures, and criterion 7's
-# intrinsics clause has no channel to gate at all. Wiring those into the
-# acceptance suite would launder a known-weak check into a green line, so
-# they are deliberately absent and are listed as gaps in the Phase 6
-# roadmap entry instead. What lands here is criteria 4 and 5, which the
-# audit found solid, plus the version coherence that the 0.6.0 bump makes
-# checkable from a bare wheel.
+# phase's gates unsound, and wiring one of those into the acceptance suite
+# would launder a known-weak check into a green line. What lands in this
+# tranche is criteria 4 and 5, which the audit found solid, plus the version
+# coherence that the 0.6.0 bump makes checkable from a bare wheel. Criteria
+# 2, 3 and 9 were remediated afterwards and are wired below as V025-V028,
+# each demonstrated able to fail under mutation before it was registered.
+# Criterion 7's intrinsics clause still has no channel to gate at all and
+# remains listed as a gap in the Phase 6 roadmap entry.
 #
 # The wheel carries no missions/ or vehicles/ tree, so the GNC fixture is
 # synthesized in a temp directory like every other fixture in this module.
