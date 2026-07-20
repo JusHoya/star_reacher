@@ -104,13 +104,30 @@ $[t_k, t_{k+1})$ is
   \label{eq:gnc:latency}
 \end{equation}
 where the neutral command is zero torque, zero gimbal deflection, and
-throttle hold at the sequence-commanded value. The shift applies once,
-at the GNC-to-plant boundary, not per component, so exit criterion~8
-holds by construction: the logged command-application history of an
-$L = \ell$ run is the $L = 0$ history delayed by exactly $\ell$ cycles,
-with $\ell$ neutral cycles prepended. Both the computed and the applied
-commands are logged, which is what makes the criterion checkable from
-the log alone.
+throttle hold at the sequence-commanded value. The shift applies once, at
+the GNC-to-plant boundary, not per component. What holds by construction is
+a statement about the FIFO alone: fed one command sequence, its output is
+that sequence delayed by exactly $\ell$ cycles with $\ell$ neutral cycles
+prepended. That is what \testid{gnc_latency_fifo_semantics} gates, in open
+loop, where the input sequence is fixed.
+
+It does \emph{not} extend to the logged history of a run, and the
+distinction is easy to lose. The loop is closed, so delaying the applied
+torque changes the plant trajectory; from cycle~1 onward an $L = \ell$ run
+and an $L = 0$ run see different states and therefore \emph{compute}
+different commands. Only cycle~0 is comparable between the two runs, which
+is precisely the comparison
+\testid{test_latency_two_cycles_shifts_application} makes. Read as a claim
+about \texttt{gnc.cmd}, ``the $L = \ell$ history is the $L = 0$ history
+delayed by $\ell$'' is false; the criterion is verified at one cycle pair
+end to end, and generally only at the FIFO. Closing the general case needs
+an open-loop assertion driving the cycle with a recorded command sequence
+against a fixed plant and asserting
+$\vv{u}_{\mathrm{applied}}[i + \ell] = \vv{u}_{\mathrm{computed}}[i]$ for
+every $i$, including the drain at run end, where the last $\ell$ computed
+commands are never applied and no committed test looks. Both the computed
+and the applied commands are logged, which is what makes the criterion
+checkable from the log at all.
 
 \subsection{Declared error-state layout}
 \label{sec:gnc:errlayout}
@@ -485,10 +502,13 @@ after the tables.
     Test ID & Acceptance basis \\
     \midrule
     \testid{test_pd_law_python_reimplementation_contract} &
-      Exit criterion~2: an independent Python transcription of
-      equations~\eqref{eq:gnc:deltaq}--\eqref{eq:gnc:sat} reproduces the
-      logged applied torques to
-      $< \qty{e-9}{\newton\metre}$ across the whole reference run. \\
+      Exit criterion~2: an independent Python transcription of the PD law
+      --- importing only \texttt{numpy} and \texttt{tomllib}, and
+      re-deriving the Hamilton product, the sign branch, the error DCM, and
+      the clamp by hand --- reproduces the logged applied torques to
+      $< \qty{e-9}{\newton\metre}$ across the whole reference run. Which
+      equations this resolves and which it cannot is scoped immediately
+      below; the row should not be cited as covering the PD law entire. \\
     \testid{test_dead_reckoning_tracks_torque_driven_truth} &
       Against torque-driven truth the logged estimate error stays below
       $5\times10^{-3}$ in both the quaternion and rate components --- the
@@ -508,12 +528,61 @@ after the tables.
   \end{tabular}
 \end{table}
 
-The following gate remains outstanding:
+\paragraph{Scope of the criterion-2 row.} The reference mission that row
+runs is degenerate against three of the five equations of the PD law, and
+the degeneracy is a property of the fixture rather than of the tolerance.
+Measured over all 601 cycles of that run: the commanded rate
+$\vv{\omega}_{\mathrm{cmd}}$ is identically zero, so
+equation~\eqref{eq:gnc:werr} is multiplied by zero; $\delta q_w$ stays in
+$[0.996195, 0.999998]$ and never goes negative, so the short-path branch of
+equation~\eqref{eq:gnc:sign} is never taken; and no cycle reaches the
+clamp, so equation~\eqref{eq:gnc:sat} is never exercised. Mutating the
+reference confirms this is exact rather than merely weak --- dropping the
+sign branch, dropping the error-DCM rotation of
+$\vv{\omega}_{\mathrm{cmd}}$, and transposing the error DCM each change the
+worst residual by exactly \qty{0}{\newton\metre}, so no tolerance could
+separate them. What the row does resolve is
+equations~\eqref{eq:gnc:deltaq} and~\eqref{eq:gnc:pd} on the $z$ axis: a
+\qty{0.1}{\percent} error in $k_p$ is caught at
+\qty{3.4862e-5}{\newton\metre}. The $x$ and $y$ gain paths are multiplied
+by zero on this fixture as well.
+
+The equations the row cannot reach are covered on the core side by
+\testid{gnc_pd_attitude_golden}, whose five committed cases do exercise
+both signs of $\delta q_w$ and the clamp, and whose expected torques come
+from a 60-digit \texttt{mpmath} evaluation of the specification rather than
+from the implementation under test. The gap exit criterion~2 leaves open is
+therefore not that the law is unpinned, but that its \emph{Python}
+transcription is never evaluated against those goldens: the criterion's
+conjunction --- an independent Python controller, the C++ controller, a
+golden scenario, and \qty{e-9}{\newton\metre} --- is not met by any single
+committed test as of this commit. Closing it means pointing the
+transcription at \texttt{tests/golden/gnc/pd\_attitude.toml}, and adding a
+slewing case with nonzero $\vv{\omega}_{\mathrm{cmd}}$ and a saturating
+transient so the mission-level comparison stops being blind to three of the
+five equations. Both are in progress; this paragraph records the state at
+the time of writing and should be re-measured before it is relied upon.
+
+One clause of exit criterion~10 is deferred rather than outstanding, and
+the distinction matters:
 \begin{itemize}
-  \item \textbf{Performance re-gate (exit criterion 10).} The FR-32
-    ascent target ($\ge 100\times$ real time, Pi~5 single core, per
-    the Phase~5 deferral provisions) holds with the full built-in GNC
-    stack in the loop.
+  \item \textbf{Performance re-gate (exit criterion 10), Pi~5 hardware
+    clause.} The FR-32 ascent target ($\ge 100\times$ real time, single
+    core) with the full built-in GNC stack in the loop is measured as the
+    \texttt{ascent\_gnc\_rt\_factor} metric of
+    \texttt{scripts/perf\_gate.py}, on the committed closed-loop ascent
+    \texttt{missions/ascent\_leo\_gnc.toml}, and is gated on every nightly
+    run because it sits in that harness's default metric set. What is
+    deferred is only the requirement that the measurement be taken on real
+    Pi~5 silicon, no such hardware being available. That deferral runs
+    through the PRD section~9 valve to \texttt{docs/release\_checklist.md}
+    item~1, procedure \texttt{docs/perf/pi5\_checklist.md} step~4, which
+    measures this metric alongside the three Phase~5 absolutes in the same
+    invocation. The nightly \texttt{ubuntu-24.04-arm} leg is the interim
+    aarch64 proxy and is recorded as a proxy, never as a Pi~5 measurement.
+    The item is registered and fully prepared --- mission, metric, and gate
+    all committed and exercised in CI --- so qualifying a release against
+    the clause is one scripted command once the hardware exists.
 \end{itemize}
 
 \section{References}
