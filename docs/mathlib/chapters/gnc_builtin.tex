@@ -594,16 +594,25 @@ after the tables.
   \end{tabular}
 \end{table}
 
-\begin{table}[htbp]
-  \centering
+% longtable, not table: this grew past a single page when the
+% test_golden_expectations_record_the_branches row was added, and a float
+% that overfills its page silently drops the rows that do not fit.
+\begin{longtable}{lp{7.2cm}}
   \caption{Validation evidence for the built-in GNC components: the
     non-vacuity guards on exit criterion~2, which assert that the two gates
     above are sensitive to every equation they claim to cover (pytest).}
-  \label{tab:gnc:validation-crit2-guards}
-  \begin{tabular}{lp{7.2cm}}
-    \toprule
-    Test ID & Acceptance basis \\
-    \midrule
+  \label{tab:gnc:validation-crit2-guards} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
     \testid{test_golden_cases_cover_every_branch} &
       Non-vacuity of the golden half, asserted by re-evaluating the
       reference law on the committed inputs: the
@@ -638,9 +647,7 @@ after the tables.
       the $\delta q_w < 0$ branch and 301 on the other; the clamp catching
       on 92 cycles; and every body axis carrying torque, so no per-axis
       gain path is multiplied by zero. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\end{longtable}
 
 \begin{table}[htbp]
   \centering
