@@ -1397,6 +1397,12 @@ TEST_CASE("sensors_navfix_gauss_markov_correlated_errors") {
   for (int i = 0; i < 3; ++i) c_r[i] = sigma_r * ref.next();
   for (int i = 0; i < 3; ++i) c_v[i] = sigma_v * ref.next();
 
+  // Two phases against one continuous run of the sensor. The first replays
+  // the reference stream sample by sample, which pins the recursion and the
+  // draw schedule exactly; the second only records the sequence, so the
+  // statistical assertions below cost a handful of checks rather than one
+  // per sample.
+  const int n_exact = 25;
   const int n_samples = 20000;
   std::vector<double> series_r;
   series_r.reserve(static_cast<std::size_t>(n_samples));
@@ -1407,19 +1413,21 @@ TEST_CASE("sensors_navfix_gauss_markov_correlated_errors") {
     for (int k = 0; k < n_samples; ++k) {
       nav.accumulate(truth);
       nav.sample(dt * (k + 1), writer);
-      // Per-sample schedule: position drive, velocity drive, position white,
-      // velocity white. The white draws are consumed even at zero sigma, so
-      // omitting them here would desynchronize the reference stream and the
-      // exact comparisons below would fail on the second sample.
-      for (int i = 0; i < 3; ++i) c_r[i] = phi_r * c_r[i] + w_r * ref.next();
-      for (int i = 0; i < 3; ++i) c_v[i] = phi_v * c_v[i] + w_v * ref.next();
-      for (int i = 0; i < 3; ++i) (void)ref.next();
-      for (int i = 0; i < 3; ++i) (void)ref.next();
-      for (int i = 0; i < 3; ++i) {
-        CHECK(nav.last_position_m()[i] ==
-              doctest::Approx(r_true[i] + c_r[i]).epsilon(1e-12));
-        CHECK(nav.last_velocity_mps()[i] ==
-              doctest::Approx(v_true[i] + c_v[i]).epsilon(1e-12));
+      if (k < n_exact) {
+        // Per-sample schedule: position drive, velocity drive, position
+        // white, velocity white. The white draws are consumed even at zero
+        // sigma, so omitting them here would desynchronize the reference
+        // stream and the second sample would already disagree.
+        for (int i = 0; i < 3; ++i) c_r[i] = phi_r * c_r[i] + w_r * ref.next();
+        for (int i = 0; i < 3; ++i) c_v[i] = phi_v * c_v[i] + w_v * ref.next();
+        for (int i = 0; i < 3; ++i) (void)ref.next();
+        for (int i = 0; i < 3; ++i) (void)ref.next();
+        for (int i = 0; i < 3; ++i) {
+          CHECK(nav.last_position_m()[i] ==
+                doctest::Approx(r_true[i] + c_r[i]).epsilon(1e-12));
+          CHECK(nav.last_velocity_mps()[i] ==
+                doctest::Approx(v_true[i] + c_v[i]).epsilon(1e-12));
+        }
       }
       series_r.push_back(nav.last_position_m()[0] - r_true[0]);
     }
