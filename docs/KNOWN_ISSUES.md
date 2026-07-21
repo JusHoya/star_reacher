@@ -144,38 +144,68 @@ measures that gap non-normatively; `ch:sensors-optical` assumption 2 bounds it.
 met now, but it is now gated by an assertion that has been shown to fail
 against a wrong formula and a wrong convention.
 
-## KNOWN-ISSUE-P6-3 — the ascent pitch table steps 89.922 degrees at t = 10 s
+## KNOWN-ISSUE-P6-3 — resolved: the pitch program's roll at a true vertical
+
+**Status: the guidance singularity is fixed.** This entry is kept because the
+fix relocated a discontinuity rather than removing one, and the remainder is a
+standing decision item recorded below.
 
 The pitch table shared by `missions/ascent_leo.toml` and
 `missions/ascent_leo_gnc.toml` holds pitch at exactly 90 degrees — the local
-vertical — from t = 0 to t = 10 s. The pitch-program axis is degenerate there:
-with the commanded body axis along the local vertical, the azimuth cannot be
-resolved. The moment pitch leaves 90 degrees the azimuth resolves and the
-commanded attitude steps **89.922 degrees between two consecutive 0.1 s
-cycles**, against 0.100 degrees for every other cycle in the run.
+vertical — from t = 0 to t = 10 s. The commanded body axis is then local up,
+which is also the reference the triad construction of
+`eq:vehicle6dof:attitude` projects against, so that construction was
+degenerate and fell back to an azimuth-independent inertial axis. The first
+cycle that left the vertical re-resolved the roll and stepped the commanded
+attitude **89.922 degrees between two consecutive 0.1 s cycles**, against
+0.100 degrees for every other cycle, logging a commanded body rate of
+809.73 deg/s.
 
-Open-loop flight never revealed this. The open-loop mission's
-`pitch_program` sequence action sets attitude kinematically, so the true
-attitude simply teleports through the step and the trajectory is unaffected —
-the discontinuity is present in `ascent_leo.toml`'s own logged `truth.q_i2b`
-and has been since Phase 4. Closing the loop is what exposes it: a vehicle
-driven by torque must physically slew through the step. On the closed-loop
-mission the controller saturates briefly and takes roughly 120 s to bleed the
-transient out, which is the whole of the atmospheric phase; tracking error
-peaks at 89.7 degrees at t = 10.1 s and settles to a 0.0083 degree median
-after t = 140 s.
+The fix is in the law, not the table: `models::pitch_program_roll_ref`
+evaluates the closed form `eq:vehicle6dof:rollref` of the same Gram-Schmidt
+where the direct construction is ill conditioned. The commanded azimuth
+therefore continues to fix the roll through the vertical. Measured on
+`missions/ascent_leo.toml` after the fix, the largest single-cycle attitude
+change across the former singularity is **0.100000 degrees**, exactly the
+typical cycle, at a commanded rate of 1.0000 deg/s. The closed-loop mission's
+commanded attitude is now continuous over its whole run: its largest
+single-cycle change is 0.100000 degrees.
 
-The table is deliberately **not** smoothed. Holding it bit-identical between
-the two missions is what makes
-`tests/python/test_gnc_missions.py::test_pitch_program_guidance_equals_openloop_command`
-meaningful, and changing it would move the Phase 4 ascent goldens and the
-EC-11 3DOF cross-check for a reason unrelated to either.
+The trajectory did not move. Logged `truth.r_m` is bit-identical to the
+pre-fix run and `truth.v_mps` differs by at most 2.8e-14 m/s; the insertion
+state reduced at the exact perigee crossing is bit-identical, so the EC-11
+cross-check and its sanity bands are unchanged rather than merely re-passed.
+Only `truth.q_i2b` and `truth.w_b_radps` over t in [2.0, 10.0] s, and the
+body-frame resolution of the logged forces over that window, changed.
+
+### Standing decision item — the roll convention at pad release
+
+The pad-hold mode clocks body +Y to local north; the pitch program clocks it
+into the pitch plane, which at the vertical is the ground-track direction.
+For the reference mission's 90-degree azimuth those differ by 90 degrees, and
+they always will: the two modes define roll independently, and no pitch-plane
+convention agrees with a north convention at an arbitrary azimuth. That
+90 degrees has to appear somewhere in the open-loop command.
+
+Before the fix it was split — 0.083 degrees at release, where the fallback
+happened to land near geocentric north, and 89.922 degrees at t = 10 s.
+After the fix it appears in one place, as a **90.005-degree single-cycle step
+at t = 1.9 -> 2.0 s**, the cycle where attitude authority passes from pad hold
+to the pitch program. In the closed-loop mission this is an initial attitude
+error at loop closure rather than a mid-flight command step: tracking error
+peaks at 90.005 degrees at t = 2.0 s and settles to a 0.0081 degree median,
+under 0.033 degrees after t = 140 s.
+
+This is an improvement in attribution — the discontinuity now sits at a mode
+boundary, where a discontinuity is at least explicable, instead of inside a
+smooth guidance segment — but the open-loop reference mission's logged truth
+still contains a single-cycle attitude step ~900x the typical cycle, and a
+reimplementer still inherits it. Closing it properly means either clocking
+the pad-hold attitude to the flight azimuth, which changes every pad mission
+and requires giving pad hold an azimuth it does not currently have, or
+modelling an explicit rate-limited roll program after liftoff. **Both are
+out of scope for the guidance-law fix and neither has been chosen.**
 
 **Exit-criterion impact: none for criterion 10**, which gates throughput
 rather than tracking accuracy, and the closed-loop mission still reaches
-orbit insertion (180.7 x 3356.1 km, against the open-loop 181 x 3444 km).
-It is recorded because the transient is visible in every plot of the
-closed-loop ascent and would otherwise read as a controller defect, and
-because a smoothed pitch table is the obvious remediation if a future phase
-wants the closed-loop ascent to be a tracking benchmark rather than a
-throughput benchmark.
+orbit insertion.

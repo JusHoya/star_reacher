@@ -200,6 +200,40 @@ using the Shepperd extraction of Chapter~\ref{ch:rotations}. The logged body
 rate is the finite-difference rotation carrying the cycle-start attitude into
 the next cycle's commanded attitude.
 
+Equation~\eqref{eq:vehicle6dof:attitude} is undefined at $\theta =
+90^{\circ}$. There $\hat{\vv{x}} = \hat{\vv{u}}^{I}$, the numerator vanishes
+identically, and a generic construction must fall back to some reference
+unrelated to the flight azimuth --- so the roll re-resolves, discontinuously,
+on the first cycle that leaves the vertical. The pitch program does not need
+that fallback, because its azimuth is commanded rather than inferred.
+Substituting $\hat{\vv{x}}$ from equation~\eqref{eq:vehicle6dof:pitchaxis}
+into equation~\eqref{eq:vehicle6dof:attitude}, and writing $\hat{\vv{h}}^{I} =
+\sin A\,\hat{\vv{e}}^{I} + \cos A\,\hat{\vv{n}}^{I}$ for the ground-track
+direction, the numerator is $\cos\theta\,(\cos\theta\,\hat{\vv{u}}^{I} -
+\sin\theta\,\hat{\vv{h}}^{I})$, whose norm is $\abs{\cos\theta}$, so for
+$\cos\theta > 0$ the Gram--Schmidt result has the closed form
+\begin{equation}
+  \hat{\vv{y}} = \cos\theta\,\hat{\vv{u}}^{I}
+    - \sin\theta\,\hat{\vv{h}}^{I},
+  \label{eq:vehicle6dof:rollref}
+\end{equation}
+which is unit and orthogonal to $\hat{\vv{x}}$ for every $\theta$, and at
+$\theta = 90^{\circ}$ reduces to $-\hat{\vv{h}}^{I}$: the commanded azimuth
+still fixes the roll, and the commanded attitude is continuous through a true
+vertical hold. The implementation evaluates
+equation~\eqref{eq:vehicle6dof:attitude} directly where it is well
+conditioned and equation~\eqref{eq:vehicle6dof:rollref} where it is not,
+switching at $\abs{\cos\theta} = 10^{-6}$ --- two decades above the
+$10^{-8}$ guard below which the generic fallback would engage, so that
+fallback is unreachable from the pitch program. The two branches agree
+analytically; they differ only in rounding, and the direct branch is taken
+wherever it reproduces the pre-existing construction bit for bit. Note that
+equation~\eqref{eq:vehicle6dof:rollref} carries the sign of $\cos\theta$: the
+$\theta \to 90^{\circ}$ limit is $-\hat{\vv{h}}^{I}$ from below and
+$+\hat{\vv{h}}^{I}$ from above, so a program that crosses the vertical rather
+than departing it is a genuine $180^{\circ}$ roll reversal, not a removable
+singularity.
+
 \subsection{Staging and jettison state remap}
 
 At a torque-free separation the composite center of mass jumps discretely
@@ -309,6 +343,34 @@ exist in the test tree by \texttt{scripts/lint\_chapters.py}.
       saturation clamp, and the TVC gimbal ramp at exactly the configured
       rate limit --- the actuator hooks (Chapter~\ref{ch:actuators},
       Chapter~\ref{ch:propulsion}) the run path composes. \\
+    \testid{vehicle6dof_pitch_program_triad_matches_definition_at_vertical} &
+      The four projections that constitute
+      equation~\eqref{eq:vehicle6dof:attitude} ---
+      $\hat{\vv{x}}\cdot\hat{\vv{u}} = \sin\theta$,
+      $\hat{\vv{x}}\cdot\hat{\vv{h}} = \cos\theta$,
+      $\hat{\vv{y}}\cdot\hat{\vv{u}} = \cos\theta$,
+      $\hat{\vv{y}}\cdot\hat{\vv{h}} = -\sin\theta$ --- together with
+      orthonormality and the absence of any out-of-plane component in
+      $\hat{\vv{y}}$, swept across $\theta = 90^{\circ}$. Tolerances follow
+      the construction's conditioning: the direct branch normalizes a
+      cancellation remainder of norm $\abs{\cos\theta}$, so its rounding is
+      amplified by $1/\abs{\cos\theta}$, while
+      equation~\eqref{eq:vehicle6dof:rollref} rounds at a few $\epsilon$.
+      A triad that is continuous but clocked to a different roll fails
+      these. \\
+    \testid{vehicle6dof_pitch_program_command_continuous_through_vertical} &
+      The per-cycle commanded attitude change and the commanded body rate
+      are both bounded by the pitch table's own slew rate, at every cycle
+      including the one that leaves the vertical. Under the pre-continuation
+      construction this measured $90^{\circ}$ against a $0.105^{\circ}$
+      bound, and $810.285\,\unit{\degree\per\second}$ against a
+      $1.05\,\unit{\degree\per\second}$ bound. \\
+    \testid{vehicle6dof_pitch_program_roll_ref_preserves_conditioned_triad} &
+      Over 1800 pitches spanning $\pm 90^{\circ}$, the attitude built with
+      equation~\eqref{eq:vehicle6dof:rollref} is bit-identical to the direct
+      evaluation of equation~\eqref{eq:vehicle6dof:attitude} wherever the
+      latter is well conditioned, bounding the continuation's reach to the
+      neighbourhood of the vertical. \\
     \bottomrule
   \end{tabular}
 \end{table}

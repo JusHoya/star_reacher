@@ -396,11 +396,16 @@ $(\hat{\vv{u}}_0, \hat{\vv{e}}_0, \hat{\vv{n}}_0)$ at initialization
     equation~\eqref{eq:vehicle6dof:pitchaxis} in the frozen basis, and
     $\quat{q}_{i2\mathrm{cmd}}(t)$ from the Gram--Schmidt triad of
     equation~\eqref{eq:vehicle6dof:attitude} with up-reference
-    $\hat{\vv{u}}_0$, including its degeneracy fallback (reference
-    within $10^{-8}$ of parallel to the thrust axis: substitute
-    $\hat{\vv{z}}$, or $\hat{\vv{x}}$ when $|\hat{d}_z| \ge 0.9$) ---
-    the roll convention must match Phase~4 exactly for exit
-    criterion~10's re-gate to compare like with like.
+    $\hat{\vv{u}}_0$, continued through the vertical by
+    equation~\eqref{eq:vehicle6dof:rollref} where that reference is
+    ill conditioned. The generic degeneracy fallback of
+    \texttt{attitude\_from\_body\_x} is therefore unreachable from this
+    path: the continuation switches two decades above the fallback's
+    own guard, so the commanded roll is always resolved from the
+    commanded azimuth rather than from an inertial axis. The open-loop
+    mode applies the identical continuation --- the roll convention must
+    match Phase~4 exactly for exit criterion~10's re-gate to compare
+    like with like, and both paths moved together when it changed.
   \item \textbf{Commanded rate}, the finite-difference rotation between
     this cycle's and the next cycle's commanded attitude, resolved in
     the commanded frame at $t$:

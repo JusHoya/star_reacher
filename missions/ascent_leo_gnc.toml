@@ -17,18 +17,22 @@
 #
 # One consequence is worth stating up front, because it is visible in every
 # plot of this run. The shared pitch table holds pitch = 90 degrees (exactly
-# vertical) through t = 10 s, and the pitch-program axis is degenerate there:
-# with the commanded body axis along the local vertical the azimuth cannot be
-# resolved. The moment pitch leaves 90 degrees the azimuth resolves and the
-# COMMANDED attitude steps 89.922 degrees between two consecutive 0.1 s
-# cycles, against 0.100 degrees for every other cycle in the run. Open-loop
-# flight sets attitude kinematically and absorbs that step invisibly; a real
-# vehicle cannot, so the closed loop slews through it, saturating briefly and
-# taking roughly 120 s to bleed the transient out. This is a property of the
-# open-loop reference mission that only closing the loop can expose - see
-# docs/KNOWN_ISSUES.md, KNOWN-ISSUE-P6-3. The pitch table is deliberately NOT
-# smoothed here: it is held bit-identical to ascent_leo.toml so the
-# commanded-attitude equality test between the two missions stays meaningful.
+# vertical) through t = 10 s. The commanded body axis is then local up, and
+# the guidance law resolves the roll about it from the commanded azimuth
+# (eq:vehicle6dof:rollref), so the COMMANDED attitude is continuous through
+# that hold: the largest single-cycle change anywhere in this run is 0.100
+# degrees, the same as every other cycle. What remains is an initial attitude
+# error at loop closure. The vehicle sits on the pad clocked to local north,
+# while the pitch program at the vertical clocks into the pitch plane, and for
+# this mission's 90 degree azimuth those differ by 90 degrees. The controller
+# therefore slews 90.005 degrees starting at t = 2.0 s, saturating briefly;
+# tracking error settles under 0.033 degrees after t = 140 s. That is a real
+# roll maneuver a real vehicle would also have to fly, not a numerical
+# artifact - see docs/KNOWN_ISSUES.md, KNOWN-ISSUE-P6-3, which records the
+# unclosed decision about where that roll belongs. The pitch table is
+# deliberately NOT smoothed: it is held bit-identical to ascent_leo.toml so
+# the commanded-attitude equality test between the two missions stays
+# meaningful.
 #
 # provenance "representative": inherited unchanged from ascent_leo.toml -
 # a round southern-hemisphere coastal pad and the class-representative pitch
