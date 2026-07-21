@@ -193,13 +193,20 @@ sigma_rad = 0.0
 
 [sensors.camera]
 sample_rate_hz = 1
-# fx != fy with an off-axis principal point, so the recomputation exercises
-# both focal lengths and both offsets independently rather than sharing one
-# scale that a transposed convention could hide behind.
+# fx != fy with a genuinely off-axis principal point, so the recomputation
+# exercises both focal lengths and both offsets independently rather than
+# sharing one scale that a transposed convention could hide behind.
+#
+# The offsets are deliberately NOT the image centre. Under the pixel-centre
+# convention the centre is ((W-1)/2, (H-1)/2) = (511.5, 383.5), which this
+# fixture used to carry while its comment claimed otherwise: a consumer that
+# ignored the principal point entirely and substituted the centre would have
+# reproduced every pixel exactly, so cx and cy were unresolvable here.
+# test_camera_echo_fixture_is_not_degenerate now pins the distinction.
 fx_px = 800.0
 fy_px = 600.0
-cx_px = 511.5
-cy_px = 383.5
+cx_px = 486.0
+cy_px = 402.0
 width_px = 1024.0
 height_px = 768.0
 # A non-zero CG-relative station and a non-identity mount rotation taking the

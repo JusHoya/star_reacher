@@ -450,10 +450,12 @@ star::log::SrlogHeaderFields v12_fields() {
   fields.latency_cycles = 2;
   fields.sensors = {{"imu", 100, 0}, {"camera", 10, 2}};
   // The camera group and its header echo are declared together (the writer
-  // rejects either half alone). Anisotropic focal lengths, an off-axis
-  // principal point, a non-identity mount rotation, and a nonzero mount
-  // station, so a byte-level header assertion cannot pass while any one of
-  // the seven doubles is transposed with another.
+  // rejects either half alone). The seven doubles are pairwise distinct,
+  // which is what a byte-equality assertion needs: a serializer that
+  // emitted them in the wrong order, or repeated one, changes the expected
+  // string. Geometric non-degeneracy is a separate concern and belongs to
+  // the projection fixture in tests/python/test_p6_optical_gates.py, not
+  // here -- this case computes no projection.
   fields.camera_echo_present = true;
   fields.camera.fx_px = 800.0;
   fields.camera.fy_px = 600.0;

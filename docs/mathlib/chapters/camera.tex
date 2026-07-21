@@ -373,7 +373,18 @@ The module implementing this chapter is
       $< 10^{-6}$ pixels, on a fixture with $f_x \ne f_y$, an off-axis
       principal point, a nonzero mount station, and a non-identity mount
       rotation, so a transposed convention or a shared scale cannot
-      hide. \\
+      hide. The principal point is off-axis \emph{as of} the fixture
+      revision recorded with
+      \testid{test_camera_echo_fixture_is_not_degenerate}: it previously
+      sat at $(511.5, 383.5)$, which under the pixel-center convention is
+      exactly the image center $((W-1)/2, (H-1)/2)$ of the
+      $1024 \times 768$ sensor. On that geometry $c_x$ and $c_y$ were
+      recoverable from the image dimensions, so discarding the principal
+      point entirely and substituting the center changed the worst
+      residual by nothing at all --- measured, \num{1.705303e-13} pixels
+      both with and without the substitution. The fixture now carries
+      $(486, 402)$, against which the same substitution measures
+      \num{25.5} pixels. \\
     \testid{test_landmarks_are_actually_visible} &
       Non-vacuity of the row above: the assertion is that more than half of
       all landmark projections pass the reference's own visibility tests,
