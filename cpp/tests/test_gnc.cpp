@@ -278,11 +278,13 @@ TEST_CASE("gnc_pitch_program_guidance_matches_openloop_machinery") {
     const Eigen::Quaterniond q0 = star::models::attitude_from_body_x(
         star::models::pitch_program_axis(az, p0, ictx.up_i, ictx.east_i,
                                          ictx.north_i),
-        ictx.up_i);
+        star::models::pitch_program_roll_ref(az, p0, ictx.up_i, ictx.east_i,
+                                             ictx.north_i));
     const Eigen::Quaterniond q1 = star::models::attitude_from_body_x(
         star::models::pitch_program_axis(az, p1, ictx.up_i, ictx.east_i,
                                          ictx.north_i),
-        ictx.up_i);
+        star::models::pitch_program_roll_ref(az, p1, ictx.up_i, ictx.east_i,
+                                             ictx.north_i));
     const Eigen::Vector3d w =
         star::models::omega_from_quaternions(q0, q1, dt);
     // Bit equality, not tolerance: same functions, same inputs, same order.
