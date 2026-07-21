@@ -147,8 +147,8 @@ against a wrong formula and a wrong convention.
 ## KNOWN-ISSUE-P6-3 — resolved: the pitch program's roll at a true vertical
 
 **Status: the guidance singularity is fixed.** This entry is kept because the
-fix relocated a discontinuity rather than removing one, and the remainder is a
-standing decision item recorded below.
+fix relocated a discontinuity rather than removing one; the relocation has been
+reviewed and accepted, and the reasoning is recorded below.
 
 The pitch table shared by `missions/ascent_leo.toml` and
 `missions/ascent_leo_gnc.toml` holds pitch at exactly 90 degrees — the local
@@ -178,7 +178,7 @@ cross-check and its sanity bands are unchanged rather than merely re-passed.
 Only `truth.q_i2b` and `truth.w_b_radps` over t in [2.0, 10.0] s, and the
 body-frame resolution of the logged forces over that window, changed.
 
-### Standing decision item — the roll convention at pad release
+### Accepted decision — the roll convention at pad release
 
 The pad-hold mode clocks body +Y to local north; the pitch program clocks it
 into the pitch plane, which at the vertical is the ground-track direction.
@@ -196,15 +196,38 @@ error at loop closure rather than a mid-flight command step: tracking error
 peaks at 90.005 degrees at t = 2.0 s and settles to a 0.0081 degree median,
 under 0.033 degrees after t = 140 s.
 
-This is an improvement in attribution — the discontinuity now sits at a mode
-boundary, where a discontinuity is at least explicable, instead of inside a
-smooth guidance segment — but the open-loop reference mission's logged truth
-still contains a single-cycle attitude step ~900x the typical cycle, and a
-reimplementer still inherits it. Closing it properly means either clocking
-the pad-hold attitude to the flight azimuth, which changes every pad mission
-and requires giving pad hold an azimuth it does not currently have, or
-modelling an explicit rate-limited roll program after liftoff. **Both are
-out of scope for the guidance-law fix and neither has been chosen.**
+**The relocation has been reviewed and accepted deliberately.** The reasoning
+is that the 90 degrees is not an artifact to be removed but a consequence of
+the two modes defining roll independently, so the only open question was where
+it should land. A mode boundary — the cycle on which attitude authority changes
+hands — is an explicable place for a commanded-attitude discontinuity. Inside a
+smooth guidance segment, where the pre-fix step sat, is not: a discontinuity
+there has no corresponding event in the mission and reads as a defect in the
+guidance law. Relocating it is therefore an improvement in attribution, and it
+is the improvement this fix was for.
+
+What the fix delivers is a clean closed-loop **commanded** attitude, which is
+what the GNC stack actually consumes. Measured on `missions/ascent_leo_gnc.toml`,
+the largest single-cycle change in the logged `gnc.cmd` command is
+**0.100000 degrees**, exactly the typical cycle, with no cycle exceeding one
+degree anywhere in the run.
+
+**The open-loop reference mission's logged truth still contains the step, and
+this entry is not a claim that the fix removed it.** Measured on
+`missions/ascent_leo.toml`, `truth.q_i2b` still steps **90.004996 degrees
+between t = 1.90 s and t = 2.00 s** — about 900x the 0.100000-degree change of
+every other cycle in the pitch program, and the only single-cycle change above
+one degree in the whole 400 s flight. A reimplementer inherits it and should
+expect to see it.
+
+Removing it entirely was considered and rejected on cost. It would mean
+clocking the pad-hold attitude to the flight azimuth, which requires giving pad
+hold an azimuth it does not currently have and changes the initial attitude of
+every pad mission in the repository, or modelling an explicit rate-limited roll
+program after liftoff. Neither is warranted by a discontinuity that is now
+confined to one cycle at a mode boundary and absent from the commanded signal.
+If a future phase makes the open-loop ascent an attitude-truth benchmark rather
+than a trajectory benchmark, that is the point to revisit it.
 
 **Exit-criterion impact: none for criterion 10**, which gates throughput
 rather than tracking accuracy, and the closed-loop mission still reaches
@@ -309,11 +332,41 @@ divide by `r^3` and `r` with no guard, so `p0_m = [0, 0, 0]` — the filter's
 initial position estimate at the exact centre of the central body — yields
 `0.0/0.0` and propagates NaN from the first cycle.
 
-Neither the writer nor the reader screens non-finite values, so the run
-completes and writes an all-NaN `nav.est`. The failure is unmistakable in the
-log and fatal to the consistency evaluator's Cholesky, so it is diagnosed rather
-than mistaken for a result. Rejecting a zero `p0_m` at parse time — the
-precedent `require_sigma3` sets for `P0`'s sigmas — is the eventual fix.
+The run does not complete. Measured on `missions/leo_ekf_consistency.toml`
+with `p0_m` replaced by `[0, 0, 0]` and nothing else changed, `star run`
+**aborts at t = 1.0 s** — the first aiding epoch, where the 1 Hz nav fix, star
+tracker, and altimeter all take their first sample — with
+`ValueError: quat_normalize: zero or non-finite quaternion` and **exit
+code 1**. The NaN reaches the attitude correction on the first measurement
+update, and normalizing the corrected quaternion is the guard that stops the
+run. The log is left truncated at **10 records** per cycle-rate group against
+the **601** the completed 60 s mission writes.
+
+The corruption is partial, not total, which matters when reading such a log:
+
+| group | non-finite | share |
+| --- | --- | --- |
+| `nav.est` `x_hat` | 54 / 160 | 33.8% |
+| `nav.est` `P` | 1002 / 1200 | 83.5% |
+| `nav.err` `e` | 54 / 160 | 33.8% |
+| `truth` | 0 / 150 | 0% |
+| `gnc.cmd` | 0 / 110 | 0% |
+| all four `sensors.*` groups | 0 / 84 | 0% |
+
+Epoch 0 is fully finite in both `x_hat` and `P`. From epoch 1 onward exactly
+six of the sixteen states — the three position and three velocity components —
+are non-finite, and that set does not grow; the four quaternion components and
+the six bias states stay finite in every logged epoch. Truth, the commanded
+attitude, and every sensor channel are untouched, because none of them is
+computed from the filter's estimate.
+
+That behavior is safer than a completed run: the abort is loud, immediate, and
+impossible to mistake for a result, and no full-length log of a diverged filter
+is produced to be analyzed by accident. It is still worth closing, because the
+diagnostic points at the quaternion rather than at `p0_m`, which is where the
+error actually is. Rejecting a zero `p0_m` at parse time — the precedent
+`require_sigma3` sets for `P0`'s sigmas — remains the fix, and would move the
+failure to validation time with a message that names the offending key.
 
 **Exit-criterion impact: none.** Every criterion's `p0_m` is a real orbital
 position.
