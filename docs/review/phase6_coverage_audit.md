@@ -11,6 +11,12 @@ Source under test: branch `phase-6-gnc-sensors` at
 `5fe1351` (`Merge ws-p6-tiers: gate criteria 2, 3, and 9 in the acceptance
 suite`), working tree clean.
 
+**This document is the measurement as taken and is left as written.** The work
+that answers it, the re-measured figures, the mutation evidence, the ASan
+reach experiment this audit left open, and a correction to the `pytest line`
+column of the per-file table below are in
+[`phase6_coverage_closure.md`](phase6_coverage_closure.md).
+
 ## Headline result
 
 The Phase 6 surface is **not** substantially unexercised, but the coverage is
