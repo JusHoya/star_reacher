@@ -441,27 +441,45 @@ _SENSOR_PARAMS: dict[str, dict[str, tuple[str, str, object]]] = {
 }
 
 # Parameters that must be positive when present (a zero would leave the
-# projection undefined rather than merely disabling a term). The three
-# measurement-noise sigmas are here for the reason _EKF_VEC3_PARAMS gives for
-# P0's: they are the diagonal the EKF builds its measurement-noise matrix R
-# from (cpp/src/gnc/ekf.cpp), so a zero entry makes R singular exactly as a
-# zero p0_sigma makes P0 singular. The two failures differ only in which
-# matrix loses rank, so they are refused by the same rule.
+# projection undefined rather than merely disabling a term).
 _SENSOR_POSITIVE = {
     "camera": ("fx_px", "fy_px", "width_px", "height_px"),
+}
+
+# Parameters with no honest default, whatever the mission navigates with.
+_SENSOR_REQUIRED = {
+    "camera": ("fx_px", "fy_px", "width_px", "height_px"),
+}
+
+# The [gnc.nav] component that builds a measurement-noise matrix R out of the
+# aiding sensors' sigmas. The two tables below apply only when a mission
+# selects it, because only then do those sigmas leave the sensor model and
+# become the diagonal of a matrix that has to be invertible.
+_R_BUILDING_NAV_COMPONENT = "error_state_ekf"
+
+# Sigmas the EKF puts on R's diagonal, which must therefore be strictly
+# positive for the reason _EKF_VEC3_PARAMS gives for P0's sigmas: a zero entry
+# makes the matrix singular rather than merely small. R and P0 lose rank for
+# the same reason, so they are refused by the same rule.
+#
+# Scoped to the EKF rather than applied to every mission because a sigma has
+# two distinct jobs. It is always the sensor model's noise draw, where zero is
+# the documented ideal (error-free) instrument and a legitimate thing to ask
+# for; it is additionally R's diagonal only under a filter that forms R. A
+# dead-reckoning or plugin-navigated mission never builds R from these values,
+# so refusing its noise-free star tracker would enforce a conditioning
+# requirement that nothing in the run has.
+_EKF_R_POSITIVE = {
     "startracker": ("sigma_rad",),
     "navfix": ("sigma_r_m", "sigma_v_mps"),
 }
 
-# Parameters with no honest default. Every other sensor parameter may be
-# omitted, taking the core-side ideal (error-free) value; these cannot,
-# because the core-side default is zero and zero is precisely the value
-# _SENSOR_POSITIVE refuses. Omission would otherwise be a silent route to the
-# singular R that writing the zero explicitly is rejected for. The altimeter
-# lists both of its sigmas because its rule is the quadrature sum below, which
-# cannot be evaluated when either term is absent.
-_SENSOR_REQUIRED = {
-    "camera": ("fx_px", "fy_px", "width_px", "height_px"),
+# The same keys, additionally required under the EKF: the core-side
+# NavSensorModel members default to zero, so omitting one is a silent route to
+# exactly the singular R that writing the zero explicitly is rejected for. The
+# altimeter lists both of its sigmas because its rule is the quadrature sum
+# below, which cannot be evaluated when either term is absent.
+_EKF_R_REQUIRED = {
     "startracker": ("sigma_rad",),
     "navfix": ("sigma_r_m", "sigma_v_mps"),
     "altimeter": ("sigma_noise_m", "sigma_bias_m"),
@@ -481,13 +499,17 @@ _SENSOR_SIGNED_OK = {
 
 
 def _validate_sensor_params(
-    kind: str, table: dict, errs: "_Errors"
+    kind: str, table: dict, errs: "_Errors", *, builds_r: bool = False
 ) -> tuple[bool, dict]:
     """Validate one [sensors.<kind>] table's model parameters.
 
     Returns (ok, resolved) with resolved carrying only the keys the mission
     actually set, so an unset parameter takes the core-side default rather
     than being pinned to a value the user never wrote.
+
+    ``builds_r`` says the mission navigates with the component that forms a
+    measurement-noise matrix out of these sigmas, which turns on the
+    conditioning rules that only that matrix needs.
     """
     schema = _SENSOR_PARAMS[kind]
     path = f"sensors.{kind}"
@@ -495,6 +517,8 @@ def _validate_sensor_params(
     resolved: dict = {}
     signed_ok = _SENSOR_SIGNED_OK.get(kind, ())
     positive = _SENSOR_POSITIVE.get(kind, ())
+    if builds_r:
+        positive = positive + _EKF_R_POSITIVE.get(kind, ())
 
     _reject_unknown(table, path, {"sample_rate_hz"} | set(schema), errs)
     for key, value in table.items():
@@ -571,7 +595,7 @@ def _validate_sensor_params(
                      units="1",
                      typical="Hamilton scalar-first, e.g. [1, 0, 0, 0]")
             ok = False
-    if kind == "altimeter":
+    if builds_r and kind == "altimeter":
         # The altimeter's R entry is r = sn*sn + sb*sb (cpp/src/gnc/ekf.cpp),
         # so neither sigma is individually required to be positive: a
         # noise-free instrument carrying a turn-on bias is a legitimate
@@ -588,10 +612,13 @@ def _validate_sensor_params(
                      units=schema["sigma_noise_m"][0],
                      typical=schema["sigma_noise_m"][1])
             ok = False
+    required = _SENSOR_REQUIRED.get(kind, ())
+    if builds_r:
+        required = required + _EKF_R_REQUIRED.get(kind, ())
     # Measured against the raw table rather than `resolved`, so a key that is
     # present but rejected above reports only why its value is wrong instead
     # of also being called absent.
-    for req in _SENSOR_REQUIRED.get(kind, ()):
+    for req in required:
         if req not in table:
             errs.add(path, req, "missing required key",
                      units=schema[req][0], typical=schema[req][1])
@@ -2232,6 +2259,14 @@ def _validate_gnc(
                 # ordered identically regardless of TOML key order.
                 resolved_kinds: dict = {}
                 kinds_ok = True
+                # Only the built-in EKF turns these sigmas into R's diagonal.
+                # A plugin navigator may form its own R, but the shape of that
+                # matrix is the plugin's to define, so its conditioning is
+                # checked by the plugin rather than assumed here.
+                builds_r = (
+                    isinstance(nav, dict)
+                    and nav.get("component") == _R_BUILDING_NAV_COMPONENT
+                )
                 for kind in _SENSOR_KINDS:
                     if kind not in sensors:
                         continue
@@ -2273,7 +2308,7 @@ def _validate_gnc(
                                  typical=f"a divisor of {rate}")
                         kinds_ok = False
                     params_ok, params = _validate_sensor_params(
-                        kind, table, errs)
+                        kind, table, errs, builds_r=builds_r)
                     kinds_ok = kinds_ok and params_ok
                     if kinds_ok and srate is not None:
                         params["sample_rate_hz"] = srate

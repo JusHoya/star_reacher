@@ -207,8 +207,40 @@ def test_gnc_validation_rejections(tmp_path, monkeypatch, mutation, expected_fra
     assert any(expected_fragment in e for e in errors), (expected_fragment, errors)
 
 
+# The [gnc.nav] block that makes a mission build a measurement-noise matrix R
+# out of the aiding sigmas below. Only the error-state EKF does; substituting
+# GOLDEN_MISSION's dead reckoner is what
+# test_zero_sigma_accepted_without_an_r_building_navigator uses to show the
+# rules are scoped to the component that owns R.
+EKF_NAV = """
+[gnc.nav]
+component = "error_state_ekf"
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+v0_mps = [0.0, 7546.0, 0.0]
+p0_m = [7.0e6, 0.0, 0.0]
+bg0_radps = [0.0, 0.0, 0.0]
+ba0_mps2 = [0.0, 0.0, 0.0]
+p0_sigma_att_rad = [1.0e-3, 1.0e-3, 1.0e-3]
+p0_sigma_vel_mps = [0.5, 0.5, 0.5]
+p0_sigma_pos_m = [50.0, 50.0, 50.0]
+p0_sigma_bg_radps = [1.0e-7, 1.0e-7, 1.0e-7]
+p0_sigma_ba_mps2 = [1.0e-5, 1.0e-5, 1.0e-5]
+"""
+
+DEAD_RECKONING_NAV = """
+[gnc.nav]
+component = "dead_reckoning"
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+"""
+
+
+def _ekf_mission(text=None):
+    """GOLDEN_MISSION navigating with the EKF instead of the dead reckoner."""
+    return (text or GOLDEN_MISSION).replace(DEAD_RECKONING_NAV, EKF_NAV)
+
+
 # The three aiding sensors whose sigmas build the EKF's measurement-noise
-# matrix R, appended to GOLDEN_MISSION by the R-singularity cases below. Every
+# matrix R, appended to the mission by the R-singularity cases below. Every
 # sigma here is nonzero, so the block is accepted as written and each case
 # below isolates exactly one way of driving a sigma to zero.
 AIDING_SENSORS = """
@@ -300,7 +332,7 @@ def test_singular_r_sigmas_rejected(
     tmp_path, monkeypatch, mutation, expected_fragment
 ):
     """Every route to a singular R is refused, naming the offending key."""
-    text = mutation(GOLDEN_MISSION + AIDING_SENSORS)
+    text = mutation(_ekf_mission() + AIDING_SENSORS)
     resolved, errors = _validate_text(tmp_path, text, monkeypatch)
     assert resolved is None
     assert any(expected_fragment in e for e in errors), (
@@ -311,14 +343,47 @@ def test_singular_r_sigmas_rejected(
 def test_aiding_sensor_block_is_accepted_unmutated(tmp_path, monkeypatch):
     """The control for the rejection cases above.
 
-    Without it, a typo in AIDING_SENSORS would make every case in that
-    parametrization pass for the wrong reason.
+    Without it, a typo in AIDING_SENSORS or EKF_NAV would make every case in
+    that parametrization pass for the wrong reason.
     """
     resolved, errors = _validate_text(
-        tmp_path, GOLDEN_MISSION + AIDING_SENSORS, monkeypatch
+        tmp_path, _ekf_mission() + AIDING_SENSORS, monkeypatch
     )
     assert not errors, errors
+    assert resolved["gnc"]["nav"]["component"] == "error_state_ekf"
     assert resolved["sensors"]["altimeter"]["sigma_noise_m"] == 20.0
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda t: t.replace(
+            "sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]",
+            "sigma_rad = [0.0, 0.0, 0.0]",
+        ),
+        lambda t: t.replace("sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]\n", ""),
+        lambda t: t.replace("sigma_noise_m = 20.0", "sigma_noise_m = 0.0"),
+    ],
+)
+def test_zero_sigma_accepted_without_an_r_building_navigator(
+    tmp_path, monkeypatch, mutation
+):
+    """A noise-free instrument stays legal when nothing builds an R from it.
+
+    A sigma has two jobs: it is always the sensor model's noise draw, where
+    zero is the documented ideal (error-free) instrument, and it is R's
+    diagonal only under a navigator that forms R. Under GOLDEN_MISSION's dead
+    reckoner there is no measurement update at all, so the same zero that is
+    rejected above carries no conditioning problem and must be accepted -
+    tests/python/test_p6_optical_gates.py depends on exactly this, running a
+    deliberately noise-free star tracker so its aberration comparison is
+    exact rather than statistical.
+    """
+    resolved, errors = _validate_text(
+        tmp_path, mutation(GOLDEN_MISSION + AIDING_SENSORS), monkeypatch
+    )
+    assert not errors, errors
+    assert resolved["gnc"]["nav"]["component"] == "dead_reckoning"
 
 
 @pytest.mark.parametrize(
@@ -341,7 +406,7 @@ def test_altimeter_accepts_either_sigma_alone(
     positive" - would reject it, so this is the case that pins the rule to
     the quadrature sum.
     """
-    text = (GOLDEN_MISSION + AIDING_SENSORS).replace(
+    text = (_ekf_mission() + AIDING_SENSORS).replace(
         "sigma_noise_m = 20.0", f"sigma_noise_m = {sigma_noise_m}"
     ).replace("sigma_bias_m = 0.0", f"sigma_bias_m = {sigma_bias_m}")
     resolved, errors = _validate_text(tmp_path, text, monkeypatch)
