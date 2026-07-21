@@ -9,6 +9,12 @@ which claims are now measured and which remain unverified.
 Source under test: branch `phase-6-gnc-sensors` at
 `242d92d38064fae152f813de26ac912b6b58339d`, working tree clean.
 
+**Nomenclature correction.** Earlier revisions of this document referred to the
+cross-platform divergence gate as the "FR-30 gate" in seven places. That label
+was wrong: FR-30 is the scientific report PDF (`PRD.md:125`). The gate is
+Phase 2 exit criterion 8, bounded by the D-10 determinism contract and serving
+FR-21. The references have been corrected in place; no measurement changed.
+
 ## Headline results
 
 | Leg | Platform / toolchain | Result |
@@ -465,7 +471,7 @@ was replicated. The `asan` preset was used under its own name on Linux.
   which does not set `-Wall -Wextra -Werror`. Clang's warning surface over
   the Phase 6 code is unmeasured.
 - **Determinism across platforms for Phase 6 outputs.** This pass compared
-  test counts and one probe value, not logged run output. The FR-30
+  test counts and one probe value, not logged run output. The D-10
   cross-platform divergence gate is a separate CI job and was not run here.
   **Superseded at `668b9fc`:** logged bytes were compared across Windows/MSVC
   and Linux/GCC; see "Byte-level output determinism across platforms" at the
@@ -920,7 +926,7 @@ before the inner one could.
 - **aarch64 and the `pi5` preset.** Not run; no target hardware.
 - **MSVC AddressSanitizer.** Not run.
 - **Cross-platform output determinism for the new Phase 6 code.** This pass
-  compared test counts, not logged run bytes. The FR-30 divergence gate is a
+  compared test counts, not logged run bytes. The D-10 divergence gate is a
   separate CI job and was not exercised here; the SRLOG 1.3 header echo, which
   carries doubles as hex bit patterns, has not been compared across platforms.
   **Superseded at `668b9fc`:** both were measured; the header echo crosses
@@ -978,7 +984,7 @@ Five missions, each earning its place:
 
 - **`missions/twobody_leo.toml` - the control.** The Phase 1 byte-frozen
   two-body path, whose arithmetic is add/subtract/multiply/divide/sqrt only.
-  It is the mission the existing FR-30 `cross-platform-divergence` CI job
+  It is the mission the existing D-10 `cross-platform-divergence` CI job
   already measures at `max_rel = 0`. Including it tests the *method*: if this
   mission had differed, the finding would have been a defect in this
   experiment, not in the simulator.
@@ -1155,7 +1161,7 @@ platforms, SHA-256
 `0897fa314e47a0902f89261f4548e569016b6c432f33c7a7869ff906690ba568`, whole file,
 no exclusions.
 
-This independently corroborates the existing FR-30 record in
+This independently corroborates the existing D-10 record in
 `tests/golden/determinism/cross_platform.toml`, which measures `max_rel = 0` on
 this mission across four CI legs - but at a strictly stronger level. That gate
 compares **final-state truth records**; this compares **every byte of the
@@ -1303,7 +1309,7 @@ differs in the ascent mission, so agreement at probe arguments does not
 generalize to agreement everywhere. Only the basic-operation rows are
 guaranteed by the standard.
 
-### Relation to the FR-30 / D-10 gate
+### Relation to the D-10 cross-platform gate
 
 The D-10 bound is 1e-9 relative on final-state divergence. Recomputed here on
 the final `truth` record of each mission:
@@ -1319,7 +1325,7 @@ the final `truth` record of each mission:
 Every mission passes D-10 with margin. Note what the final-state metric misses,
 though: four of these five rows read `0` while the files differ in thousands of
 bytes, because the final-state gate looks only at `truth.r_m` and `truth.v_mps`
-- the two channels that are bit-identical in the orbital missions. **The FR-30
+- the two channels that are bit-identical in the orbital missions. **The D-10
 gate as constituted cannot see the divergence documented in this section.** It
 is not wrong; it measures a different and weaker property than FR-21 states.
 The widest scale-relative divergence found anywhere in this pass is 1.06e-10
@@ -1430,7 +1436,7 @@ the missions measured here.**
   `eq:camera:nearside` and sensor-bounds tests, every one of the 120 camera
   samples carries at least one visible landmark, and the visible pixels span
   u = 1.7 to 1275.3 of 1280 and v = 95.4 to 910.8 of 1024.
-- **The FR-30 CI job itself.** Not run here. This pass replicates its
+- **The D-10 CI job itself.** Not run here. This pass replicates its
   *question* at a stronger level on one of its four legs' toolchains, but the
   job's own four-leg measurement was not exercised.
 - **Whether the ascent divergence is dominated by one model.** The attribution
