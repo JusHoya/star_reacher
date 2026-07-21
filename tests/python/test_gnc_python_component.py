@@ -866,6 +866,84 @@ def test_a_partial_layout_is_refused(tmp_path):
     assert "cover 4 slots" in message and "state_dim() == 7" in message, message
 
 
+def test_a_non_quaternion_led_layout_at_n_equals_m_plus_one_is_refused(tmp_path):
+    """KNOWN-ISSUE-P6-5's surviving half, refused at the plugin boundary.
+
+    ``star consistency`` collapses slots 0..3 as a scalar-first error
+    quaternion whenever ``n == m + 1`` (``n >= 4``), and the SRLOG header
+    carries no layout for it to check that against. This component declares
+    the shape that reaches the collapse with no quaternion there: a 3-slot
+    velocity block first, a 4-slot attitude block second, ``n == 7`` against
+    ``m == 6``. Constructing the run must refuse it rather than produce a log
+    whose NEES would be positive, order-unity, and wrong.
+    """
+    core = _core_or_fail()
+
+    def _make(cov_dim_value):
+        class VelocityLedNav(core.IGncComponent):
+            def __init__(self, cfg):
+                super().__init__()
+                self.q = [1.0, 0.0, 0.0, 0.0]
+
+            def init(self, ctx):
+                self.q = list(ctx.q0_i2b)
+
+            def update(self, inp):
+                out = core.GncOutput()
+                out.valid = True
+                out.q_i2b = self.q
+                return out
+
+            def state_dim(self):
+                return 7
+
+            def cov_dim(self):
+                return cov_dim_value
+
+            def state(self):
+                return [0.0, 0.0, 0.0] + self.q
+
+            def covariance_upper(self):
+                n = cov_dim_value
+                return [0.0] * (n * (n + 1) // 2)
+
+            def error_layout(self):
+                return [
+                    core.ErrorBlock(
+                        core.ErrorQuantity.VELOCITY, core.ErrorForm.DIFFERENCE, 0
+                    ),
+                    core.ErrorBlock(
+                        core.ErrorQuantity.ATTITUDE,
+                        core.ErrorForm.QUAT_ERROR_LOCAL,
+                        3,
+                    ),
+                ]
+
+        return VelocityLedNav
+
+    name = _register(core, _make(6), "velocity_led_nav")
+    cfg = _swap_component(core, _run_config(core, ATTITUDE_MISSION), "nav", name)
+    with pytest.raises(Exception) as excinfo:
+        core.Sim(cfg, str(tmp_path / "velocity_led.srlog"))
+    message = str(excinfo.value)
+    # The rejection must name the problem, not merely refuse: the block that
+    # holds offset 0, both dimensions, and the consumer that would misread it.
+    assert "velocity" in message, message
+    assert "state_dim() == 7" in message and "cov_dim() == 6" in message, message
+    assert "star consistency" in message, message
+
+    # NOT over-rejection, demonstrated on the same layout: declaring the
+    # honest 7-dimensional covariance takes the component out of the
+    # collapse's path, and the identical block list is then accepted. The two
+    # runs differ in cov_dim() alone, so the refusal above is attributable to
+    # the n == m + 1 pairing and to nothing else about the layout.
+    ok_name = _register(core, _make(7), "velocity_led_nav_square")
+    ok_cfg = _swap_component(
+        core, _run_config(core, ATTITUDE_MISSION), "nav", ok_name
+    )
+    core.Sim(ok_cfg, str(tmp_path / "velocity_led_ok.srlog"))
+
+
 def test_oracle_true_still_injects_truth_and_stamps_the_header(tmp_path):
     """The sanctioned debug path is intact.
 
