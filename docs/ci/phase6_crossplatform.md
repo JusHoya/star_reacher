@@ -1108,8 +1108,9 @@ would have invalidated the result silently.** The first WSL build attempt
 returned exit 2 with `ModuleNotFoundError: No module named 'scikit_build_core'`
 - `--no-build-isolation` requires the build backend in the target venv, and
 that venv had only NumPy. The installed `.so` was left untouched at
-`cf6083b4fa231cc1...` / `a742f8d`, 41 commits behind the tree it was about to
-be compared against. The script printed `PIP_EXIT=2`, `POST_O=0` and the stale
+`cf6083b4fa231cc1...` / `a742f8d`, 11 commits behind the tree it was about to
+be compared against (`git rev-list --count a742f8d..668b9fc`). The script
+printed `PIP_EXIT=2`, `POST_O=0` and the stale
 hash side by side, so the failure was visible rather than inferred. Had the
 script reported only that the runs completed, the entire comparison would have
 been made against a stale artifact. This is the
