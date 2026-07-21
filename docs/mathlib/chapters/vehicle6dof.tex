@@ -210,7 +210,7 @@ Substituting $\hat{\vv{x}}$ from equation~\eqref{eq:vehicle6dof:pitchaxis}
 into equation~\eqref{eq:vehicle6dof:attitude}, and writing $\hat{\vv{h}}^{I} =
 \sin A\,\hat{\vv{e}}^{I} + \cos A\,\hat{\vv{n}}^{I}$ for the ground-track
 direction, the numerator is $\cos\theta\,(\cos\theta\,\hat{\vv{u}}^{I} -
-\sin\theta\,\hat{\vv{h}}^{I})$, whose norm is $\abs{\cos\theta}$, so for
+\sin\theta\,\hat{\vv{h}}^{I})$, whose norm is $\lvert\cos\theta\rvert$, so for
 $\cos\theta > 0$ the Gram--Schmidt result has the closed form
 \begin{equation}
   \hat{\vv{y}} = \cos\theta\,\hat{\vv{u}}^{I}
@@ -223,7 +223,7 @@ still fixes the roll, and the commanded attitude is continuous through a true
 vertical hold. The implementation evaluates
 equation~\eqref{eq:vehicle6dof:attitude} directly where it is well
 conditioned and equation~\eqref{eq:vehicle6dof:rollref} where it is not,
-switching at $\abs{\cos\theta} = 10^{-6}$ --- two decades above the
+switching at $\lvert\cos\theta\rvert = 10^{-6}$ --- two decades above the
 $10^{-8}$ guard below which the generic fallback would engage, so that
 fallback is unreachable from the pitch program. The two branches agree
 analytically; they differ only in rounding, and the direct branch is taken
@@ -301,15 +301,19 @@ Table~\ref{tab:vehicle6dof:validation} lists the tests that constitute this
 chapter's validation evidence. Each test identifier is machine-checked to
 exist in the test tree by \texttt{scripts/lint\_chapters.py}.
 
-\begin{table}[htbp]
-  \centering
+\begin{longtable}{lp{8.4cm}}
   \caption{Validation evidence for the vehicle 6DOF composition (doctest,
     \texttt{cpp/tests/test\_vehicle6dof.cpp}).}
-  \label{tab:vehicle6dof:validation}
-  \begin{tabular}{lp{8.4cm}}
-    \toprule
-    Test ID & Acceptance basis \\
-    \midrule
+  \label{tab:vehicle6dof:validation} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
     \testid{vehicle6dof_pad_release_exactness} &
       Exit criterion~10: the geodetic pad inertial velocity of
       equation~\eqref{eq:vehicle6dof:padstate} equals
@@ -353,8 +357,8 @@ exist in the test tree by \texttt{scripts/lint\_chapters.py}.
       orthonormality and the absence of any out-of-plane component in
       $\hat{\vv{y}}$, swept across $\theta = 90^{\circ}$. Tolerances follow
       the construction's conditioning: the direct branch normalizes a
-      cancellation remainder of norm $\abs{\cos\theta}$, so its rounding is
-      amplified by $1/\abs{\cos\theta}$, while
+      cancellation remainder of norm $\lvert\cos\theta\rvert$, so its rounding is
+      amplified by $1/\lvert\cos\theta\rvert$, while
       equation~\eqref{eq:vehicle6dof:rollref} rounds at a few $\epsilon$.
       A triad that is continuous but clocked to a different roll fails
       these. \\
@@ -371,9 +375,8 @@ exist in the test tree by \texttt{scripts/lint\_chapters.py}.
       evaluation of equation~\eqref{eq:vehicle6dof:attitude} wherever the
       latter is well conditioned, bounding the continuation's reach to the
       neighbourhood of the vertical. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+  \bottomrule
+\end{longtable}
 
 \section{References}
 \label{sec:vehicle6dof:references}
