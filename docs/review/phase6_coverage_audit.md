@@ -257,6 +257,15 @@ The comment at line 219 asserts an invariant that carries the correctness of
 the branch — "dq is already in the +w hemisphere, so 2 sgn(dq_w) dq_v is
 2 dq_v" — and no test confirms it.
 
+> **Resolved since: both forms were removed.** Covering this branch is what
+> surfaced the underlying defect — `error_block_size` reported three slots
+> while `compute_error_state` read four — and the decision was to remove the
+> two forms rather than repair them, because the reduction is already
+> implemented and applied downstream by the consistency evaluator. The zero
+> execution counts above are therefore now vacuously closed: the lines no
+> longer exist. See the "Not closed" section of
+> `docs/review/phase6_coverage_closure.md` for the full disposition.
+
 ---
 
 **C-3. The NavFix Gauss-Markov correlated error model is entirely dead.**

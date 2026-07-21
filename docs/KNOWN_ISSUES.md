@@ -278,12 +278,22 @@ state is 16-dimensional and whose covariance is 15-dimensional.
 
 The estimator's declared error layout is not written to the log — the SRLOG
 header carries only a boolean for whether a layout is present — so the CLI
-cannot verify the assumption. A plugin estimator that reaches `n == m + 1` with
-a three-slot attitude block (`ErrorForm.ROTATION_VECTOR_LOCAL` or `_GLOBAL`, see
-`docs/gnc_plugins.md:199-204`) has its leading four slots collapsed anyway: the
+cannot verify the assumption. A plugin estimator that reaches `n == m + 1`
+without a quaternion in slots 0..3 has those four slots collapsed anyway: the
 first is dropped, the next two are doubled, and the fourth — an unrelated state
 — is doubled and carried forward as an attitude component. The resulting NEES is
 positive, order-unity, and wrong.
+
+**Narrowed, not closed.** This entry originally named a three-slot attitude
+block (`ErrorForm.ROTATION_VECTOR_LOCAL` or `_GLOBAL`) as the route in. Those
+two forms have since been removed — every attitude form is now four slots —
+so that particular route no longer exists. The hazard survives in a second
+shape the original entry did not name: a layout whose attitude block is not
+*first*, for example `[VELOCITY(3), ATTITUDE(4)]` against a 6-dimensional
+covariance, reaches `n == m + 1` with slots 0..3 spanning the velocity error
+and one quaternion component. The collapse misreads it exactly as described
+above. The remedy is unchanged and still deferred: carry the declared layout
+in the SRLOG header and require it before collapsing.
 
 Closing this properly means carrying the declared layout in the SRLOG header and
 requiring it before the collapse; the layout already exists in the core as

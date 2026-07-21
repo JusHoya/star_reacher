@@ -185,6 +185,18 @@ small piece of evidence that the warnings-as-errors leg now reaches this
 code: removing the padding leaves `mm` unused and the build fails before the
 test can run.
 
+**M15–M18 no longer have a target.** Their case, the rotation-vector
+attitude error forms, has since been removed from `ErrorForm` — see the
+inconsistency this document reports below, which was the reason. The four
+results above stand as measured against the code as it was; they are not
+re-runnable, and the mutations they describe cannot be applied to the current
+source because the arithmetic they mutate is gone. The case that replaced
+them, `gnc_attitude_block_last_layout_cannot_outrun_the_state_buffer`
+(`cpp/tests/test_gnc.cpp`), targets the descriptor invariant rather than the
+reduction: it re-attempts the out-of-bounds construction through
+`validate_error_layout` and pins that the write stays inside the declared
+width.
+
 ## The ASan reach experiment
 
 The audit left one question open and blocked on recommendation 2: **can ASan
@@ -286,6 +298,22 @@ component selects either form today (`ekf.cpp:248` uses `kQuatErrorLocal` and
 `builtin.cpp:164` uses `kQuatDifferenceAligned`), so nothing in the suite
 reaches it --- but both forms are public API a plugin author can select, and
 `docs/gnc_plugins.md:204` documents them.
+
+> **Resolved since: the two forms were removed.** The defect this section
+> records was decided in favour of removal rather than repair. The
+> consequence was first reproduced live — two probe navigators flown through
+> `star run --gnc-plugin` both passed `validate_error_layout` and ran to
+> completion with well-formed `nav.err`, while the attitude-block-last one
+> read a `double` past `x_hat_buf`; the value came back as exactly 0.0 on
+> three byte-identical runs, so the defect was silent and stable. Removal
+> was chosen over repair because the reduction is not a lost capability:
+> `docs/formats/srlog_v1.md` already defines and applies
+> `dtheta = 2 sgn(dq_w) dq_v` in the consistency evaluator, naming the
+> built-in EKF's `n = 16` / `m = 15` as exactly that case. What removal does
+> **not** do is serve a three-parameter attitude state (MRP/Gibbs) — that
+> remains unserved, because `attitude_error` needs a `q_est` such a state
+> does not publish. See `docs/gnc_plugins.md` and the `ErrorForm` comment in
+> `cpp/include/star/gnc/component.hpp`.
 
 **Deliberately left, per the audit's own recommendation.** R-1 through R-4
 (beyond the one `reject_unknown` case per parser, which is added), R-7, R-8,

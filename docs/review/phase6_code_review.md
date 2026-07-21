@@ -652,6 +652,13 @@ unrelated reason gets `e[0:4]` mangled into `2·sgn(e[0])·e[1:4]`, and the
 resulting NEES has the right shape, is positive, and is order-unity — it looks
 entirely plausible while being wrong.
 
+> **Since: the two named forms were removed** (every attitude form is now four
+> slots), so the specific route above is closed. The finding itself stands —
+> a layout whose attitude block is not first, such as `[VELOCITY(3),
+> ATTITUDE(4)]` against a 6-dimensional covariance, still reaches `n = m + 1`
+> without a quaternion in slots 0..3 and is mangled identically. The remedy
+> below is unchanged and still open. See KNOWN-ISSUE-P6-5.
+
 **Remedy.** Carry the estimator's declared error layout, or at minimum a
 "quaternion-led attitude block" flag, in the SRLOG header, and require it
 before applying the collapse. The layout already exists in the core

@@ -190,36 +190,42 @@ reference filter of Chapter~\ref{ch:ekf} defines
 in~\eqref{eq:ekf:qerr}, which is how that filter's declared layout
 reproduces its previous output unchanged.
 
-Where the estimator's state carries a three-component attitude error
-instead of the quaternion, the same $\delta\quat{q}$ is reduced by the
+The same $\delta\quat{q}$ admits a three-component reduction by the
 small-angle relation
 \begin{equation}
   \delta\vv{\theta} = 2\,\mathrm{sgn}(\delta q_w)\,\delta\vv{q}_v,
   \label{eq:gnc:errrotvec}
 \end{equation}
 which is the reduction the consistency evaluator applies to compare an
-attitude error against the covariance it describes.
+attitude error against the covariance it describes. It is applied
+\emph{downstream}, by the evaluator, and is not a form a layout may declare.
 
-The two rotation-vector forms are not usable through a declared layout as
-the code currently stands, and the discrepancy is recorded here rather than
-papered over. A rotation-vector attitude block is three slots wide, which is
-the width the layout validator tiles the state vector with, but the
-differencing routine reads four quaternion slots at the block's offset. A
-layout that passes validation therefore cannot supply the fourth slot from
-within its own block: the read runs into the following block, or past the
-end of the state buffer if the attitude block is last. Neither reading of
-the intent repairs it --- a three-slot block carries no absolute attitude to
-difference truth against, while a four-slot one leaves a slot of
-\texttt{nav.err} unwritten, and \texttt{nav.err} is declared with
-\texttt{nav.est}'s dimension, so that slot would log as zero, which this
-section has just said an error channel must not do. Resolving it is a design
-decision with a log-format consequence. Neither built-in component selects
-either form --- the reference filter of Chapter~\ref{ch:ekf} declares
-equation~\eqref{eq:gnc:errlocal} and the dead-reckoning navigator the
-additive form below --- so no run reaches it today, but both are public API
-a plugin author can select. The evidence row below pins the arithmetic
-of~\eqref{eq:gnc:errrotvec} on a quaternion supplied directly, which is
-what the routine computes; it does not certify the layout path. See
+A pair of declarable rotation-vector forms once existed and was removed,
+which is recorded here rather than passed over silently because the reason
+constrains what may be added later. The descriptor's load-bearing invariant
+is that a block's error width equals its state width: one quantity,
+\texttt{error\_block\_size}, both tiles the state vector during validation
+and sizes the write into \texttt{nav.err}. That holds for every form except
+the rotation-vector pair, which declared three slots while the differencing
+routine read four quaternion slots at the block's offset --- so a layout
+placing its attitude block last could pass validation and then read one
+\texttt{double} past the end of the state buffer. The consequence was
+reproduced through the shipped plugin path, where the out-of-bounds value
+returned as exactly zero across byte-identical reruns and was therefore
+indistinguishable from correct operation.
+
+Removal was chosen over repair because the reduction is not a lost
+capability: equation~\eqref{eq:gnc:errrotvec} is already implemented and
+applied by the consistency evaluator, to exactly the $n = 16$, $m = 15$ case
+the reference filter of Chapter~\ref{ch:ekf} presents. What removal does not
+do --- and this is the honest consequence --- is serve an estimator whose
+state carries a three-parameter attitude directly, as an MRP or Gibbs
+vector. That case was never served: every attitude form reads
+$\quat{q}_{\mathrm{est}}$ as four consecutive state slots, and a
+three-parameter state publishes no such quaternion. Serving it requires a
+route for a component to supply its estimated quaternion independently of
+its state layout, which is a change to the descriptor rather than an added
+enumerator. See \texttt{docs/gnc\_plugins.md} and
 \texttt{docs/review/phase6\_coverage\_closure.md}.
 
 A fourth form serves an estimator that treats the four quaternion
@@ -527,19 +533,22 @@ after the tables.
       shifts application by exactly two cycles, the pre-fill holds applying
       the neutral command with \texttt{valid == false} and zero torque
       (equation~\eqref{eq:gnc:latency}). \\
-    \testid{gnc_rotation_vector_error_forms_match_the_analytic_reduction} &
-      The small-angle reduction~\eqref{eq:gnc:errrotvec} against its own
-      closed form. For a rotation of $\theta = 10^{-3}$ about a known axis
-      $\vv{u}$, $\delta\vv{q}_v = \sin(\theta/2)\,\vv{u}$ exactly, so the
-      expected error is $2\sin(\theta/2)\,\vv{u}$ --- analytic rather than a
-      regenerated golden. Both composition
-      sides~\eqref{eq:gnc:errlocal}--\eqref{eq:gnc:errglobal} are covered by
-      building the truth quaternion on the matching side, and they are shown
-      to disagree on a common truth while preserving the rotation magnitude,
-      so the declared side is not decorative. Negating the truth quaternion
-      --- the same attitude --- is shown to leave the reported error
-      unchanged, which is the $+w$ canonicalization the reduction's sign
-      convention depends on. \\
+    \testid{gnc_attitude_error_width_equals_state_width_for_every_form} &
+      The descriptor invariant, enumerated over every admissible attitude
+      form rather than sampled: each reports four slots, which is the width
+      the differencing routine reads at a block's offset. A form added with
+      any other width fails here. The attitude quantity's refusal of the
+      additive difference form is asserted alongside, which is what bounds
+      the enumeration to the three quaternion forms. \\
+    \testid{gnc_attitude_block_last_layout_cannot_outrun_the_state_buffer} &
+      The construction that formerly read out of bounds, re-attempted
+      through the shipped validator: a three-slot velocity block followed by
+      an attitude block over a six-slot state --- the tiling a three-slot
+      attitude form once satisfied --- is now rejected, and the message
+      names the arithmetic (seven slots declared against six). The same
+      layout at seven slots is accepted and read back, with a guard element
+      past the declared width shown untouched, so the rejection is about the
+      width and not a blanket refusal of an attitude-last layout. \\
     \testid{gnc_base_component_accessors_refuse_an_undeclared_state} &
       The base-class contract for a component that declares
       \texttt{state\_dim() > 0} without overriding the state or covariance

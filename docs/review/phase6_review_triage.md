@@ -573,6 +573,12 @@ estimator that is not quaternion-led at `n == m + 1` must not be evaluated with
 the built-in EKF, for which the collapse is the correct reduction.
 ```
 
+> **Since:** the two `ROTATION_VECTOR_*` forms quoted above were removed, so
+> the three-slot route into this misreading no longer exists. The issue
+> itself remains open under a second shape (an attitude block that is not
+> first); the current wording is in `docs/KNOWN_ISSUES.md` under
+> KNOWN-ISSUE-P6-5.
+
 ### `docs/KNOWN_ISSUES.md` — new entry, finding 15
 
 ```markdown
