@@ -419,6 +419,68 @@ TEST_CASE("ekf_star_tracker_innovation_recovers_an_injected_attitude_error") {
   CHECK(residual_angle < 0.02 * angle);
 }
 
+TEST_CASE("ekf_altimeter_update_matches_the_closed_form_scalar_solution") {
+  // The M = 1 instantiation of joseph_update, which no other case in this
+  // suite reaches. Placing the vehicle on the equator along +x under an
+  // identity body-fixed rotation makes every term analytic: the ellipsoidal
+  // normal of eq:ekf:altH is exactly (1, 0, 0), so H selects the position-x
+  // error state alone and the Joseph form collapses to the textbook scalar
+  // update, which is what this case pins.
+  std::unique_ptr<IGncComponent> f = make_ekf();
+  const double alt0 = kPos.x() - 6378137.0;  // ctx.ellipsoid_a_m, lat = 0
+  const double y0 = 100.0;                   // the injected innovation
+
+  GncInput in;
+  in.dt_s = 0.1;
+  in.altimeter.valid = true;
+  in.altimeter.fresh = true;
+  in.altimeter.sensor_id = 3;
+  in.altimeter.h_m = alt0 + y0;
+  in.env.bodyfixed_valid = true;
+  in.env.c_gcrf_to_bodyfixed = Eigen::Matrix3d::Identity();
+
+  const std::vector<double> x_prior = state_of(*f);
+  f->update(in);  // no fresh IMU sample, so this is a pure update
+
+  // Both sigmas come from the shared fixture: 50 m of initial position
+  // uncertainty against a 20 m altimeter with its bias term disabled.
+  const double p_prior = 50.0 * 50.0;
+  const double r = 20.0 * 20.0;
+  const double s_expect = p_prior + r;
+  const double k_gain = p_prior / s_expect;
+
+  const std::vector<InnovationSample>& innov = f->innovations();
+  REQUIRE(innov.size() == 1u);
+  CHECK(innov[0].sensor_id == 3u);
+  REQUIRE(innov[0].y.size() == 1u);
+  REQUIRE(innov[0].s_upper.size() == 1u);
+  CHECK(innov[0].y[0] == doctest::Approx(y0).epsilon(1e-9));
+  CHECK(innov[0].s_upper[0] == doctest::Approx(s_expect).epsilon(1e-12));
+
+  // The correction lands entirely on position x (eq:ekf:reset); the two
+  // cross-range components the measurement cannot see are untouched.
+  const std::vector<double> x_post = state_of(*f);
+  CHECK(x_post[7] == doctest::Approx(x_prior[7] + k_gain * y0).epsilon(1e-9));
+  CHECK(x_post[8] == doctest::Approx(x_prior[8]).epsilon(1e-12));
+  CHECK(x_post[9] == doctest::Approx(x_prior[9]).epsilon(1e-12));
+
+  // On a scalar update the Joseph form reduces to P+ = P R / (P + R), and
+  // the states the measurement does not observe keep their prior variance.
+  const Eigen::Matrix<double, kM, kM> p_post = unpack_upper(covariance_of(*f));
+  CHECK(p_post(6, 6) == doctest::Approx(p_prior * r / s_expect).epsilon(1e-12));
+  CHECK(p_post(7, 7) == doctest::Approx(p_prior).epsilon(1e-12));
+  CHECK(p_post(8, 8) == doctest::Approx(p_prior).epsilon(1e-12));
+  CHECK(p_post(3, 3) == doctest::Approx(0.25).epsilon(1e-12));
+  // A Joseph step that wrote outside its own row space would show up here
+  // as a lost symmetry or a non-positive variance.
+  for (int i = 0; i < kM; ++i) {
+    CHECK(p_post(i, i) > 0.0);
+    for (int j = i + 1; j < kM; ++j) {
+      CHECK(p_post(i, j) == doctest::Approx(p_post(j, i)).epsilon(1e-12));
+    }
+  }
+}
+
 TEST_CASE("ekf_skips_stale_and_invalid_aiding_samples") {
   // Folding one measurement in twice, or trusting a gated-out sample, is
   // invisible in the state error but immediately corrupts the covariance,
