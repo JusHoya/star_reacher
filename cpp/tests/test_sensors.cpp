@@ -901,6 +901,15 @@ TEST_CASE("sensors_camera_pinhole_projection_and_visibility") {
   f.truth_rate_hz = 4;
   f.cycle_rate_hz = 4;
   f.sensors = {{"camera", 4, 1}};
+  // The writer declares the camera group and its header echo together, so
+  // the echo is filled from the same cfg the hook projects through.
+  f.camera_echo_present = true;
+  f.camera.fx_px = cfg.fx;
+  f.camera.fy_px = cfg.fy;
+  f.camera.cx_px = cfg.cx;
+  f.camera.cy_px = cfg.cy;
+  f.camera.width_px = cfg.width_px;
+  f.camera.height_px = cfg.height_px;
   {
     star::log::SrlogWriter writer(path, f);
 

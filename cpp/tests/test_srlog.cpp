@@ -449,6 +449,25 @@ star::log::SrlogHeaderFields v12_fields() {
   fields.cycle_rate_hz = 100;
   fields.latency_cycles = 2;
   fields.sensors = {{"imu", 100, 0}, {"camera", 10, 2}};
+  // The camera group and its header echo are declared together (the writer
+  // rejects either half alone). Anisotropic focal lengths, an off-axis
+  // principal point, a non-identity mount rotation, and a nonzero mount
+  // station, so a byte-level header assertion cannot pass while any one of
+  // the seven doubles is transposed with another.
+  fields.camera_echo_present = true;
+  fields.camera.fx_px = 800.0;
+  fields.camera.fy_px = 600.0;
+  fields.camera.cx_px = 511.5;
+  fields.camera.cy_px = 383.5;
+  fields.camera.width_px = 1024;
+  fields.camera.height_px = 768;
+  fields.camera.q_b2c[0] = 0.9659258262890683;
+  fields.camera.q_b2c[1] = 0.0;
+  fields.camera.q_b2c[2] = 0.25881904510252074;
+  fields.camera.q_b2c[3] = 0.0;
+  fields.camera.r_cam_b_m[0] = 0.5;
+  fields.camera.r_cam_b_m[1] = -0.25;
+  fields.camera.r_cam_b_m[2] = 0.125;
   fields.nav_est_rate_hz = 100;
   fields.nav_state_dim = 7;
   fields.nav_err_enabled = true;
@@ -475,7 +494,20 @@ TEST_CASE("srlog_v12_header_declares_gnc_groups") {
       "\"master_seed\":\"1234567890\",\"oracle\":false,"
       "\"epoch_utc\":\"2026-01-01T00:00:00Z\",\"central_body\":\"earth\","
       "\"gnc\":{\"cycle_rate_hz\":100,\"latency_cycles\":2,"
-      "\"sensors\":[\"imu\",\"camera\"]},"
+      "\"sensors\":[\"imu\",\"camera\"],"
+      // The v1.3 camera echo. The hex digits are the IEEE-754 binary64 bit
+      // patterns of 800, 600, 511.5, 383.5, the mount quaternion, and the
+      // mount station - written out longhand rather than computed here, so
+      // this assertion is a statement about the bytes on disk and not a
+      // re-run of the encoder it checks.
+      "\"camera\":{\"float_encoding\":\"ieee754-binary64-hex\","
+      "\"width_px\":1024,\"height_px\":768,"
+      "\"fx_px\":\"4089000000000000\",\"fy_px\":\"4082c00000000000\","
+      "\"cx_px\":\"407ff80000000000\",\"cy_px\":\"4077f80000000000\","
+      "\"q_b2c\":[\"3feee8dd4748bf15\",\"0000000000000000\","
+      "\"3fd0907dc1930690\",\"0000000000000000\"],"
+      "\"r_cam_b_m\":[\"3fe0000000000000\",\"bfd0000000000000\","
+      "\"3fc0000000000000\"]}},"
       "\"groups\":["
       "{\"name\":\"truth\",\"rate_hz\":10,\"channels\":["
       "{\"name\":\"t_s\",\"dtype\":\"f64\",\"units\":\"s\",\"frame\":\"\"},"
@@ -542,6 +574,7 @@ TEST_CASE("srlog_v12_header_declares_gnc_groups") {
   plain.cycle_rate_hz = 0;
   plain.latency_cycles = 0;
   plain.sensors.clear();
+  plain.camera_echo_present = false;  // the echo follows its group
   plain.nav_est_rate_hz = 0;
   plain.nav_state_dim = 0;
   plain.nav_err_enabled = false;
@@ -656,6 +689,7 @@ TEST_CASE("srlog_v12_declaration_validation") {
   {
     star::log::SrlogHeaderFields f = v12_fields();
     f.sensors = {{"imu", 3, 0}};  // 100 % 3 != 0
+    f.camera_echo_present = false;  // isolate the rate defect
     CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
                     std::invalid_argument);
   }
@@ -664,12 +698,14 @@ TEST_CASE("srlog_v12_declaration_validation") {
   {
     star::log::SrlogHeaderFields f = v12_fields();
     f.sensors = {{"lidar", 10, 0}};
+    f.camera_echo_present = false;  // isolate the vocabulary defect
     CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
                     std::invalid_argument);
   }
   {
     star::log::SrlogHeaderFields f = v12_fields();
     f.sensors = {{"imu", 100, 0}, {"imu", 50, 0}};
+    f.camera_echo_present = false;  // isolate the duplicate-kind defect
     CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
                     std::invalid_argument);
   }
@@ -683,6 +719,37 @@ TEST_CASE("srlog_v12_declaration_validation") {
   {
     star::log::SrlogHeaderFields f = v12_fields();
     f.sensors = {{"imu", 100, 3}};
+    f.camera_echo_present = false;  // isolate the landmark-parameter defect
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // v1.3: the camera group and its header echo are declared together, in
+  // both directions. A camera log without the echo would silently reopen
+  // the gap exit criterion 7's intrinsics clause exists to close, and an
+  // echo without a group would describe a camera the file does not carry.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.camera_echo_present = false;  // camera group, no echo
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.sensors = {{"imu", 100, 0}};  // echo, no camera group
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  // A singular eq:camera:K would make the echo unusable by the consumer it
+  // exists for, so it is refused at the writer boundary.
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.camera.fx_px = 0.0;
+    CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
+                    std::invalid_argument);
+  }
+  {
+    star::log::SrlogHeaderFields f = v12_fields();
+    f.camera.height_px = 0;
     CHECK_THROWS_AS(star::log::SrlogWriter::header_json(f),
                     std::invalid_argument);
   }
@@ -767,6 +834,7 @@ TEST_CASE("srlog_v12_write_calls_guard_declaration_and_dimensions") {
     // are programming errors, the declared ones write normally.
     star::log::SrlogHeaderFields f = v12_fields();
     f.sensors = {{"imu", 100, 0}};
+    f.camera_echo_present = false;  // the echo follows its group
     f.nav_est_rate_hz = 0;
     f.nav_state_dim = 0;
     f.nav_err_enabled = false;
