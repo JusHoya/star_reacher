@@ -596,3 +596,329 @@ caught all four Phase 6 sites on the leg that actually gates CI, rather than
 on a Windows preset no CI job builds. The change is recommended; it is not
 applied here, because enabling a new fatal diagnostic in CI is a project
 policy decision rather than part of closing this build failure.
+
+## Re-run at `0cbb52b` (139 commits of new C++ since the pass above)
+
+The legs above were last measured at `1c717d1`. A large body of C++ landed
+afterwards and had, before this run, been compiled by MSVC only: the
+pitch-program roll-reference fix (`8f09032`, `models::pitch_program_roll_ref`
+and both call sites), the camera-intrinsics header echo and the SRLOG bump to
+format 1.3 (header JSON keys carrying IEEE-754 doubles as hex bit patterns),
+removal of the `ROTATION_VECTOR_*` error forms and the replacement width
+tests, the IMU stochastic bit-identity test and its non-degeneracy companion,
+the closed-loop insertion gate (EC-6 and EC-11), the noise-sigma validator,
+and the NavFix validity flag. `-Wshadow` had also been added to the CI leg
+many commits earlier and had not been re-measured since.
+
+Source under test: branch `phase-6-gnc-sensors` at
+`0cbb52bfbcbffed86ccdf1cf444152d04c9e3c9c`, working tree clean. The Linux
+clone at `/home/hoyer/sr` was fast-forwarded to that commit and verified clean
+before every leg.
+
+### Headline results
+
+| Leg | Platform / toolchain | Result |
+|---|---|---|
+| CI `cpp-tests` replication (`-Wall -Wextra -Wshadow -Werror`) | Ubuntu 24.04, GCC 13.3.0 | **PASS** - clean build from empty, **zero** diagnostics of any category |
+| Doctest suite | Ubuntu 24.04, GCC 13.3.0 | **PASS** - 179 cases, 65,348 assertions |
+| ASan + UBSan at `-O2`, **container annotations enabled** | Ubuntu 24.04, GCC 13.3.0 | **PASS** - zero ASan, zero UBSan, zero leak reports |
+| Python suite | Ubuntu 24.04, CPython 3.12.3 | **PASS** - 1017 passed, 0 failed, 0 skipped |
+
+Case and assertion counts match the Windows/MSVC baseline of 179 / 65,348
+**exactly**, as they have on every previous pass. The Python total matches the
+Windows baseline of 1017 exactly once the `[pandas,parquet]` extras are
+installed, which is what the CI `build-test` job does on the `ubuntu-24.04`
+leg specifically (`.github/workflows/ci.yml:42-43`).
+
+### Toolchain
+
+Ubuntu 24.04 under WSL2, `c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0`,
+CMake 3.28.3, GNU Make, CPython 3.12.3, glibc 2.39. This is the same GCC
+version as the `ubuntu-24.04` CI runner, so the leg is a faithful proxy for
+the `cpp-tests` job rather than an approximation of it. All builds ran with
+`CMAKE_BUILD_PARALLEL_LEVEL=2` and `--parallel 2`, one at a time, never
+concurrently with a Windows build. The CI job uses `--parallel 4`;
+parallelism does not affect which diagnostics are emitted.
+
+### Method
+
+Each leg was run from a shell script copied into the WSL filesystem and
+executed there, rather than as an inline command. This was not a stylistic
+choice - see "A methodology defect found and corrected during this run" below.
+The scripts capture every exit code inside WSL and print object counts,
+compiler invocation counts and binary hashes alongside the result.
+
+### Leg 1 - Linux warnings-as-errors
+
+`.github/workflows/ci.yml:165-177` replicated with its current flag set,
+which now includes `-Wshadow`:
+
+```
+cmake -S . -B build/ci -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wshadow -Werror"
+cmake --build build/ci --parallel 2
+ctest --test-dir build/ci --output-on-failure
+```
+
+Configure returned 0, build returned 0, `ctest` returned 0, and the binary
+invoked directly returned 0.
+
+**Zero warnings and zero errors, of any category, across all 61 translation
+units.** There is nothing to attribute: no new diagnostic, and no pre-existing
+one. Every item in the list of unverified changes at the top of this section
+compiles clean under GCC with `-Werror`. `-Wshadow` in particular is
+re-confirmed at zero cost at this commit, 139 commits after the measurement
+that justified adding it.
+
+The `auto`-holding-an-Eigen-expression hazard - the defect class this leg
+exists to catch, benign under one compiler and garbage under another - is
+therefore unrefuted by the compile-time leg and, more importantly, unrefuted
+by the ASan leg below, which is what actually detects it at runtime.
+
+### Leg 2 - ASan and UBSan, now with container annotations
+
+```
+cmake -S . -B build/gccasan -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_FLAGS="-O2 -g -fsanitize=address,undefined \
+                     -fno-sanitize-recover=all -D_GLIBCXX_SANITIZE_VECTOR=1" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+```
+
+Run with `detect_stack_use_after_return=1`, `strict_string_checks=1`,
+`check_initialization_order=1`, `detect_leaks=1`, `print_stacktrace=1`, and
+UBSan set to abort rather than recover.
+
+Result: exit 0, 179 cases, 65,348 assertions, **zero** AddressSanitizer
+reports, **zero** UndefinedBehaviorSanitizer runtime errors, **zero**
+LeakSanitizer reports.
+
+**The container-annotation caveat is now closed, and the answer is that
+annotations can be enabled here and they work.** Every previous clean ASan
+result in this document carried the caveat that libstdc++ container
+annotations are inactive under plain `-fsanitize=address` on GCC 13.3.0, so a
+`std::vector` overrun *within the allocation's capacity* was invisible; the
+buffers that mattered were detected by accident of allocation pattern rather
+than by any property of the sanitizer.
+
+This libstdc++ does support them. `bits/stl_vector.h:72` gates the annotation
+calls on `_GLIBCXX_SANITIZE_STD_ALLOCATOR && _GLIBCXX_SANITIZE_VECTOR`, and
+`bits/c++allocator.h:54-58` already defines the first automatically whenever
+`__SANITIZE_ADDRESS__` is set, so only `_GLIBCXX_SANITIZE_VECTOR` needs
+supplying. It was supplied, and its presence on the compile line was confirmed
+in `build/gccasan/CMakeFiles/star_core.dir/flags.make` rather than assumed.
+
+That the annotations are actually *active* was established by mutation rather
+than by inspection. A probe reserves capacity 64, assigns 8 elements, and
+writes to index 8 - past `size()`, inside `capacity()`:
+
+| Build | Exit | ASan reports |
+|---|---|---|
+| `g++ -O2 -fsanitize=address` | 0 | **0 - the overrun is invisible** |
+| `g++ -O2 -fsanitize=address -D_GLIBCXX_SANITIZE_VECTOR=1` | 1 | **1 - `container-overflow`** |
+
+The first row reproduces the old caveat exactly; the second retires it. The
+suite's clean result above was produced with annotations on, so it now covers
+within-capacity `std::vector` overruns as well as ordinary heap and stack
+overruns.
+
+**What a clean run here does and does not establish.** It establishes that no
+sanitizer finding arises on the code the C++ doctest suite actually executes,
+now including within-capacity vector overruns. It does **not** establish that
+the tree is free of such defects, because ASan reports only what runs, and the
+coverage audit in [`docs/review/phase6_coverage_audit.md`](../review/phase6_coverage_audit.md)
+measures the doctest tier at 75.5% line and 45.6% branch over the Phase 6 core
+surface. That figure, not the sanitizer, is the binding limit. In particular
+the `nav.innov` consumer path in `cpp/src/vehicle_cycle.cpp` remains outside
+the C++ tier's reach, so the clean result still says nothing about it. What
+has changed is that the *stated blocker* on answering that question - "the
+answer may be negative because annotations are unavailable" - is removed: if a
+C++ case is written that drives `VehicleCycle` with a component returning
+innovations, the annotated build will now detect a within-capacity overrun on
+it. The experiment is unblocked, not performed.
+
+### Leg 3 - the `ekf.cpp` array-bounds suppression is still load-bearing
+
+`cpp/src/gnc/ekf.cpp:400-407` carries the one deliberate suppression in the
+tree, scoped to a single declaration, naming only `-Warray-bounds`, guarded to
+`__GNUC__ && !__clang__`. A tree-wide grep confirms it is the **only**
+`diagnostic ignored` or `pragma warning` anywhere under `cpp/`.
+
+It was verified to be still necessary rather than assumed. With the `ignored`
+line replaced by a comment and nothing else changed, the build returns 2 and
+emits the same **16** `-Werror=array-bounds=` errors at `ekf.cpp:404`, with
+`cc1plus: all warnings being treated as errors`, in the
+`joseph_update<M = 1>` instantiation described earlier in this document. The
+source was restored and the tree re-verified clean afterwards. The suppression
+is live, correctly scoped, and not dead code left behind by a compiler
+upgrade.
+
+### Leg 4 - the Python tier and `test_sim.py:586`
+
+The wheel was built and installed into a venv inside the WSL filesystem
+(`/home/hoyer/sr/.venv`), deliberately not into the Windows environment.
+
+`test_close_releases_the_log_of_an_abandoned_run` asserted that `run.srlog`
+was non-empty after two `Sim.step()` calls with no intervening close. It
+passed under the MSVC runtime and failed on Linux with a 0-byte file. The
+earlier record called the attribution provisional because the failure had been
+seen only under an instrumented build.
+
+**It is no longer provisional. The failure reproduces against the optimized
+Linux wheel**, and the mechanism was measured directly by stepping a run and
+sampling the file size after every step:
+
+| After step | File size |
+|---|---|
+| 1 | 0 |
+| 8 | 8,195 |
+| 21 | 16,391 |
+| 33 | 24,589 |
+| 45 | 32,785 |
+
+Bytes reach disk in 8,192-byte units - the libstdc++ `filebuf` buffer - with
+nothing on disk at all until step 8. This is stream buffering and not a
+defect. The MSVC runtime happens to have surrendered bytes earlier, which is
+the only reason the assertion ever passed.
+
+**Adjudication: the flush timing is not contractual and should not become
+so.** Three things point the same way. The project already has an explicit
+contract that says the opposite of what the test asserted -
+`cpp/include/star/vehicle_cycle.hpp:110-112` describes `close()` as the flush,
+and the C++ sibling case at `cpp/tests/test_gnc_cycle.cpp:736` measures the
+abandoned prefix *after* `close()` for exactly this reason. The format has no
+consumer for mid-run bytes: `docs/formats/srlog_v1.md` section 8 already makes
+a trailing partial record `SrlogCorruptError`, so reading a log that is still
+being written is outside the contract regardless. And per-record flushing
+would trade one buffered write per 8 KB for a syscall per record on the core's
+hot loop, buying a durability property no reader is permitted to use.
+
+The resolution was therefore to write the contract down where a reader of the
+format will find it, and to assert it at the point it holds - not to delete
+the assertion:
+
+- `docs/formats/srlog_v1.md` gains a normative section 5.1 stating that the
+  file is guaranteed complete only after `close()`, that its size before then
+  is unspecified and may legitimately be 0, that no code may use a mid-run
+  size as a progress or liveness signal, and why per-record flushing is not
+  offered.
+- `tests/python/test_sim.py` now asserts that the log **exists** while the run
+  is open - which is the handle lifetime the case is actually about - and that
+  its size is nonzero **after** `close()`. The test still fails if `close()`
+  stops flushing; it no longer fails because of a standard library's buffer
+  size.
+
+Full Python suite on Linux after the change: **1017 passed, 0 failed, 0
+skipped**, exit 0. Without the `[pandas,parquet]` extras the same suite is
+1010 passed / 3 skipped; the three skips are `pyarrow` and `pandas` import
+guards in `test_export_parquet.py`, `test_export_cli_formats.py` and
+`test_to_pandas.py`. The extras were installed so the suite runs with no
+skips, matching what CI does on this leg. There are no platform-conditional
+skips in the Python tier - a grep for `sys.platform`, `platform.system` and
+`skipif` finds no selection outside those three extras guards - so the
+earlier report of a platform-dependent Python total is fully explained by the
+extras and by the now-fixed failure.
+
+Note on provenance: the installed extension module reports
+`git_hash = a742f8dâ€¦`, the commit the wheel was built from. The subsequent
+commit changed only `docs/formats/srlog_v1.md` and `tests/python/test_sim.py`
+and no C++ or installed Python source, so the wheel under test is the correct
+binary for the source that produced these results.
+
+### Proof that the builds were real
+
+| Build directory | Compiler invocations | `.o` on disk | `star_tests` size | SHA-256 |
+|---|---|---|---|---|
+| `build/ci` (GCC `-Werror`, Release) | 61 | 61 | 2,746,416 B | `ee5ae01c4863â€¦` |
+| `build/gccasan` (GCC ASan+UBSan `-O2 -g`) | 61 | 61 | 170,912,408 B | `3e9c92ddcd1aâ€¦` |
+
+Both were configured and built from a removed binary directory, so neither
+count can be a no-op. The two binaries differ by a factor of 62 in size, which
+is inconsistent with either being a stale copy of the other.
+
+Two further pieces of evidence, because a count can be produced by a build
+that recompiles but emits nothing new:
+
+- The `build/ci` binary hash **changed** between the `a742f8d` build
+  (`f9263814e464â€¦`) and the `0cbb52b` build (`ee5ae01c4863â€¦`) even though the
+  commit in between touched only a Markdown file and a Python test. The cause
+  is `cpp/src/version.cpp.in`, which bakes `STAR_GIT_HASH` in at configure
+  time. The binary demonstrably tracks the commit it was built from.
+- After the suppression probe removed a pragma, rebuilt, restored the source
+  and rebuilt again, `build/ci/star_tests` hashed back to `ee5ae01c4863â€¦` -
+  bit-identical to the pre-probe binary. The build is reproducible and the
+  probe left nothing behind.
+
+The suite completes in 0.12 s under `ctest`, which is fast enough to resemble
+a binary that ran nothing, so as in the earlier passes the binary was also
+invoked directly; it reports 179 cases and 65,348 assertions in the same
+0.12 s. The timing is genuine.
+
+### A methodology defect found and corrected during this run
+
+This is recorded because it invalidated intermediate readings before it was
+caught, and because it would silently affect any future agent driving WSL the
+same way.
+
+Exit codes were initially read with an inline
+`wsl -d Ubuntu -- bash -lc '... ; echo "RC=$?"'`. **`$?` in that position is
+expanded by the outer Windows-side shell before the string ever reaches WSL,
+so it reports the outer shell's status, not the build's.** The defect was
+caught when a suppression probe printed `BUILD_EXIT=0` while the same log
+ended in `gmake: *** [Makefile:101: all] Error 2`; a follow-up using an
+intermediate variable printed an empty string, and a direct control -
+`bash -lc 'false; echo $?'` - printed `0`, confirming the mechanism.
+
+Escaping as `\$?` reports correctly, and running from a script file copied
+into WSL avoids the class entirely. Every result in this section was
+re-measured with the script method after the discovery; the pre-discovery
+readings are not relied upon anywhere above. No conclusion changed as a
+result, because the substantive evidence in each leg was the log *content*
+(diagnostic counts, doctest totals, sanitizer report counts) rather than the
+exit code - but the exit codes are now independently correct as well.
+
+This is the same failure mode as the recorded stale-artifact-after-masked-
+build-failure lesson, arriving through a different door: there, a pipe
+swallowed an installer's status; here, an outer shell answered the question
+before the inner one could.
+
+### What is now measured at `0cbb52b`
+
+- All 139 commits of C++ added since `1c717d1`, including every item listed at
+  the top of this section, compile under GCC 13.3.0 with
+  `-Wall -Wextra -Wshadow -Werror` with **zero diagnostics of any category**
+  across 61 translation units.
+- `-Wshadow` remains zero-cost on this tree at this commit.
+- The doctest suite passes on Linux/GCC with **179 cases and 65,348
+  assertions**, an exact match to the Windows/MSVC baseline.
+- ASan, UBSan and LeakSanitizer report nothing over the suite **with
+  libstdc++ container annotations enabled**, and the annotations were proven
+  active by a mutation that they catch and that plain ASan misses.
+- The `ekf.cpp` `-Warray-bounds` suppression is still load-bearing: removing
+  it reproduces 16 errors and fails the build. It is the only suppression in
+  the tree.
+- The `test_sim.py:586` failure is stream buffering, measured at 8,192-byte
+  granularity against an **optimized** Linux wheel, not an instrumentation
+  artifact.
+- The Python suite passes on Linux with 1017 passed, 0 failed and 0 skipped,
+  matching the Windows total exactly.
+
+### What remains unverified
+
+- **Whether ASan detects a consumer-side `nav.innov` overrun when the path
+  executes.** Still not measured. The path is still dead in the C++ tier, so
+  the experiment still requires a doctest case driving `VehicleCycle` with a
+  component returning innovations. The annotation blocker on that experiment
+  is now removed, which is the only part of this item that changed.
+- **Sanitizer reach generally.** Bounded by the doctest tier's 75.5% line and
+  45.6% branch coverage over the Phase 6 core surface. A clean sanitizer run
+  is evidence about executed code only.
+- **Clang warnings-as-errors.** Clang was not used at all in this pass. Its
+  warning surface over the current tree is unmeasured.
+- **aarch64 and the `pi5` preset.** Not run; no target hardware.
+- **MSVC AddressSanitizer.** Not run.
+- **Cross-platform output determinism for the new Phase 6 code.** This pass
+  compared test counts, not logged run bytes. The FR-30 divergence gate is a
+  separate CI job and was not exercised here; the SRLOG 1.3 header echo, which
+  carries doubles as hex bit patterns, has not been compared across platforms.
+- **macOS.** No leg. Two of the four CI `build-test` legs (macOS and ARM) have
+  no local proxy.
