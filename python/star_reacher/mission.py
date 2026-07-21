@@ -441,9 +441,30 @@ _SENSOR_PARAMS: dict[str, dict[str, tuple[str, str, object]]] = {
 }
 
 # Parameters that must be positive when present (a zero would leave the
-# projection undefined rather than merely disabling a term).
+# projection undefined rather than merely disabling a term). The three
+# measurement-noise sigmas are here for the reason _EKF_VEC3_PARAMS gives for
+# P0's: they are the diagonal the EKF builds its measurement-noise matrix R
+# from (cpp/src/gnc/ekf.cpp), so a zero entry makes R singular exactly as a
+# zero p0_sigma makes P0 singular. The two failures differ only in which
+# matrix loses rank, so they are refused by the same rule.
 _SENSOR_POSITIVE = {
     "camera": ("fx_px", "fy_px", "width_px", "height_px"),
+    "startracker": ("sigma_rad",),
+    "navfix": ("sigma_r_m", "sigma_v_mps"),
+}
+
+# Parameters with no honest default. Every other sensor parameter may be
+# omitted, taking the core-side ideal (error-free) value; these cannot,
+# because the core-side default is zero and zero is precisely the value
+# _SENSOR_POSITIVE refuses. Omission would otherwise be a silent route to the
+# singular R that writing the zero explicitly is rejected for. The altimeter
+# lists both of its sigmas because its rule is the quadrature sum below, which
+# cannot be evaluated when either term is absent.
+_SENSOR_REQUIRED = {
+    "camera": ("fx_px", "fy_px", "width_px", "height_px"),
+    "startracker": ("sigma_rad",),
+    "navfix": ("sigma_r_m", "sigma_v_mps"),
+    "altimeter": ("sigma_noise_m", "sigma_bias_m"),
 }
 
 # Parameters that are magnitudes: negative values are refused rather than
@@ -521,6 +542,14 @@ def _validate_sensor_params(
                      units=units, typical=typical)
             ok = False
             continue
+        if key in positive and any(v <= 0 for v in value):
+            errs.add(path, key,
+                     f"entries must be > 0 (a zero measurement-noise sigma "
+                     f"makes R singular and the aiding update inert), got "
+                     f"{[float(v) for v in value]!r}",
+                     units=units, typical=typical)
+            ok = False
+            continue
         if key not in signed_ok and any(v < 0 for v in value):
             errs.add(path, key, "entries must be >= 0",
                      units=units, typical=typical)
@@ -542,11 +571,31 @@ def _validate_sensor_params(
                      units="1",
                      typical="Hamilton scalar-first, e.g. [1, 0, 0, 0]")
             ok = False
-        for req in ("fx_px", "fy_px", "width_px", "height_px"):
-            if req not in resolved:
-                errs.add(path, req, "missing required key",
-                         units=schema[req][0], typical=schema[req][1])
-                ok = False
+    if kind == "altimeter":
+        # The altimeter's R entry is r = sn*sn + sb*sb (cpp/src/gnc/ekf.cpp),
+        # so neither sigma is individually required to be positive: a
+        # noise-free instrument carrying a turn-on bias is a legitimate
+        # configuration, and so is the converse. What R cannot survive is both
+        # being zero, which is what this measures. Checking sigma_noise_m
+        # alone would refuse the bias-only altimeter the core supports.
+        sn = resolved.get("sigma_noise_m")
+        sb = resolved.get("sigma_bias_m")
+        if sn is not None and sb is not None and sn * sn + sb * sb <= 0.0:
+            errs.add(path, "sigma_noise_m",
+                     f"sigma_noise_m**2 + sigma_bias_m**2 must be > 0 (both "
+                     f"zero makes R singular and the aiding update inert), "
+                     f"got sigma_noise_m={sn!r}, sigma_bias_m={sb!r}",
+                     units=schema["sigma_noise_m"][0],
+                     typical=schema["sigma_noise_m"][1])
+            ok = False
+    # Measured against the raw table rather than `resolved`, so a key that is
+    # present but rejected above reports only why its value is wrong instead
+    # of also being called absent.
+    for req in _SENSOR_REQUIRED.get(kind, ()):
+        if req not in table:
+            errs.add(path, req, "missing required key",
+                     units=schema[req][0], typical=schema[req][1])
+            ok = False
     return ok, resolved
 _GNC_MAX_LATENCY_CYCLES = 10_000
 
