@@ -207,9 +207,11 @@ def test_golden_expectations_record_the_branches(cases):
     ``sign(0) = +1``. A closed-loop mission never lands ``dq0`` exactly on
     zero, so no scenario gate can reach ``eq:gnc:sign`` at its boundary;
     measured by mutating ``tests/refs/pd_attitude.pd_torque`` to
-    ``sign(0) = -1``, the only failure in the criterion-2 gates is this file's
-    ``sign_zero_is_plus_one`` case. The golden set is likewise the open-loop
-    half of the evidence for ``eq:gnc:sat``.
+    ``sign(0) = -1``, the whole Python suite reports exactly one failure, the
+    ``sign_zero_is_plus_one`` parametrization of the test above. The golden set
+    is likewise the open-loop half of the evidence for ``eq:gnc:sat``, the
+    closed-loop half being
+    ``test_gnc_missions.test_pd_law_python_reimplementation_contract``.
 
     This test and ``test_golden_cases_cover_every_branch`` above answer
     neighbouring but different questions, which is why they are separate. That
