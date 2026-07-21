@@ -467,6 +467,9 @@ was replicated. The `asan` preset was used under its own name on Linux.
 - **Determinism across platforms for Phase 6 outputs.** This pass compared
   test counts and one probe value, not logged run output. The FR-30
   cross-platform divergence gate is a separate CI job and was not run here.
+  **Superseded at `668b9fc`:** logged bytes were compared across Windows/MSVC
+  and Linux/GCC; see "Byte-level output determinism across platforms" at the
+  end of this document.
 
 ## Resolution at `1c717d1`
 
@@ -920,5 +923,486 @@ before the inner one could.
   compared test counts, not logged run bytes. The FR-30 divergence gate is a
   separate CI job and was not exercised here; the SRLOG 1.3 header echo, which
   carries doubles as hex bit patterns, has not been compared across platforms.
+  **Superseded at `668b9fc`:** both were measured; the header echo crosses
+  byte-identically and the record streams diverge at libm magnitude. See the
+  final section of this document.
 - **macOS.** No leg. Two of the four CI `build-test` legs (macOS and ARM) have
   no local proxy.
+
+## Byte-level output determinism across platforms, at `668b9fc`
+
+Every cross-platform pass recorded above compared **test counts**. None
+compared **logged bytes**. FR-21's determinism contract - "the same inputs on
+the same binary always produce bit-identical outputs" - was therefore verified
+within a platform and never across platforms, and the SRLOG 1.3 camera header
+echo, which carries IEEE-754 doubles as 16-hex-digit bit patterns precisely so
+that header floats are portable, had never been tested against the thing it was
+designed for.
+
+This section is the first byte-for-byte comparison of `run.srlog` files
+produced by Windows/MSVC and Linux/GCC.
+
+Source under test: branch `phase-6-gnc-sensors` at
+`668b9fc196246bb1f8964ad950bfb08b8ead14e9`, working tree clean on both hosts.
+
+### Headline result
+
+| Mission | File bytes | Header | Record stream | Whole file |
+|---|---|---|---|---|
+| `missions/twobody_leo.toml` | 6,589,151 | identical | identical | **BYTE-IDENTICAL** |
+| `missions/leo_attitude_gnc.toml` | 399,756 | identical | differs | differs |
+| `missions/leo_ekf_consistency.toml` | 979,081 | identical | differs | differs |
+| `missions/ascent_leo_gnc.toml` | 2,653,436 | identical | differs | differs |
+| camera-enabled optical mission | 437,965 | identical | differs | differs |
+
+Four findings, in descending order of consequence:
+
+1. **All five headers are byte-identical, with zero excluded fields** - and
+   that includes the v1.3 `gnc.camera` hex echo. The header's portability
+   design works.
+2. **The two-body reference mission is byte-identical end to end**, whole file,
+   no exclusions. Arithmetic restricted to IEEE-754 basic operations crosses
+   the platform boundary exactly, as the project's recorded position predicts.
+3. **The four Phase 6 GNC missions differ in the record stream only**, at
+   last-bit magnitude. File sizes and structure are identical to the byte; only
+   float payload values move.
+4. **The divergence is attributable to libm**, by measurement rather than
+   inference (see "Attribution" below). Within each mission the split is
+   clean: every `t_s` channel, every integer and flag channel, `mass.*`, and -
+   in all three orbital missions - `truth.r_m` and `truth.v_mps` are
+   bit-identical, while the rotational, sensor, and GNC channels differ.
+
+### Missions chosen, and why
+
+Five missions, each earning its place:
+
+- **`missions/twobody_leo.toml` - the control.** The Phase 1 byte-frozen
+  two-body path, whose arithmetic is add/subtract/multiply/divide/sqrt only.
+  It is the mission the existing FR-30 `cross-platform-divergence` CI job
+  already measures at `max_rel = 0`. Including it tests the *method*: if this
+  mission had differed, the finding would have been a defect in this
+  experiment, not in the simulator.
+- **The camera-enabled optical mission** - the SRLOG 1.3 header echo under
+  test, and the only configuration that emits a `gnc.camera` header object and
+  a `sensors.camera` group. It is the mission text built by
+  `tests/python/test_p6_optical_gates.py` (`_OPTICAL_GATE_MISSION`), extracted
+  verbatim and written to a file whose SHA-256 was confirmed equal on both
+  hosts (`e28cd441cc90b1a18c842b0ec6ba2d3a111378a937a341241aec18fbe4f5ed45`)
+  before either run. It is not a committed mission because no committed mission
+  declares a camera.
+- **`missions/leo_ekf_consistency.toml`** - the widest numerical surface in the
+  phase: the built-in error-state EKF with aiding updates from a nav fix, a
+  star tracker, and an altimeter, logging `nav.est.P` (72,120 covariance
+  entries), `nav.innov.y` and `nav.innov.S`.
+- **`missions/ascent_leo_gnc.toml`** - the guidance path. `pitch_program`
+  guidance drives the `sin`/`cos` roll reference added in Phase 6, and the
+  760 s powered ascent additionally exercises the atmosphere and aero models
+  (`exp`, `pow`, table interpolation) over 7,600 integration steps. It is the
+  longest error-accumulation chain available.
+- **`missions/leo_attitude_gnc.toml`** - the reference GNC mission: closed-loop
+  PD attitude control with an IMU and dead-reckoning navigation, and no
+  ephemeris, aero, or EKF. It isolates the attitude loop from the ascent
+  mission's environment models.
+
+### Excluded fields: none
+
+**No field was excluded from any comparison. The files were compared whole.**
+
+Two fields legitimately differ by build and would ordinarily have to be
+excluded. Both were instead made equal, which is a stronger result than
+excluding them:
+
+- **`producer.git_hash`** is baked in at configure time from
+  `cpp/src/version.cpp.in`. Rather than exclude it, the Windows wheel was
+  rebuilt so that both trees sit at `668b9fc`, and both cores report
+  `git_hash = 668b9fc196246bb1f8964ad950bfb08b8ead14e9`. The field is
+  *compared*, and it matches.
+- **`producer.core_version`** is `0.6.0` on both, from the same
+  `pyproject.toml`.
+
+A third field was checked rather than assumed:
+
+- **`config_sha256`** is the SHA-256 of the FR-15 canonical resolved config,
+  computed host-side in Python. A leaked host path would change it. Every
+  path-like string in all five resolved configs was enumerated
+  (`vehicle.path`, `environment.ephemeris`) and all are repo-relative with
+  forward slashes; no absolute path and no backslash appears. The digests
+  match on all five missions.
+
+`meta.json` was not compared and is not part of this result: it records wall
+time and a start timestamp and is nondeterministic by construction. FR-21's
+contract is about `run.srlog`.
+
+### Method
+
+Both legs ran the identical script (`xplat_run.py`, scratch apparatus, not
+committed) from the repository root, invoking `star_reacher.runner.run_mission`
+directly and hashing the emitted `run.srlog`. The Linux logs were then copied
+to the Windows host and both sides parsed by the **same** loader on the **same**
+host, so the comparison measures the bytes the two cores wrote rather than two
+readers' behaviour. The transfer was verified lossless by re-hashing every file
+on arrival and matching the hash computed in WSL.
+
+Localization descends file to header/stream, then group, channel, and record,
+reporting differing-entry counts, maximum absolute difference, and ULP
+distance. Pointwise relative error is reported only where it is meaningful: a
+channel whose values pass through zero produces `rel = 2.0` from a sign flip at
+1e-16, which characterizes nothing, so the tables below normalize by the
+channel's own RMS instead.
+
+**Within-platform controls.** Each mission was run twice on each platform. All
+five hashes reproduced exactly on Windows and all five reproduced exactly on
+Linux. The differences reported here are therefore cross-platform, not
+run-to-run, and FR-21's within-platform clause is re-confirmed on both hosts as
+a by-product.
+
+### Toolchains
+
+**Windows.** Windows 11 10.0.26200, MSVC 19.44.35222 (x64), CMake 4.2.1,
+Visual Studio 17 2022 generator, CPython 3.14.0. Compile flags confirmed from
+`build/skbuild-cp314-cp314-win_amd64/star_core.dir/Release/star_core.tlog/CL.command.1.tlog`
+rather than assumed: `/O2 /Ob2 /EHsc /MD /fp:strict /std:c++17`, on 34 command
+entries.
+
+**Linux.** Ubuntu 24.04.4 LTS under WSL2, GCC 13.3.0
+(`Ubuntu 13.3.0-6ubuntu2~24.04.1`), glibc 2.39, CMake 3.28.3, CPython 3.12.3.
+Compile flags confirmed from
+`build/skbuild-cp312-cp312-linux_x86_64/CMakeFiles/star_core.dir/flags.make`:
+`-O3 -DNDEBUG -std=c++17 -fPIC -O2 -fno-fast-math -ffp-contract=off
+-frounding-math`.
+
+Both flag sets disable FMA contraction and fast-math, so the IEEE-754 basic
+operations are correctly rounded on both toolchains. That is what makes the
+libm attribution below the only remaining candidate mechanism.
+
+The Linux build was performed in a `git clone` in the WSL filesystem at
+`/home/hoyer/sr`, not on `/mnt/c`. All builds ran with
+`CMAKE_BUILD_PARALLEL_LEVEL=2`, one at a time, never a Windows and a WSL build
+concurrently.
+
+### Proof that both builds were real
+
+Both wheels were rebuilt from a **removed** scikit-build binary directory at
+the commit under test:
+
+| Leg | Objects before | Objects after | Extension module | SHA-256 |
+|---|---|---|---|---|
+| Windows / MSVC | 0 | 36 `.obj` | `_core.cp314-win_amd64.pyd`, 1,142,784 B | `a21424e378c9c828...` |
+| Linux / GCC | 0 | 35 `.o` | `_core.cpython-312-x86_64-linux-gnu.so`, 1,530,912 B | `b09d9e1fe2bfc6ff...` |
+
+The one-object difference is the MSVC generator's `CMakeCXXCompilerId.obj`
+probe; both legs compile the same 35 translation units.
+
+Two further pieces of evidence, because an object count can be produced by a
+build that recompiles and changes nothing:
+
+- The Linux extension module hash **changed** from `cf6083b4fa231cc1...` to
+  `b09d9e1fe2bfc6ff...` across the rebuild, and its reported `git_hash` moved
+  from `a742f8d74ae5f210...` to `668b9fc196246bb1...`. The binary demonstrably
+  tracks the commit it was built from.
+- The Windows core's reported `git_hash` likewise moved from
+  `b24f8c9639d38d11...` to `668b9fc196246bb1...`.
+
+**A masked build failure was caught during this pass and is recorded because it
+would have invalidated the result silently.** The first WSL build attempt
+returned exit 2 with `ModuleNotFoundError: No module named 'scikit_build_core'`
+- `--no-build-isolation` requires the build backend in the target venv, and
+that venv had only NumPy. The installed `.so` was left untouched at
+`cf6083b4fa231cc1...` / `a742f8d`, 41 commits behind the tree it was about to
+be compared against. The script printed `PIP_EXIT=2`, `POST_O=0` and the stale
+hash side by side, so the failure was visible rather than inferred. Had the
+script reported only that the runs completed, the entire comparison would have
+been made against a stale artifact. This is the
+stale-artifact-after-masked-build-failure lesson arriving through a third door:
+here it was neither a pipe nor an outer shell, but a missing build dependency
+under a flag that suppresses provisioning.
+
+### Result 1 - the header, including the v1.3 camera echo, crosses exactly
+
+All five headers are byte-identical. For the camera mission the `gnc.camera`
+object is character-for-character equal on both platforms:
+
+```json
+{"float_encoding":"ieee754-binary64-hex","width_px":1024,"height_px":768,
+ "fx_px":"4089000000000000","fy_px":"4082c00000000000",
+ "cx_px":"407e600000000000","cy_px":"4079200000000000",
+ "q_b2c":["3fe6a09e667f3bcd","3fe6a09e667f3bcd","0000000000000000",
+          "0000000000000000"],
+ "r_cam_b_m":["3fe0000000000000","bfd0000000000000","3fc0000000000000"]}
+```
+
+(shown wrapped; the file carries it inside the single compact header line.)
+
+**The `ieee754-binary64-hex` encoding did exactly what section 3 of
+`docs/formats/srlog_v1.md` claims for it.** The design argument was that a
+pure-integer shift-and-nibble-lookup encoder admits no float formatter,
+rounding mode, or locale that could perturb the header bytes. That argument is
+now measured rather than asserted, on the one artifact in the format that
+carries doubles.
+
+This is a narrower claim than it may appear, and the narrowness should be
+stated. The echoed values are configuration constants that the core copies
+from the resolved config without arithmetic, so what is established is that
+the **encoder and the header serializer** are portable - not that a computed
+double would survive. That is nonetheless the property the encoding was
+designed to provide.
+
+### Result 2 - the two-body control is byte-identical
+
+`missions/twobody_leo.toml` produces the identical 6,589,151-byte file on both
+platforms, SHA-256
+`0897fa314e47a0902f89261f4548e569016b6c432f33c7a7869ff906690ba568`, whole file,
+no exclusions.
+
+This independently corroborates the existing FR-30 record in
+`tests/golden/determinism/cross_platform.toml`, which measures `max_rel = 0` on
+this mission across four CI legs - but at a strictly stronger level. That gate
+compares **final-state truth records**; this compares **every byte of the
+file**, including all 5,400 s of intermediate records and the header.
+
+### Result 3 - where the four GNC missions differ
+
+Every differing file has the **identical byte length** and identical group and
+channel structure. Only float payloads move.
+
+Divergence is normalized by each channel's RMS, and only the largest few
+channels per mission are listed. "Identical" counts channels that are equal to
+the byte.
+
+**`missions/leo_attitude_gnc.toml`** - first differing byte at offset 8,681;
+5,116 of 399,756 bytes differ. 30 channels bit-identical.
+
+| Channel | max abs diff | RMS scale | rel to scale |
+|---|---|---|---|
+| `nav.err.e` | 5.551e-16 | 9.722e-06 | 5.71e-11 |
+| `gnc.cmd.tau_b_nm` | 9.107e-17 | 3.267e-03 | 2.79e-14 |
+| `truth.w_b_radps` | 3.253e-17 | 2.168e-03 | 1.50e-14 |
+| `sensors.imu.dtheta_b_rad` | 3.253e-18 | 2.170e-04 | 1.50e-14 |
+| `truth.q_i2b` | 3.331e-16 | 5.000e-01 | 6.66e-16 |
+
+**Camera-enabled optical mission** - first differing byte at offset 10,284;
+12,593 of 437,965 bytes differ. 37 channels bit-identical.
+
+| Channel | max abs diff | RMS scale | rel to scale |
+|---|---|---|---|
+| `nav.err.e` | 1.110e-16 | 1.006e-05 | 1.10e-11 |
+| `gnc.cmd.tau_b_nm` | 4.510e-17 | 3.170e-03 | 1.42e-14 |
+| `sensors.camera.px_uv` | 5.684e-13 px | 3.632e+02 px | 1.57e-15 |
+| `sensors.startracker.q_meas_i2b` | 1.110e-16 | 5.000e-01 | 2.22e-16 |
+| `sensors.sunsensor.sun_b` | 2.220e-16 | 5.774e-01 | 3.85e-16 |
+
+The logged landmark pixels differ by at most **5.7e-13 pixels**, against the
+`ch:camera` exit-criterion-7 tolerance of 1e-6 pixels - seven orders of
+magnitude inside it. `sensors.camera.t_s` and `sensors.camera.r_m` are
+bit-identical; only `q_i2b` and `px_uv` move.
+
+**`missions/leo_ekf_consistency.toml`** - first differing byte at offset 5,546;
+35,459 of 979,081 bytes differ. 36 channels bit-identical.
+
+| Channel | max abs diff | RMS scale | rel to scale |
+|---|---|---|---|
+| `sensors.altimeter.alt_meas_m` | 9.313e-10 m | 6.219e+05 m | 1.50e-15 |
+| `env.alt_m` | 9.313e-10 m | 6.219e+05 m | 1.50e-15 |
+| `nav.innov.y` | 1.776e-15 | 6.913e+00 | 2.57e-16 |
+| `nav.est.P` | 8.674e-19 | 5.105e+01 | 1.70e-20 |
+| `nav.innov.S` | 6.776e-20 | 9.243e+01 | 7.33e-22 |
+
+The covariance is the most-perturbed channel by raw count - 25,495 of 72,120
+entries differ - and simultaneously the least perturbed by magnitude, at
+1.7e-20 of its own scale. `nav.innov.sensor_id` and `nav.innov.m` (the integer
+identity and dimension channels) are bit-identical, so **no aiding update fired
+on a different sensor, in a different order, or with a different measurement
+dimension on the two platforms.** The filter's discrete decisions agree
+exactly; only its arithmetic moves in the last bits.
+
+**`missions/ascent_leo_gnc.toml`** - first differing byte at offset 3,420;
+338,849 of 2,653,436 bytes differ. 20 channels bit-identical. This is the worst
+case in the set, as expected from 7,600 integration steps through the most
+transcendental-dense model chain in the project.
+
+| Channel | max abs diff | RMS scale | rel to scale |
+|---|---|---|---|
+| `gnc.cmd.w_cmd_b_radps` | 4.139e-13 rad/s | 3.909e-03 | 1.06e-10 |
+| `nav.err.e` | 4.829e-15 | 1.246e-04 | 3.88e-11 |
+| `gnc.cmd.tau_b_nm` | 7.309e-10 N*m | 7.878e+01 | 9.28e-12 |
+| `forces.f_aero_b_n` | 5.086e-09 N | 6.058e+03 | 8.40e-13 |
+| `env.q_pa` | 1.189e-08 Pa | 1.685e+04 | 7.06e-13 |
+| `env.rho_kgpm3` | 1.090e-13 | 3.614e-01 | 3.02e-13 |
+| `truth.v_mps` | 2.012e-11 m/s | 2.427e+03 | 8.29e-15 |
+| `truth.r_m` | 3.842e-09 m | 3.758e+06 | 1.02e-15 |
+
+After 760 s of powered ascent the two platforms' trajectories differ by
+**3.8 nanometres in position and 20 picometres per second in velocity**.
+
+### The structural split, and what it shows
+
+Across all four differing missions the same channels stay exact:
+
+- **Every `t_s` channel in every group** is bit-identical in every mission. The
+  time grid does not drift.
+- **Every integer and flag channel** is bit-identical: `events.code`,
+  `events.detail` (the `str16` payload), `gnc.cmd.valid`, `sensors.*.valid`,
+  `nav.innov.sensor_id`, `nav.innov.m`. **No control-flow decision differed
+  between the platforms in any mission** - no event fired at a different step,
+  no sensor was gated differently, no update was skipped.
+- **`mass.mass_kg`, `mass.cg_b_m`, `mass.inertia_b_kgm2`** are bit-identical
+  everywhere.
+- **`truth.r_m` and `truth.v_mps` are bit-identical in all three orbital
+  missions** and diverge only in the ascent.
+
+That last point is the sharpest evidence in this pass. In the attitude, EKF,
+and camera missions the translational dynamics run on point-mass gravity -
+basic operations only - and cross the platform boundary **exactly**, while the
+rotational state, the sensors, and the GNC channels in the *same file, on the
+same integration steps* diverge. The ascent mission is the one whose
+translational forces are fed by the atmosphere and aero models, and it is the
+one whose `truth.r_m` moves. The split follows the arithmetic, not the mission.
+
+### Attribution: it is libm, measured
+
+The mechanism was not inferred from the pattern above. A probe
+(`libm_probe.cpp`, scratch apparatus, not committed) was compiled on each
+toolchain with that toolchain's project flags (`/O2 /fp:strict`;
+`-O2 -fno-fast-math -ffp-contract=off -frounding-math`) and evaluated the libm
+functions the core actually calls, at 17 arguments spanning the regimes the
+missions exercise, printing every result as its exact binary64 bit pattern.
+The core's call inventory under `cpp/src/` is `sin` (40 sites), `sqrt` (31),
+`cos` (28), `atan2` (19), `pow` (9), `exp` (8), `log` (5), `asin` (3), `acos`
+(2), `atan` (1).
+
+| Function | cases | differing | max ULP |
+|---|---|---|---|
+| `basicops` (a `+ - * /` and `sqrt` chain) | 17 | **0** | 0 |
+| `sqrt` | 17 | **0** | 0 |
+| `cos`, `tan`, `exp`, `log`, `pow`, `asin`, `atan2` | 17 each | 0 | 0 |
+| `sin` | 17 | 1 | 1 |
+| `acos` | 11 | 1 | 1 |
+| `atan` | 17 | 1 | 1 |
+
+The clearest single instance is `sin(pi/4)`: MSVC's CRT returns
+`0.7071067811865476`, glibc 2.39 returns `0.7071067811865475` - adjacent
+doubles, 1 ULP apart.
+
+This is the expected state of affairs rather than a defect in either library.
+IEEE-754 requires correct rounding for `+`, `-`, `*`, `/` and `sqrt`; it does
+**not** require it for the transcendental functions, and no mainstream libm
+provides it. Two conforming implementations may legitimately differ in the last
+place.
+
+**The project's recorded position is confirmed, and one part of it is
+sharpened.** The position - that code using only IEEE-754 basic operations
+under strict FP flags with contraction off is bit-identical across compilers,
+and that only libm-bearing paths need a cross-platform tolerance budget - holds
+in both directions here: the basic-operation control differs in zero of 17
+cases and the two-body mission is byte-identical, while every mission touching
+a transcendental differs. The sharpening is that the zero-difference rows in
+the table above are **sample results, not guarantees**: `cos` and `exp` agreed
+at these 17 arguments, and `env.rho_kgpm3` (an `exp`-bearing channel) still
+differs in the ascent mission, so agreement at probe arguments does not
+generalize to agreement everywhere. Only the basic-operation rows are
+guaranteed by the standard.
+
+### Relation to the FR-30 / D-10 gate
+
+The D-10 bound is 1e-9 relative on final-state divergence. Recomputed here on
+the final `truth` record of each mission:
+
+| Mission | final abs dr | final abs dv | max component rel | vs 1e-9 |
+|---|---|---|---|---|
+| `twobody_leo` | 0 | 0 | 0 | PASS |
+| `leo_attitude_gnc` | 0 | 0 | 0 | PASS |
+| `leo_ekf_consistency` | 0 | 0 | 0 | PASS |
+| Camera optical | 0 | 0 | 0 | PASS |
+| `ascent_leo_gnc` | 5.35e-09 m | 2.67e-11 m/s | 2.74e-14 | PASS |
+
+Every mission passes D-10 with margin. Note what the final-state metric misses,
+though: four of these five rows read `0` while the files differ in thousands of
+bytes, because the final-state gate looks only at `truth.r_m` and `truth.v_mps`
+- the two channels that are bit-identical in the orbital missions. **The FR-30
+gate as constituted cannot see the divergence documented in this section.** It
+is not wrong; it measures a different and weaker property than FR-21 states.
+The widest scale-relative divergence found anywhere in this pass is 1.06e-10
+(`gnc.cmd.w_cmd_b_radps`, ascent), which is inside 1e-9 but by only one order
+of magnitude, on a channel the gate does not sample.
+
+### What is now measured
+
+- Windows/MSVC and Linux/GCC produce **byte-identical** `run.srlog` files for
+  `missions/twobody_leo.toml`, whole file, zero excluded fields.
+- All five headers, at all five missions, are byte-identical - including the
+  v1.3 `gnc.camera` `ieee754-binary64-hex` echo, which is character-identical
+  across the crossing. `config_sha256` matches on all five, and the FR-15
+  canonical bytes were confirmed to carry no host-absolute path.
+- `producer.git_hash` and `producer.core_version` were **compared, not
+  excluded**, by rebuilding both wheels at `668b9fc`. No field was excluded
+  from any comparison in this section.
+- The four Phase 6 GNC missions differ in the record stream only, at identical
+  file length and identical structure, with worst-case scale-relative
+  divergence 1.06e-10 and worst-case final-state divergence 5.35e-09 m after
+  760 s of powered ascent.
+- No control-flow decision differs across platforms in any mission: every
+  `t_s`, event code, validity flag, `nav.innov.sensor_id` and `nav.innov.m`
+  channel is bit-identical.
+- `truth.r_m` and `truth.v_mps` are bit-identical across platforms in the three
+  point-mass-gravity missions and differ only in the ascent, whose
+  translational forces pass through the atmosphere and aero models.
+- The mechanism is libm: a basic-operation control chain and `sqrt` differ in
+  0 of 17 cases, while `sin`, `acos` and `atan` differ by 1 ULP between the
+  MSVC CRT and glibc 2.39.
+- FR-21's **within-platform** clause re-confirmed on both hosts: five missions
+  run twice per platform, all ten hash pairs reproduce exactly.
+
+### What this does and does not establish about FR-21
+
+**Establishes.** FR-21 as written - "the same inputs on the same binary always
+produce bit-identical outputs" - is satisfied. That sentence scopes the
+guarantee to *the same binary*, and within a binary the contract holds on both
+platforms, measured twice each. The format-level determinism claims are also
+upheld: no embedded timestamp, no host-dependent content, no layout
+nondeterminism appears anywhere in five files across two operating systems,
+two compilers, two standard libraries and two Python versions. Identical file
+lengths and identical integer channels are strong evidence for that.
+
+**Does not establish.** A byte-identical log across *different* binaries is
+**false** for any mission that touches a transcendental function, and this
+section is the first measurement to say so. Nothing in the repository claimed
+otherwise, but nothing had measured it either, and the distinction is easy to
+lose: a reader who takes "bit-reproducible" as a property of the *simulator*
+rather than of *a build of the simulator* would be wrong for four of the five
+missions tested here. Any workflow that compares SRLOG hashes across platforms
+- a cross-platform golden log, a CI artifact hash gate, a distributed Monte
+Carlo run whose shards land on mixed workers - must use a tolerance, not a
+hash, unless the mission is provably free of libm on every active path.
+
+The honest one-line statement of the measured contract is: **SRLOG output is
+bit-reproducible per binary, and bit-reproducible across binaries only for
+libm-free missions; elsewhere it agrees to within 1.1e-10 of channel scale on
+the missions measured here.**
+
+### What remains unverified
+
+- **macOS and aarch64.** Not run; no local target. Both are CI `build-test`
+  legs. The aarch64 case is materially different from the two legs compared
+  here, because it changes the instruction set and not merely the libm: the
+  basic-operation guarantee still holds by IEEE-754, but nothing in this pass
+  bounds an ARM libm's divergence.
+- **Clang.** Not used in this pass. A third x86-64 libm was not sampled.
+- **Whether the divergence bound generalizes.** The 1.06e-10 figure is the
+  worst case over five missions, one seed each. It is not a bound over the
+  mission space, over seeds, or over durations longer than the 760 s ascent.
+  Error growth in a closed loop is not guaranteed monotone or bounded, and a
+  longer or less stable scenario could diverge further; a Monte Carlo over
+  seeds and durations would be needed to state a real bound.
+- **Whether any *committed* mission emits a camera group.** None does. The
+  camera header echo was tested through the optical-gate fixture's mission
+  text, which is committed inside a Python test module rather than as a
+  `missions/*.toml`. The echo is therefore verified, but not by anything a
+  user could run from `missions/`.
+- **The FR-30 CI job itself.** Not run here. This pass replicates its
+  *question* at a stronger level on one of its four legs' toolchains, but the
+  job's own four-leg measurement was not exercised.
+- **Whether the ascent divergence is dominated by one model.** The attribution
+  establishes libm as the class. It does not apportion the ascent's divergence
+  among the pitch-program `sin`/`cos`, the atmosphere's `exp`, the aero
+  tables, and the geodetic conversions. Doing so would need per-model probes
+  at the missions' actual argument streams.
