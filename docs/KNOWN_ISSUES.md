@@ -179,3 +179,106 @@ closed-loop ascent and would otherwise read as a controller defect, and
 because a smoothed pitch table is the obvious remediation if a future phase
 wants the closed-loop ascent to be a tracking benchmark rather than a
 throughput benchmark.
+
+## KNOWN-ISSUE-P6-4 — the plugin loader caches by path, and wraps every import failure
+
+`_load_module` (`python/star_reacher/plugin.py:153-183`) caches a loaded plugin
+module by resolved path with no content check, deliberately: re-executing a
+plugin file would register its component names twice, which the core refuses,
+and would leave two class objects answering to one name. The cost is that a
+plugin edited between two loads in one process does not take effect, while
+`_plugin_provenance` (`python/star_reacher/runner.py:414-428`) re-reads the file
+and records the *new* SHA-256. A `meta.json` can therefore name a digest for
+code that did not execute.
+
+Reaching that inversion requires two `run_mission` calls in one process, with a
+plugin, and a source edit between them. No shipped path does this: `star run` is
+one process per run, and `Sim` loads plugins but writes no `meta.json`. The
+remedy, if an in-process driver is ever added, is to record the digest at load
+time in `plugin.py` and have `_plugin_provenance` read the recorded value rather
+than re-reading the file — not to key the cache on the digest, which would
+reintroduce the duplicate registration the cache prevents.
+
+Separately, `python/star_reacher/plugin.py:175` wraps `BaseException`, so a
+`KeyboardInterrupt` raised while a plugin is being imported is reported as a
+`PluginError` instead of interrupting. The window is one `exec_module` of a
+single source file. The `SystemExit` case is intentional: a plugin calling
+`sys.exit()` during import should fail its load with a named error rather than
+terminate the run that loaded it.
+
+**Exit-criterion impact: none.** No exit criterion runs two plugin-bearing
+missions in one process, and none sends an interrupt.
+
+## KNOWN-ISSUE-P6-5 — `star consistency` assumes a quaternion-led attitude block at n = m + 1
+
+When `nav.err` has dimension `n` and `nav.est` reports an `m`-dimensional
+covariance with `n == m + 1`, `_reduce_error`
+(`python/star_reacher/consistency_cli.py:157-181`) collapses slots 0..3 as a
+scalar-first error quaternion, `dtheta = 2 sgn(dq_w) dq_v`. This is the one
+sanctioned reduction and is correct for the built-in error-state EKF, whose
+state is 16-dimensional and whose covariance is 15-dimensional.
+
+The estimator's declared error layout is not written to the log — the SRLOG
+header carries only a boolean for whether a layout is present — so the CLI
+cannot verify the assumption. A plugin estimator that reaches `n == m + 1` with
+a three-slot attitude block (`ErrorForm.ROTATION_VECTOR_LOCAL` or `_GLOBAL`, see
+`docs/gnc_plugins.md:199-204`) has its leading four slots collapsed anyway: the
+first is dropped, the next two are doubled, and the fourth — an unrelated state
+— is doubled and carried forward as an attitude component. The resulting NEES is
+positive, order-unity, and wrong.
+
+Closing this properly means carrying the declared layout in the SRLOG header and
+requiring it before the collapse; the layout already exists in the core as
+`error_layout()`. That is a format field and is deferred. Until then, a plugin
+estimator that is not quaternion-led at `n == m + 1` must not be evaluated with
+`star consistency`.
+
+**Exit-criterion impact: none.** Every criterion that computes NEES does so on
+the built-in EKF, for which the collapse is the correct reduction.
+
+## KNOWN-ISSUE-P6-6 — the reference ellipsoid reaches the sensors and the filter by two paths
+
+The same central-body ellipsoid is built twice, with incompatible conventions
+for a sphere. `EnvironmentModel::central_ellipsoid`
+(`cpp/src/models/environment.cpp:291-311`) encodes the Moon as `inv_f = 0.0`,
+and the altimeter tests `spherical = !(geom.ellipsoid_inv_f > 1.0)`
+(`cpp/src/sensors/radio.cpp:187`) and takes a closed spherical branch.
+`GncInitContext` takes `planet_inv_f = 1.0e12`
+(`cpp/src/vehicle_cycle.cpp:725`), and the EKF has no spherical branch — it runs
+the Bowring conversion at `f = 1e-12` (`cpp/src/gnc/ekf.cpp:528`).
+
+Nothing misbehaves today. The `1.0e12` sentinel clears the `inv_f > 1.0` guard
+in `geodetic_lat_lon_alt` (`cpp/src/models/atmosphere_hp.cpp:157`), and at
+`f = 1e-12` the Bowring result differs from `norm(r) - a` by order `a e^2`,
+about 3 um — negligible against any configured altimeter sigma. Earth and Mars
+are well above `inv_f = 1` on both paths.
+
+The hazard is prospective: the two paths use `0.0` and `1.0e12` for the same
+physical case, and `0.0` on the filter's path would mean "invalid, throw". A
+future edit that harmonises one path to the other — the obvious cleanup — turns
+every lunar altimeter update into a `std::domain_error` thrown from inside the
+deterministic time loop. Harmonising requires taking the filter's ellipsoid from
+`EnvironmentModel::central_ellipsoid` and giving the EKF the same explicit
+spherical branch the altimeter has, in one change, with golden-vector evidence
+for a lunar altimeter run.
+
+**Exit-criterion impact: none.** No Phase 6 criterion runs a lunar altimeter.
+
+## KNOWN-ISSUE-P6-7 — the filter's initial position estimate is not constrained away from the origin
+
+`ErrorStateEkf` parses `p0_m` with `require_vector`
+(`cpp/src/gnc/ekf.cpp:124`), which checks presence, length, and finiteness but
+not magnitude, and `python/star_reacher/mission.py` does not constrain it
+either. `gravity()` and `gravity_gradient()` (`cpp/src/gnc/ekf.cpp:355-370`)
+divide by `r^3` and `r` with no guard, so `p0_m = [0, 0, 0]` — the filter's
+initial position estimate at the exact centre of the central body — yields
+`0.0/0.0` and propagates NaN from the first cycle.
+
+Neither the writer nor the reader screens non-finite values, so the run
+completes and writes an all-NaN `nav.est`. The failure is unmistakable in the
+log and fatal to the consistency evaluator's Cholesky, so it is diagnosed rather
+than mistaken for a result. Rejecting a zero `p0_m` at parse time — the
+precedent `require_sigma3` sets for `P0`'s sigmas — is the eventual fix.
+
+**Exit-criterion impact: none.** Every criterion's `p0_m` is a real orbital
+position.
