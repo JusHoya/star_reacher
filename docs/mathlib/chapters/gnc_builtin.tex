@@ -499,14 +499,19 @@ after the tables.
   \bottomrule
   \endlastfoot
     \testid{gnc_pd_attitude_golden} &
-      Five committed golden cases drive
+      Six committed golden cases drive
       equations~\eqref{eq:gnc:deltaq}--\eqref{eq:gnc:sat} against
       \texttt{tests/golden/gnc/pd\_attitude.toml}, whose expected torques
       are a 60-digit \texttt{mpmath} evaluation of the normative law on
       bit-identical inputs rather than a hand computation by either
       implementation. The set covers both signs of $\delta q_w$, the
-      $\delta q_w = 0$ case that pins $\mathrm{sgn}(0) = +1$, and a case that
-      clamps some axes while leaving others unclamped. \\
+      $\delta q_w = 0$ case that pins $\mathrm{sgn}(0) = +1$, and---for
+      equation~\eqref{eq:gnc:sat}, which is per-axis and two-sided---cases
+      that between them clamp on the upper rail, on the lower rail, and on
+      all three axes, each beside an axis left strictly inside its limit.
+      The doctest asserts that coverage rather than assuming it: a set
+      railing one axis on one side would leave a law clamping only that axis,
+      or only that sign, reproducing every expected torque. \\
     \testid{gnc_dead_reckoning_golden} &
       The dead reckoner propagates a committed increment sequence through
       equation~\eqref{eq:gnc:drprop} to its golden state; the initial

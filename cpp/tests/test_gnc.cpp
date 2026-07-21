@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -111,9 +112,16 @@ TEST_CASE("gnc_pd_attitude_golden") {
   const std::vector<star_tests::GoldenCase> cases =
       star_tests::load_golden_cases(std::string(STAR_GOLDEN_DIR) +
                                     "/gnc/pd_attitude.toml");
-  REQUIRE(cases.size() == 5);
+  REQUIRE(cases.size() == 6);
   bool saw_negative_branch = false;
   bool saw_zero_branch = false;
+  // eq:gnc:sat coverage, tracked the same way the sign branches are. The
+  // clamp is per-axis and two-sided, so a set that rails one axis on one side
+  // leaves a law clamping only that axis, or only that sign, reproducing
+  // every expected torque below.
+  bool saw_plus_rail = false;
+  bool saw_minus_rail = false;
+  std::set<int> railed_axes;
   for (const star_tests::GoldenCase& c : cases) {
     GncComponentCfg cfg;
     cfg.component = "pd_attitude";
@@ -135,8 +143,21 @@ TEST_CASE("gnc_pd_attitude_golden") {
     CHECK(out.valid);
 
     const std::vector<double> expected = golden_vec(c, "expected_tau_nm");
+    const std::vector<double> tau_max = golden_vec(c, "tau_max");
     for (int i = 0; i < 3; ++i) {
-      check_close(out.torque_b_nm[i], expected[static_cast<std::size_t>(i)]);
+      const std::size_t k = static_cast<std::size_t>(i);
+      check_close(out.torque_b_nm[i], expected[k]);
+      // Exact binary64 equality is the clamp's fingerprint: eq:gnc:sat
+      // ASSIGNS the limit, so a saturated component reproduces the tau_max
+      // config constant in all 53 bits, while an unsaturated one is a
+      // once-rounded 60-digit evaluation.
+      if (expected[k] == tau_max[k]) {
+        saw_plus_rail = true;
+        railed_axes.insert(i);
+      } else if (expected[k] == -tau_max[k]) {
+        saw_minus_rail = true;
+        railed_axes.insert(i);
+      }
     }
 
     // The recorded dq0 documents which sign branch each case exercises; the
@@ -157,6 +178,9 @@ TEST_CASE("gnc_pd_attitude_golden") {
   }
   CHECK(saw_negative_branch);
   CHECK(saw_zero_branch);
+  CHECK(saw_plus_rail);
+  CHECK(saw_minus_rail);
+  CHECK(railed_axes.size() >= 2);
 }
 
 TEST_CASE("gnc_dead_reckoning_golden") {
