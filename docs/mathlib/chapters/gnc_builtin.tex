@@ -200,6 +200,28 @@ small-angle relation
 which is the reduction the consistency evaluator applies to compare an
 attitude error against the covariance it describes.
 
+The two rotation-vector forms are not usable through a declared layout as
+the code currently stands, and the discrepancy is recorded here rather than
+papered over. A rotation-vector attitude block is three slots wide, which is
+the width the layout validator tiles the state vector with, but the
+differencing routine reads four quaternion slots at the block's offset. A
+layout that passes validation therefore cannot supply the fourth slot from
+within its own block: the read runs into the following block, or past the
+end of the state buffer if the attitude block is last. Neither reading of
+the intent repairs it --- a three-slot block carries no absolute attitude to
+difference truth against, while a four-slot one leaves a slot of
+\texttt{nav.err} unwritten, and \texttt{nav.err} is declared with
+\texttt{nav.est}'s dimension, so that slot would log as zero, which this
+section has just said an error channel must not do. Resolving it is a design
+decision with a log-format consequence. Neither built-in component selects
+either form --- the reference filter of Chapter~\ref{ch:ekf} declares
+equation~\eqref{eq:gnc:errlocal} and the dead-reckoning navigator the
+additive form below --- so no run reaches it today, but both are public API
+a plugin author can select. The evidence row below pins the arithmetic
+of~\eqref{eq:gnc:errrotvec} on a quaternion supplied directly, which is
+what the routine computes; it does not certify the layout path. See
+\texttt{docs/review/phase6\_coverage\_closure.md}.
+
 A fourth form serves an estimator that treats the four quaternion
 components as ordinary state entries, as the dead-reckoning navigator of
 Section~\ref{sec:gnc:deadreckoning} does. Its error is additive, with the
@@ -494,6 +516,26 @@ after the tables.
       shifts application by exactly two cycles, the pre-fill holds applying
       the neutral command with \texttt{valid == false} and zero torque
       (equation~\eqref{eq:gnc:latency}). \\
+    \testid{gnc_rotation_vector_error_forms_match_the_analytic_reduction} &
+      The small-angle reduction~\eqref{eq:gnc:errrotvec} against its own
+      closed form. For a rotation of $\theta = 10^{-3}$ about a known axis
+      $\vv{u}$, $\delta\vv{q}_v = \sin(\theta/2)\,\vv{u}$ exactly, so the
+      expected error is $2\sin(\theta/2)\,\vv{u}$ --- analytic rather than a
+      regenerated golden. Both composition
+      sides~\eqref{eq:gnc:errlocal}--\eqref{eq:gnc:errglobal} are covered by
+      building the truth quaternion on the matching side, and they are shown
+      to disagree on a common truth while preserving the rotation magnitude,
+      so the declared side is not decorative. Negating the truth quaternion
+      --- the same attitude --- is shown to leave the reported error
+      unchanged, which is the $+w$ canonicalization the reduction's sign
+      convention depends on. \\
+    \testid{gnc_base_component_accessors_refuse_an_undeclared_state} &
+      The base-class contract for a component that declares
+      \texttt{state\_dim() > 0} without overriding the state or covariance
+      accessor: both raise rather than let the loop log a buffer nothing
+      wrote. The remaining default introspection is asserted to be well
+      defined and empty, which is what makes the two throws a contract
+      rather than a gap. \\
     \bottomrule
   \end{tabular}
 \end{table}

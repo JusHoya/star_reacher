@@ -455,6 +455,44 @@ aberration function).
       The Section~\ref{sec:optical:stats} tangent-plane statistic over
       $M = 1000$ seeded draws falls inside $[1.878, 2.126]$, the two-sided
       95\,\% interval for $\chi^2_2$. \\
+    \testid{sensors_startracker_exclusion_gating} &
+      Both exclusion terms of equation~\eqref{eq:optical:gating}, each
+      exercised with the other switched off so neither can stand in for
+      the other. The boresight is placed at \qty{40}{\degree} and
+      \qty{20}{\degree} from the apparent Sun against a
+      \qty{30}{\degree} radius, and then at \qty{30.5}{\degree} and
+      \qty{29.5}{\degree}, which places the transition to within one
+      degree and so rejects a degree-for-radian reading or a scaled
+      radius; the same pair of sweeps runs against the central body's
+      \qty{25}{\degree} radius about $-\vv{r}$. The observer is at rest,
+      so $\quat{q}_{\mathrm{ab}}$ is the identity and the tested angle is
+      the geometric separation exactly. The composition is confirmed to
+      be conjunctive, and a boresight deep inside an exclusion cone is
+      confirmed to report \emph{valid} when
+      \texttt{ephemeris\_valid} is false --- the configuration under
+      which this gate is not evaluated at all. \\
+    \testid{sensors_startracker_slew_limit_flag} &
+      The rate term of equation~\eqref{eq:optical:gating} either side of
+      $\omega_{\max}$, with the exclusion radii zero so the flag is the
+      slew comparison alone. A three-axis rate whose components are each
+      inside the limit while its norm is outside is rejected, pinning the
+      comparison to the norm; a zero limit is confirmed to mean ``no
+      gate'' rather than ``reject everything''. \\
+    \testid{sensors_sunsensor_validity_flag} &
+      All three reasons equation~\eqref{eq:optical:sungate} drops the
+      flag, each with the other two satisfied: field of view at
+      \qty{10}{\degree} and \qty{30}{\degree} against a
+      \qty{20}{\degree} half-angle and then at \qty{19.5}{\degree} and
+      \qty{20.5}{\degree}; total umbra at $\nu = 0$ against a penumbra at
+      $\nu = 0.25$, which counts as visible; and a missing ephemeris.
+      With $\sigma = 0$ the measured direction is exactly the true one,
+      so the field-of-view angle is analytic. \\
+    \testid{sensors_parsers_reject_an_unknown_parameter_name} &
+      The allow-list in each optical parser. One misspelling of that
+      sensor's own vocabulary, scalar and vector, is refused rather than
+      ignored, after the same configuration without it is asserted to be
+      accepted. A silently ignored typo leaves the named term at its
+      default and produces a run that looks correct. \\
     \testid{sensors_factory_kind_vocabulary} &
       Both optical kinds construct from the factory at their configured
       rate and report their own \texttt{sensors.*} group names, so a
@@ -576,15 +614,24 @@ Outstanding, recorded rather than tabled:
     against the Chapter~\ref{ch:rotations} goldens to $10^{-15}$ per
     element --- but it is not pinned \emph{here}, and the criterion-9 row
     should not be read as evidence for it.
-  \item \textbf{Gating geometry.} Deterministic sweeps of the boresight
-    across each exclusion boundary and of the rate across
-    $\omega_{\max}$, and an umbra transit dropping the sun-sensor flag,
-    each confirming the flag flips at the configured threshold with draws
-    consumed identically on both sides. The gating logic of
-    equations~\eqref{eq:optical:gating} and~\eqref{eq:optical:sungate} is
-    implemented and its draws are unconditional by construction, but the
-    boundary sweeps are not yet committed as tests.
 \end{itemize}
+
+The boundary sweeps of equations~\eqref{eq:optical:gating}
+and~\eqref{eq:optical:sungate} were outstanding here until the three gating
+rows above were committed, and the reason they went uncommitted for as long
+as they did is worth recording. The exclusion terms were reachable in
+principle from the start, but no fixture reached them: the mission that
+configured both radii carried an invalid ephemeris, so the guard above the
+exclusion block rejected every sample before them, and the only mission with
+a valid ephemeris set both radii to zero. The result was a validity flag
+written on every sample of every run whose computation had never executed,
+which a systematic coverage measurement found and no amount of assertion
+counting would have (\texttt{docs/review/phase6\_coverage\_audit.md},
+finding~C-1). The rows above are placed in the C++ tier so the gate is also
+inside the reach of the sanitizer and warnings-as-errors legs, and each is
+recorded as failing under an inversion, a scaled radius, and a flipped
+reference direction in
+\texttt{docs/review/phase6\_coverage\_closure.md}.
 
 A scope note on equation~\eqref{eq:optical:gating}: the implemented
 exclusion set is the Sun and the central body, each with its own

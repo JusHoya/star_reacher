@@ -269,6 +269,28 @@ The module implementing this chapter is
       arithmetic. The altimeter's turn-on bias is checked to be exactly the
       seeded draw, and the spherical-body altitude to be exactly
       $\norm{\vv{r}} - a$. \\
+    \testid{sensors_navfix_gauss_markov_correlated_errors} &
+      Equation~\eqref{eq:radio:gm} on the fix, value for value and then
+      statistically. The white sigmas are zero, so the measured fix minus
+      truth is exactly the correlated component, while the white draws are
+      still consumed --- which is what makes the replayed schedule the
+      normative one rather than a simplified one. Twenty-five samples are
+      replayed against an independently constructed stream, pinning the
+      construction-time stationary initialization (position then velocity)
+      and the per-sample order (position drive, velocity drive, position
+      white, velocity white). Over \num{20000} samples at
+      $\Delta t / \tau = 0.025$ the sample variance sits in
+      $[0.85, 1.15]\,\sigma^2$, which is the independent check of the drive
+      relation $\sigma_w = \sigma\sqrt{1 - \phi^2}$ together with the
+      stationary initialization, and the lag-one autocorrelation recovers
+      $\phi = e^{-\Delta t / \tau}$ to \qty{2}{\percent}, which is the check
+      that the configured $\tau$ reaches the recursion. A zero $\tau$ is
+      confirmed to leave the component off with $\sigma$ alone
+      configured. \\
+    \testid{sensors_parsers_reject_an_unknown_parameter_name} &
+      The allow-list in each radio parser: one misspelling of that sensor's
+      own vocabulary is refused rather than ignored, after the same
+      configuration without it is asserted to be accepted. \\
     \testid{sensors_factory_kind_vocabulary} &
       Both radio kinds construct from the factory at their configured rate
       and report their own \texttt{sensors.*} group names. \\
@@ -313,11 +335,14 @@ The module implementing this chapter is
 
 The altimeter's gating~\eqref{eq:radio:altgate} is exercised by the second
 test above across the $h_{\max}$ boundary, with the white draw shown to be
-consumed identically on both sides. Outstanding, recorded rather than
-tabled: the enabled Gauss--Markov component of
-equation~\eqref{eq:radio:gm} on the fix is implemented but is pinned only
-by the shared derivation and by the IMU chapter's recursion test, not yet
-by its own committed value-for-value case; and the altimeter's own
+consumed identically on both sides. The Gauss--Markov component of
+equation~\eqref{eq:radio:gm} on the fix now has its own value-for-value
+case, tabled above; until it was committed the whole model --- both
+stationary initializations, both recursions, and \texttt{advance\_gm}
+itself --- was entered by no test in either tier, while its three
+parameters were documented mission configuration
+(\texttt{docs/review/phase6\_coverage\_audit.md}, finding~C-3). Outstanding,
+recorded rather than tabled: the altimeter's own
 ellipsoidal $h = 0$ surface-point case is not yet committed --- the
 altimeter-level case that is committed is the spherical one, asserting
 $h = \norm{\vv{r}} - a$ exactly.
