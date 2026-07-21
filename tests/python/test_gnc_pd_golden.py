@@ -260,13 +260,23 @@ def test_golden_expectations_record_the_branches(cases):
         "every recorded torque"
     )
 
-    # Scope, measured rather than assumed: across the committed set exactly one
-    # axis of one case rails, on the positive side. Mutations that clamp only
-    # axis 0, or only the positive rail, are therefore invisible here; both are
-    # caught instead by test_gnc_missions.test_pd_law_python_reimplementation_
-    # contract, whose scenario clamps on a substantial run of cycles. The
-    # assertion above is deliberately not narrowed to the observed axis and
-    # rail, which would pin the current file rather than state a property.
+    # Scope, measured rather than assumed. The clamp is a per-axis, two-sided
+    # operation, so the set must rail on both sides and on more than one axis
+    # or a law that clamps one axis, or one sign, reproduces every recorded
+    # torque. mixed_saturation rails axis 0 positive and dual_rail_saturation
+    # rails axis 1 negative and axis 2 positive, which covers both rails and
+    # all three axes. Measured on the committed file by mutating
+    # tests/refs/pd_attitude.pd_torque: clamping axis 0 alone leaves residuals
+    # of 8.97 and 5.62 N m on dual_rail_saturation's axes 1 and 2, and
+    # enforcing only the upper rail leaves 8.97 N m on its axis 1, against a
+    # golden tolerance of 2.0e-14. Both were invisible to the five-case set
+    # this file carried before that case was added, where each mutation's
+    # worst residual was 5.6e-17 -- the faithful law's own rounding noise.
+    #
+    # The assertion above is deliberately not narrowed to the observed axes
+    # and rails, which would pin the current file rather than state a
+    # property; the per-axis coverage is enforced at generation time by
+    # tests/golden/gnc/generate.py, where each case declares its rail pattern.
 
     # eq:gnc:sign. Each branch must be represented by a case that records a
     # non-zero response, so a branch cannot be present but inert -- a case

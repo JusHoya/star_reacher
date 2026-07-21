@@ -111,6 +111,26 @@ def pd_reference(q_cmd, q_est, w_est, w_cmd, kp, kd, tau_max):
     return tau, snap(dq[0])
 
 
+def rail_pattern(tau, tau_max) -> tuple:
+    """Per-axis clamp state of a computed torque: '+rail', '-rail', 'inside'.
+
+    Compared against each case's declared ``rails`` so the prose describing a
+    case and the vectors it emits cannot drift apart. Exact equality with the
+    limit is the test because eq:gnc:sat ASSIGNS tau_max to a saturated
+    component; an unsaturated component is a once-rounded 60-digit evaluation
+    and reaching the limit in all 53 bits is not a plausible accident.
+    """
+    out = []
+    for t, m in zip(tau, tau_max):
+        if t == m:
+            out.append("+rail")
+        elif t == -m:
+            out.append("-rail")
+        else:
+            out.append("inside")
+    return tuple(out)
+
+
 def write_pd_cases(path: Path) -> None:
     cases = []
 
@@ -125,6 +145,7 @@ def write_pd_cases(path: Path) -> None:
             kp=[2.5, 3.0, 1.75],
             kd=[8.0, 6.5, 7.25],
             tau_max=[50.0, 50.0, 50.0],
+            rails=("inside", "inside", "inside"),
         )
     )
 
@@ -141,6 +162,7 @@ def write_pd_cases(path: Path) -> None:
             kp=[1.0, 2.0, 4.0],
             kd=[0.5, 0.5, 0.5],
             tau_max=[100.0, 100.0, 100.0],
+            rails=("inside", "inside", "inside"),
         )
     )
 
@@ -156,10 +178,13 @@ def write_pd_cases(path: Path) -> None:
             kp=[3.0, 5.0, 7.0],
             kd=[1.0, 1.0, 1.0],
             tau_max=[10.0, 10.0, 10.0],
+            rails=("inside", "inside", "inside"),
         )
     )
 
-    # Case 4: mixed per-axis saturation (+rail, -rail, unsaturated).
+    # Case 4: per-axis saturation on the positive rail of axis 0, with the
+    # other two axes inside their limits. The mixed requirement is what makes
+    # the case evidence for a PER-AXIS clamp rather than a global one.
     cases.append(
         dict(
             name="mixed_saturation",
@@ -170,6 +195,7 @@ def write_pd_cases(path: Path) -> None:
             kp=[40.0, 40.0, 0.5],
             kd=[30.0, 30.0, 0.25],
             tau_max=[5.0, 5.0, 5.0],
+            rails=("+rail", "inside", "inside"),
         )
     )
 
@@ -184,6 +210,41 @@ def write_pd_cases(path: Path) -> None:
             kp=[2.0, 2.0, 2.0],
             kd=[9.0, 10.0, 11.0],
             tau_max=[1.0, 1.0, 1.0],
+            rails=("inside", "inside", "inside"),
+        )
+    )
+
+    # Case 6: the other rail and the other axes. Case 4 rails axis 0 on the
+    # positive side and nothing else, which leaves a law that clamps only
+    # axis 0, or only the positive side, reproducing every torque the rest of
+    # the set records. This case rails axis 1 NEGATIVE and axis 2 POSITIVE
+    # while axis 0 stays inside, so between the two the clamp is evidenced on
+    # both rails and on all three axes.
+    #
+    # Constructed so the rails are reached by the rate term, which is
+    # independent per axis and dominates here: with w_cmd zero, w_err is
+    # w_est, and kd * w_est is -14 on axis 1 and +12 on axis 2 against limits
+    # of 4. The attitude term cannot pull either axis back inside its limit,
+    # so the rail pattern does not depend on the quaternion arithmetic coming
+    # out to any particular value. Axis 0 carries a deliberately small rate
+    # term (kd * w_est = 0.1 against a limit of 8) so it stays well inside
+    # rather than sitting near its rail, where a rounding difference could
+    # flip its classification.
+    #
+    # Appended last so the five cases above keep their positions in the
+    # emitted file, which is what lets a regeneration be checked as an
+    # unchanged prefix plus one new record.
+    cases.append(
+        dict(
+            name="dual_rail_saturation",
+            q_cmd=snap_quat([0.85, 0.2, 0.35, -0.15]),
+            q_est=snap_quat([0.8, -0.25, 0.1, 0.4]),
+            w_est=[0.05, 0.7, -0.6],
+            w_cmd=[0.0, 0.0, 0.0],
+            kp=[3.0, 6.0, 6.0],
+            kd=[2.0, 20.0, 20.0],
+            tau_max=[8.0, 4.0, 4.0],
+            rails=("inside", "-rail", "+rail"),
         )
     )
 
@@ -196,6 +257,7 @@ def write_pd_cases(path: Path) -> None:
         "# consuming test can assert which sign branch each case exercises.",
         "",
     ]
+    patterns = []
     for c in cases:
         tau, dq0 = pd_reference(
             c["q_cmd"], c["q_est"], c["w_est"], c["w_cmd"], c["kp"], c["kd"],
@@ -208,13 +270,18 @@ def write_pd_cases(path: Path) -> None:
             assert dq0 < 0.0, f"case expects dq0 < 0, got {dq0}"
         if c["name"] == "sign_zero_is_plus_one":
             assert dq0 == 0.0, f"case expects dq0 == 0, got {dq0}"
-        if c["name"] == "mixed_saturation":
-            assert any(abs(t) == m for t, m in zip(tau, c["tau_max"])), (
-                "case expects at least one saturated axis"
-            )
-            assert any(abs(t) < m for t, m in zip(tau, c["tau_max"])), (
-                "case expects at least one unsaturated axis"
-            )
+        # Every case declares its full per-axis rail pattern and it is checked
+        # exactly, per axis and per sign. The previous form of this guard asked
+        # only for "at least one" saturated axis, which mixed_saturation
+        # satisfied with a single axis on a single rail while its comment
+        # claimed all three states - the shortfall a per-axis assertion cannot
+        # miss.
+        actual_rails = rail_pattern(tau, c["tau_max"])
+        assert actual_rails == tuple(c["rails"]), (
+            f"case {c['name']} declares rails {tuple(c['rails'])} but "
+            f"evaluates to {actual_rails}"
+        )
+        patterns.append(actual_rails)
         lines.append("[[case]]")
         lines.append(f'name = "{c["name"]}"')
         for key in ("q_cmd", "q_est", "w_est", "w_cmd", "kp", "kd", "tau_max"):
@@ -228,6 +295,31 @@ def write_pd_cases(path: Path) -> None:
             lines.append(f'  "{h}",')
         lines.append("]")
         lines.append("")
+
+    # Set-level clamp coverage. eq:gnc:sat is a per-axis, two-sided operation,
+    # so a set that only ever rails one axis on one side leaves a law that
+    # clamps just that axis, or just that sign, reproducing every recorded
+    # torque. Both shortfalls were real: before dual_rail_saturation was added
+    # the whole set railed axis 0 positive and nothing else.
+    railed_axes = {
+        i for pattern in patterns for i, s in enumerate(pattern) if s != "inside"
+    }
+    rails_seen = {s for pattern in patterns for s in pattern if s != "inside"}
+    assert rails_seen == {"+rail", "-rail"}, (
+        f"the set rails only {sorted(rails_seen)}; a law clamping one side "
+        f"only would reproduce every recorded torque"
+    )
+    assert len(railed_axes) >= 2, (
+        f"the set rails only axis/axes {sorted(railed_axes)}; a law clamping "
+        f"one axis only would reproduce every recorded torque"
+    )
+    # A saturated axis is only evidence beside an unsaturated one: a case whose
+    # every axis rails says nothing about the unclamped path.
+    assert any(
+        any(s != "inside" for s in p) and any(s == "inside" for s in p)
+        for p in patterns
+    ), "no case mixes a saturated axis with an unsaturated one"
+
     path.write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
 
