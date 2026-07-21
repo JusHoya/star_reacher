@@ -218,7 +218,10 @@ computes every torque:
   substantial run of cycles.
 
 test_pd_scenario_exercises_every_equation asserts each of these properties
-holds, so the gate cannot quietly return to being degenerate.
+holds, so the gate cannot quietly return to being degenerate. It measures
+eq:gnc:werr on C(dq) w_cmd itself rather than on the distance of C(dq) from
+the identity or from symmetric, because the parallel-axis case leaves both of
+those proxies large while the term they stand in for is inert.
 """
 
 _PD_CYCLE_S = 0.1
@@ -368,14 +371,40 @@ def test_pd_scenario_exercises_every_equation(pd_scenario):
     cycles = len(dq0)
 
     # eq:gnc:werr -- a commanded rate to rotate at all.
-    assert np.abs(a["w_cmd"]).max() > 1e-3
+    rate_scale = float(np.abs(a["w_cmd"]).max())
+    assert rate_scale > 1e-3
 
-    # eq:gnc:werr -- and an error DCM far enough from the identity that the
-    # rotation changes the answer, and far enough from symmetric that
-    # transposing it changes the answer too.
+    # eq:gnc:werr -- and an error rotation that actually changes the term the
+    # torque consumes, C(dq) w_cmd, in both value and handedness.
+    #
+    # This is measured on that term directly rather than on how far C(dq)
+    # sits from the identity or from symmetric. Those two proxies are not
+    # equivalent to it, and a mutation survives them: with the error axis
+    # PARALLEL to w_cmd, C(dq) w_cmd == w_cmd, so the term is inert and
+    # transposing C(dq) changes nothing, yet |C - I| and |C - C^T| stay large
+    # because C(dq) is still a large rotation. Measured on this scenario the
+    # rotation moves the commanded rate by 125 % of its own peak and its
+    # transpose differs by 173 %; on a variant built with _PD_OFFSET_AXIS set
+    # equal to _PD_RATE_AXIS the same two quantities collapse to 5.6 % and
+    # 13.1 % while the proxies barely move, reading 0.70 and 1.19 against
+    # this scenario's 0.71 and 1.24. The 50 % gate below separates the two by
+    # better than a factor of two either way; a 0.5 gate on the proxies does
+    # not separate them at all.
     c = pd.error_dcm(dq)
-    assert np.abs(c - np.eye(3)).max() > 0.5
-    assert np.abs(c - np.transpose(c, (0, 2, 1))).max() > 0.5
+    rotated = np.einsum("kij,kj->ki", c, a["w_cmd"])
+    transposed = np.einsum("kji,kj->ki", c, a["w_cmd"])
+    moved = float(np.abs(rotated - a["w_cmd"]).max())
+    handed = float(np.abs(rotated - transposed).max())
+    assert moved > 0.5 * rate_scale, (
+        f"C(dq) moves the commanded rate by only {moved:.3e} rad/s against a "
+        f"commanded rate of {rate_scale:.3e} rad/s; eq:gnc:werr's rotation "
+        f"would be invisible to the criterion-2 residual"
+    )
+    assert handed > 0.5 * rate_scale, (
+        f"C(dq) w_cmd differs from its transpose by only {handed:.3e} rad/s "
+        f"against a commanded rate of {rate_scale:.3e} rad/s; eq:gnc:werr's "
+        f"handedness would be invisible to the criterion-2 residual"
+    )
 
     # eq:gnc:sign -- both branches, each over a substantial run of cycles.
     assert int(np.sum(dq0 < 0.0)) > cycles // 8
