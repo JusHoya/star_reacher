@@ -19,6 +19,7 @@
 #include "star/gnc/builtin.hpp"
 #include "star/gnc/component.hpp"
 #include "star/models/vehicle6dof.hpp"
+#include "star/rotation.hpp"
 #include "vendor/doctest.h"
 
 namespace {
@@ -384,4 +385,141 @@ TEST_CASE("gnc_latency_fifo_semantics") {
     CHECK_FALSE(held.valid);
     CHECK(held.torque_b_nm[0] == 5.0);  // ZOH of the last applied command
   }
+}
+
+TEST_CASE("gnc_base_component_accessors_refuse_an_undeclared_state") {
+  // The base-class contract guards. A component that declares an estimator
+  // state but does not override the accessors must fail loudly, because the
+  // alternative is the loop reading a buffer nothing wrote and logging it as
+  // an estimate.
+  // Fixture non-degeneracy: the probe DOES declare state_dim() == 3, so the
+  // guards are reached along the path a real misuse takes - the loop sizes a
+  // buffer from the declaration and then calls an accessor the author forgot
+  // to supply. A probe declaring zero would never reach them.
+  struct Bare final : star::gnc::IGncComponent {
+    void init(const GncInitContext&) override {}
+    GncOutput update(const GncInput&) override { return GncOutput(); }
+    int state_dim() const override { return 3; }
+  };
+  Bare c;
+  double buf[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  CHECK_THROWS_AS(c.state(buf), std::logic_error);
+  CHECK_THROWS_AS(c.covariance_upper(buf), std::logic_error);
+
+  // The rest of the default introspection is well defined and empty, which
+  // is what makes the two throws above a deliberate contract rather than a
+  // gap in the base class.
+  CHECK(c.cov_dim() == 3);  // defaults to the declared state dimension
+  CHECK(c.innov_max_dim() == 0);
+  CHECK(c.innovations().empty());
+  CHECK(c.error_layout().empty());
+}
+
+TEST_CASE("gnc_rotation_vector_error_forms_match_the_analytic_reduction") {
+  // The rotation-vector attitude error forms, whose write had never been
+  // computed in either tier. The expected value is the closed form
+  // 2 sgn(dq_w) dq_v of a rotation constructed here, not a regenerated
+  // golden: for a rotation of theta about a unit axis, dq_v = sin(theta/2) u
+  // exactly, so the reduction is 2 sin(theta/2) u.
+  //
+  // These cases call compute_error_state directly rather than declaring the
+  // layout through validate_error_layout. compute_error_state reads FOUR
+  // quaternion slots at the block offset, while error_block_size reports
+  // THREE slots for these two forms, so a layout that passes validation
+  // cannot supply the fourth slot from within the block. What is pinned here
+  // is the arithmetic the function performs on the quaternion it is given.
+  const double theta = 1.0e-3;
+  const Eigen::Vector3d axis = Eigen::Vector3d(1.0, -2.0, 2.0).normalized();
+  const double s = std::sin(0.5 * theta);
+  const Eigen::Quaterniond dq(std::cos(0.5 * theta), s * axis.x(),
+                              s * axis.y(), s * axis.z());
+  // A non-identity estimate, so the two composition sides are genuinely
+  // different rotations and neither can pass by accident.
+  const Eigen::Quaterniond q_est(0.5, 0.5, -0.5, 0.5);
+  const double x_hat[4] = {q_est.w(), q_est.x(), q_est.y(), q_est.z()};
+
+  star::gnc::TruthState truth;
+  truth.valid = true;
+
+  // Local: dq = conj(q_est) (x) q_true, so a truth built as q_est (x) dq
+  // recovers dq exactly and the expected reduction is analytic.
+  {
+    const std::vector<star::gnc::ErrorBlock> layout = {
+        {star::gnc::ErrorQuantity::kAttitude,
+         star::gnc::ErrorForm::kRotationVectorLocal, 0}};
+    truth.q_i2b = star::rotation::quat_multiply(q_est, dq);
+    double e[3] = {0.0, 0.0, 0.0};
+    star::gnc::compute_error_state(layout, truth, x_hat, e);
+    for (int i = 0; i < 3; ++i) {
+      CHECK(e[i] == doctest::Approx(2.0 * s * axis[i]).epsilon(1e-13));
+    }
+    // Non-vacuous: at theta = 1e-3 the three components are 6.7e-4, -1.3e-3
+    // and 1.3e-3, so a reduction that dropped the factor of 2 or took dq_w
+    // instead of dq_v would miss by orders of magnitude, and a sign error on
+    // any axis flips a component whose sign differs from its neighbours'.
+    CHECK(e[0] > 0.0);
+    CHECK(e[1] < 0.0);
+    CHECK(e[2] > 0.0);
+
+    // The +w canonicalization the reduction depends on: negating the truth
+    // quaternion names the same attitude, so the reported error must not
+    // change. Without the canonicalization every component would flip.
+    star::gnc::TruthState flipped = truth;
+    flipped.q_i2b = Eigen::Quaterniond(-truth.q_i2b.w(), -truth.q_i2b.x(),
+                                       -truth.q_i2b.y(), -truth.q_i2b.z());
+    double e_flipped[3] = {0.0, 0.0, 0.0};
+    star::gnc::compute_error_state(layout, flipped, x_hat, e_flipped);
+    for (int i = 0; i < 3; ++i) {
+      CHECK(e_flipped[i] == doctest::Approx(e[i]).epsilon(1e-13));
+    }
+  }
+
+  // Global: dq = q_true (x) conj(q_est), so the truth is built on the other
+  // side. Using the SAME dq makes the two cases differ only in composition
+  // side, which is the convention this form exists to carry.
+  {
+    const std::vector<star::gnc::ErrorBlock> layout = {
+        {star::gnc::ErrorQuantity::kAttitude,
+         star::gnc::ErrorForm::kRotationVectorGlobal, 0}};
+    truth.q_i2b = star::rotation::quat_multiply(dq, q_est);
+    double e[3] = {0.0, 0.0, 0.0};
+    star::gnc::compute_error_state(layout, truth, x_hat, e);
+    for (int i = 0; i < 3; ++i) {
+      CHECK(e[i] == doctest::Approx(2.0 * s * axis[i]).epsilon(1e-13));
+    }
+
+    // The composition side is real: reading the SAME globally-composed truth
+    // through the local form gives a different rotation axis. q_est is a
+    // 120 deg rotation, so the two reductions are far apart rather than
+    // marginally so.
+    const std::vector<star::gnc::ErrorBlock> local_layout = {
+        {star::gnc::ErrorQuantity::kAttitude,
+         star::gnc::ErrorForm::kRotationVectorLocal, 0}};
+    double e_local[3] = {0.0, 0.0, 0.0};
+    star::gnc::compute_error_state(local_layout, truth, x_hat, e_local);
+    double diff = 0.0;
+    for (int i = 0; i < 3; ++i) diff += std::fabs(e_local[i] - e[i]);
+    CHECK(diff > 0.5 * theta);
+    // Both sides describe the same rotation ANGLE, only resolved in
+    // different frames, so the reduction's magnitude is preserved.
+    const double n_local = std::sqrt(e_local[0] * e_local[0] +
+                                     e_local[1] * e_local[1] +
+                                     e_local[2] * e_local[2]);
+    const double n_global =
+        std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+    CHECK(n_local == doctest::Approx(n_global).epsilon(1e-12));
+  }
+
+  // The declared block width for both forms is three slots, against four for
+  // every quaternion form; this is what a component author selects by, and
+  // it is the value validate_error_layout tiles the state vector with.
+  CHECK(star::gnc::error_block_size(
+            star::gnc::ErrorQuantity::kAttitude,
+            star::gnc::ErrorForm::kRotationVectorLocal) == 3);
+  CHECK(star::gnc::error_block_size(
+            star::gnc::ErrorQuantity::kAttitude,
+            star::gnc::ErrorForm::kRotationVectorGlobal) == 3);
+  CHECK(star::gnc::error_block_size(
+            star::gnc::ErrorQuantity::kAttitude,
+            star::gnc::ErrorForm::kQuatErrorLocal) == 4);
 }

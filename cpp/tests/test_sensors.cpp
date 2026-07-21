@@ -42,6 +42,25 @@ star::log::SrlogWriter make_imu_writer(const std::string& path,
   return star::log::SrlogWriter(path, f);
 }
 
+// A writer declaring exactly one sensor group, for sample() calls that need
+// a record sink; the emitted bytes are covered by test_srlog.cpp.
+star::log::SrlogWriter make_one_sensor_writer(const std::string& path,
+                                              const std::string& kind,
+                                              std::uint32_t rate_hz) {
+  star::log::SrlogHeaderFields f;
+  f.core_version = "0.6.0-test";
+  f.git_hash = "unknown";
+  f.config_sha256 = std::string(64, '0');
+  f.master_seed = 1;
+  f.oracle = false;
+  f.epoch_utc = "2026-01-01T00:00:00Z";
+  f.central_body = "earth";
+  f.truth_rate_hz = rate_hz;
+  f.cycle_rate_hz = rate_hz;
+  f.sensors = {{kind, rate_hz, 0}};
+  return star::log::SrlogWriter(path, f);
+}
+
 // One cycle of held truth: constant endpoints make the eq:imu:quadrature
 // trapezoid equal dt * value exactly.
 star::sensors::SensorCycleTruth held_cycle(double dt, double w, double f) {
@@ -1097,4 +1116,403 @@ TEST_CASE("sensors_factory_kind_vocabulary") {
   zero.sample_rate_hz = 0;
   CHECK_THROWS_AS(star::sensors::make_sensor(zero, 42),
                   std::invalid_argument);
+}
+
+TEST_CASE("sensors_startracker_exclusion_gating") {
+  // The two exclusion terms of eq:optical:gating, both directions each.
+  //
+  // Fixture non-degeneracy, stated because this gate was previously
+  // unreachable in every mission that configured it. Three properties make
+  // the flag depend on the exclusion arithmetic and on nothing else:
+  //   - geom.ephemeris_valid is TRUE, so the guard above the exclusion block
+  //     admits the sample. The mission that configured these radii carried
+  //     an invalid ephemeris and was rejected before reaching them, and the
+  //     mission with a valid ephemeris set both radii to zero.
+  //   - both velocities are zero, so beta is zero, aberrate() returns its
+  //     input unchanged, and the tested angle is exactly the geometric
+  //     separation. The expected flag is therefore analytic.
+  //   - sigma_rad and slew_limit_radps are zero, so no draw perturbs the
+  //     sample and the slew term cannot mask an exclusion result.
+  // Each radius is exercised with the other set to zero, so neither term can
+  // stand in for the other.
+  const std::string path = "test_sensors_st_gating.srlog";
+  const double deg = star::constants::PI / 180.0;
+  const double kSun = 30.0 * deg;
+  const double kCb = 25.0 * deg;
+
+  star::sensors::SensorCycleTruth truth;
+  truth.dt_s = 0.25;
+  // Identity truth attitude makes C_i2b the identity, so the inertial
+  // boresight IS the configured body boresight - the separations below are
+  // read straight off the configuration.
+  truth.q_end_i2b = Eigen::Quaterniond::Identity();
+  truth.r_end_i_m = Eigen::Vector3d(7.0e6, 0.0, 0.0);
+  truth.v_end_i_mps = Eigen::Vector3d::Zero();
+  truth.geom.ephemeris_valid = true;
+  truth.geom.v_central_ssb_mps = Eigen::Vector3d::Zero();
+  // Sun far along +X: normalize(r_sun - r) is +X to within 5e-5 of a degree.
+  truth.geom.r_sun_m = Eigen::Vector3d(1.5e11, 0.0, 0.0);
+
+  // Boresights at a chosen separation from the Sun direction (+X) and from
+  // the central-body direction (-X, the origin of the propagation frame).
+  const auto from_sun = [deg](double a_deg) {
+    return Eigen::Vector3d(std::cos(a_deg * deg), std::sin(a_deg * deg), 0.0);
+  };
+  const auto from_central_body = [deg](double a_deg) {
+    return Eigen::Vector3d(-std::cos(a_deg * deg), std::sin(a_deg * deg), 0.0);
+  };
+
+  star::log::SrlogWriter writer =
+      make_one_sensor_writer(path, "startracker", 4);
+  double t = 0.25;
+  const auto flag_for = [&](const star::sensors::StarTrackerCfg& cfg,
+                            const star::sensors::SensorCycleTruth& tr) {
+    star::sensors::StarTracker st(4, cfg, 31337);
+    st.accumulate(tr);
+    st.sample(t, writer);
+    t += 0.25;
+    return st.last_valid();
+  };
+
+  {
+    star::sensors::StarTrackerCfg cfg;
+    cfg.sun_exclusion_rad = kSun;  // central-body term and slew term off
+    // Clear of the cone, then inside it.
+    cfg.boresight_b = from_sun(40.0);
+    CHECK(flag_for(cfg, truth));
+    cfg.boresight_b = from_sun(20.0);
+    CHECK_FALSE(flag_for(cfg, truth));
+    // Straddling the threshold by half a degree either side. This pins the
+    // comparison to the configured radius, in radians, against the APPARENT
+    // Sun direction: a gate reading degrees, the complementary angle, or the
+    // other excluded body's direction cannot place a transition within one
+    // degree of 30, and an inverted comparison reverses both answers.
+    cfg.boresight_b = from_sun(30.5);
+    CHECK(flag_for(cfg, truth));
+    cfg.boresight_b = from_sun(29.5);
+    CHECK_FALSE(flag_for(cfg, truth));
+  }
+  {
+    star::sensors::StarTrackerCfg cfg;
+    cfg.central_body_exclusion_rad = kCb;  // Sun term and slew term off
+    cfg.boresight_b = from_central_body(35.0);
+    CHECK(flag_for(cfg, truth));
+    cfg.boresight_b = from_central_body(15.0);
+    CHECK_FALSE(flag_for(cfg, truth));
+    cfg.boresight_b = from_central_body(25.5);
+    CHECK(flag_for(cfg, truth));
+    cfg.boresight_b = from_central_body(24.5);
+    CHECK_FALSE(flag_for(cfg, truth));
+  }
+  {
+    // The terms compose with AND: a boresight 165 deg from the Sun - clear
+    // of that cone by any measure - is still excluded by the central body.
+    star::sensors::StarTrackerCfg cfg;
+    cfg.sun_exclusion_rad = kSun;
+    cfg.central_body_exclusion_rad = kCb;
+    cfg.boresight_b = from_central_body(15.0);
+    CHECK_FALSE(flag_for(cfg, truth));
+    cfg.boresight_b = from_sun(90.0);  // 90 deg from both directions
+    CHECK(flag_for(cfg, truth));
+
+    // Without an ephemeris there is no excluded direction to measure
+    // against, so the same excluded geometry reports valid. This is the
+    // configuration that made the block above unexecuted: a mission may
+    // configure both radii and never evaluate either.
+    star::sensors::SensorCycleTruth blind = truth;
+    blind.geom.ephemeris_valid = false;
+    cfg.boresight_b = from_central_body(15.0);
+    CHECK(flag_for(cfg, blind));
+  }
+  writer.close();
+  std::remove(path.c_str());
+}
+
+TEST_CASE("sensors_startracker_slew_limit_flag") {
+  // The slew term of eq:optical:gating executes on every sample of every run
+  // and its result was asserted nowhere; this asserts it both ways, matching
+  // the standard the altimeter's band flag is held to above.
+  // Fixture non-degeneracy: geom.ephemeris_valid is left false and both
+  // exclusion radii are zero, so the flag is the slew comparison alone, and
+  // the rates below straddle the configured limit rather than sitting on one
+  // side of it.
+  const std::string path = "test_sensors_st_slew.srlog";
+  star::sensors::StarTrackerCfg cfg;
+  cfg.slew_limit_radps = 0.01;
+  star::sensors::StarTracker st(4, cfg, 4242);
+
+  star::sensors::SensorCycleTruth truth;
+  truth.dt_s = 0.25;
+  truth.q_end_i2b = Eigen::Quaterniond::Identity();
+
+  star::log::SrlogWriter writer =
+      make_one_sensor_writer(path, "startracker", 4);
+  truth.omega_b_end_radps = Eigen::Vector3d(0.006, 0.0, 0.0);
+  st.accumulate(truth);
+  st.sample(0.25, writer);
+  CHECK(st.last_valid());
+
+  truth.omega_b_end_radps = Eigen::Vector3d(0.0, 0.02, 0.0);
+  st.accumulate(truth);
+  st.sample(0.5, writer);
+  CHECK_FALSE(st.last_valid());
+
+  // The comparison is on the rate NORM: three components each individually
+  // inside the limit whose norm (0.01386 rad/s) exceeds it are rejected.
+  truth.omega_b_end_radps = Eigen::Vector3d(0.008, 0.008, 0.008);
+  st.accumulate(truth);
+  st.sample(0.75, writer);
+  CHECK_FALSE(st.last_valid());
+
+  // A zero limit is "no slew gate", not "reject everything".
+  star::sensors::StarTrackerCfg ungated;
+  star::sensors::StarTracker open(4, ungated, 4242);
+  open.accumulate(truth);
+  open.sample(1.0, writer);
+  CHECK(open.last_valid());
+  writer.close();
+  std::remove(path.c_str());
+}
+
+TEST_CASE("sensors_sunsensor_validity_flag") {
+  // eq:optical:sungate, whose three independent reasons to drop the flag -
+  // no ephemeris, total umbra, and a Sun outside the field of view - were
+  // computed on every sample and asserted by no test.
+  // Fixture non-degeneracy: sigma_rad is zero, so the measured direction is
+  // exactly the true one and the field-of-view angle is analytic; the truth
+  // attitude is the identity and the Sun lies along +X, so the body-frame
+  // Sun direction is +X and the separation from the boresight is the
+  // boresight's own tilt. Each reason is exercised with the other two
+  // satisfied, so no single condition can carry the result.
+  const std::string path = "test_sensors_sun_gating.srlog";
+  const double deg = star::constants::PI / 180.0;
+
+  star::sensors::SensorCycleTruth truth;
+  truth.dt_s = 0.25;
+  truth.q_end_i2b = Eigen::Quaterniond::Identity();
+  truth.r_end_i_m = Eigen::Vector3d(7.0e6, 0.0, 0.0);
+  truth.v_end_i_mps = Eigen::Vector3d::Zero();
+  truth.geom.ephemeris_valid = true;
+  truth.geom.illumination_nu = 1.0;
+  truth.geom.r_sun_m = Eigen::Vector3d(1.5e11, 0.0, 0.0);
+
+  star::log::SrlogWriter writer =
+      make_one_sensor_writer(path, "sunsensor", 4);
+  double t = 0.25;
+  const auto flag_for = [&](const star::sensors::SunSensorCfg& cfg,
+                            const star::sensors::SensorCycleTruth& tr) {
+    star::sensors::SunSensor ss(4, cfg, 112358);
+    ss.accumulate(tr);
+    ss.sample(t, writer);
+    t += 0.25;
+    return ss.last_valid();
+  };
+
+  star::sensors::SunSensorCfg cfg;
+  cfg.fov_half_angle_rad = 20.0 * deg;
+  const auto tilted = [deg](double a_deg) {
+    return Eigen::Vector3d(std::cos(a_deg * deg), std::sin(a_deg * deg), 0.0);
+  };
+
+  cfg.boresight_b = tilted(10.0);
+  CHECK(flag_for(cfg, truth));
+  cfg.boresight_b = tilted(30.0);
+  CHECK_FALSE(flag_for(cfg, truth));
+  // Half a degree either side of the configured half-angle, which places the
+  // transition and rules out a degrees-for-radians or full-angle reading.
+  cfg.boresight_b = tilted(19.5);
+  CHECK(flag_for(cfg, truth));
+  cfg.boresight_b = tilted(20.5);
+  CHECK_FALSE(flag_for(cfg, truth));
+
+  // In-view but in total umbra: the illumination fraction shared with the
+  // ch:srp shadow model gates the flag independently of geometry.
+  cfg.boresight_b = tilted(10.0);
+  star::sensors::SensorCycleTruth dark = truth;
+  dark.geom.illumination_nu = 0.0;
+  CHECK_FALSE(flag_for(cfg, dark));
+  // Partial illumination counts as visible, so the penumbra is not a gap.
+  dark.geom.illumination_nu = 0.25;
+  CHECK(flag_for(cfg, dark));
+
+  // Without an ephemeris there is no Sun direction to measure at all.
+  star::sensors::SensorCycleTruth blind = truth;
+  blind.geom.ephemeris_valid = false;
+  CHECK_FALSE(flag_for(cfg, blind));
+
+  // A zero half-angle is "no field-of-view gate", not "reject everything":
+  // an illuminated sensor pointing away from the Sun still reports valid.
+  star::sensors::SunSensorCfg wide;
+  wide.boresight_b = tilted(150.0);
+  CHECK(flag_for(wide, truth));
+  writer.close();
+  std::remove(path.c_str());
+}
+
+TEST_CASE("sensors_navfix_gauss_markov_correlated_errors") {
+  // eq:radio:gm, the correlated component of the external nav fix. The whole
+  // model - both stationary initializations, both recursions, and
+  // advance_gm itself - was entered by no test in either tier, while its
+  // three parameters are documented mission configuration.
+  //
+  // Fixture non-degeneracy: the WHITE standard deviations are zero, so the
+  // measured fix minus truth is exactly the correlated component and the
+  // model under test is the only thing the assertions can see. The draws for
+  // the white terms are still consumed (they are unconditional), which is
+  // what makes the schedule below the real one rather than a simplified one.
+  const std::uint64_t seed = 90210;
+  const std::uint32_t rate_hz = 4;
+  const double dt = 1.0 / static_cast<double>(rate_hz);
+  const double sigma_r = 40.0;
+  const double tau_r = 10.0;
+  const double sigma_v = 0.3;
+  const double tau_v = 25.0;
+  const Eigen::Vector3d r_true(7.0e6, 1.0e6, -2.0e6);
+  const Eigen::Vector3d v_true(1.0e3, 7.4e3, 0.5e3);
+
+  star::sensors::NavFixCfg cfg;
+  cfg.gm_r.sigma = sigma_r;
+  cfg.gm_r.tau_s = tau_r;
+  cfg.gm_v.sigma = sigma_v;
+  cfg.gm_v.tau_s = tau_v;
+  star::sensors::NavFix nav(rate_hz, cfg, seed);
+
+  star::sensors::SensorCycleTruth truth;
+  truth.dt_s = dt;
+  truth.r_end_i_m = r_true;
+  truth.v_end_i_mps = v_true;
+
+  // The coefficients are recomputed here from the chapter's relations rather
+  // than read off the implementation.
+  const double phi_r = std::exp(-dt / tau_r);
+  const double phi_v = std::exp(-dt / tau_v);
+  const double w_r = sigma_r * std::sqrt(1.0 - phi_r * phi_r);
+  const double w_v = sigma_v * std::sqrt(1.0 - phi_v * phi_v);
+
+  star::rng::NormalSampler ref(star::rng::make_stream(seed, "sensors.navfix"));
+  // Construction-time stationary initialization, position then velocity
+  // (ch:sensors-radio draw schedule).
+  Eigen::Vector3d c_r;
+  Eigen::Vector3d c_v;
+  for (int i = 0; i < 3; ++i) c_r[i] = sigma_r * ref.next();
+  for (int i = 0; i < 3; ++i) c_v[i] = sigma_v * ref.next();
+
+  const int n_samples = 20000;
+  std::vector<double> series_r;
+  series_r.reserve(static_cast<std::size_t>(n_samples));
+  const std::string path = "test_sensors_navfix_gm.srlog";
+  {
+    star::log::SrlogWriter writer =
+        make_one_sensor_writer(path, "navfix", rate_hz);
+    for (int k = 0; k < n_samples; ++k) {
+      nav.accumulate(truth);
+      nav.sample(dt * (k + 1), writer);
+      // Per-sample schedule: position drive, velocity drive, position white,
+      // velocity white. The white draws are consumed even at zero sigma, so
+      // omitting them here would desynchronize the reference stream and the
+      // exact comparisons below would fail on the second sample.
+      for (int i = 0; i < 3; ++i) c_r[i] = phi_r * c_r[i] + w_r * ref.next();
+      for (int i = 0; i < 3; ++i) c_v[i] = phi_v * c_v[i] + w_v * ref.next();
+      for (int i = 0; i < 3; ++i) (void)ref.next();
+      for (int i = 0; i < 3; ++i) (void)ref.next();
+      for (int i = 0; i < 3; ++i) {
+        CHECK(nav.last_position_m()[i] ==
+              doctest::Approx(r_true[i] + c_r[i]).epsilon(1e-12));
+        CHECK(nav.last_velocity_mps()[i] ==
+              doctest::Approx(v_true[i] + c_v[i]).epsilon(1e-12));
+      }
+      series_r.push_back(nav.last_position_m()[0] - r_true[0]);
+    }
+    writer.close();
+  }
+  std::remove(path.c_str());
+
+  // Stationarity: the sequence is initialized at the stationary variance and
+  // driven by w_sigma = sigma * sqrt(1 - phi^2), so its sample variance sits
+  // at sigma^2 with no drift. This is the independent check of the two
+  // relations the exact comparison above assumes - a drive variance missing
+  // the sqrt, or a zero initialization, changes this ratio by orders of
+  // magnitude. 20000 samples at dt/tau = 0.025 is 500 correlation times.
+  double sum = 0.0;
+  double sum_sq = 0.0;
+  double lag1 = 0.0;
+  for (int k = 0; k < n_samples; ++k) {
+    const double c = series_r[static_cast<std::size_t>(k)];
+    sum += c;
+    sum_sq += c * c;
+    if (k + 1 < n_samples) lag1 += c * series_r[static_cast<std::size_t>(k + 1)];
+  }
+  const double mean = sum / n_samples;
+  const double var = sum_sq / n_samples - mean * mean;
+  CHECK(var / (sigma_r * sigma_r) >= 0.85);
+  CHECK(var / (sigma_r * sigma_r) <= 1.15);
+  // Lag-one autocorrelation recovers phi = exp(-dt/tau), which is the
+  // parameter tau_s actually reaching the recursion.
+  CHECK(lag1 / sum_sq == doctest::Approx(phi_r).epsilon(0.02));
+
+  // Both components are independently switchable: a zero tau leaves the
+  // correlated term off, and the fix is then truth exactly at zero white
+  // sigma - the case every existing test ran without knowing it.
+  star::sensors::NavFixCfg off;
+  off.gm_r.sigma = sigma_r;  // sigma alone does not enable the model
+  star::sensors::NavFix plain(rate_hz, off, seed);
+  {
+    star::log::SrlogWriter writer =
+        make_one_sensor_writer(path, "navfix", rate_hz);
+    plain.accumulate(truth);
+    plain.sample(dt, writer);
+    writer.close();
+  }
+  std::remove(path.c_str());
+  for (int i = 0; i < 3; ++i) {
+    CHECK(plain.last_position_m()[i] == r_true[i]);
+    CHECK(plain.last_velocity_mps()[i] == v_true[i]);
+  }
+}
+
+TEST_CASE("sensors_parsers_reject_an_unknown_parameter_name") {
+  // The reject_unknown allow-list in each sensor parser. A silently ignored
+  // typo is the failure mode this guards: the named term stays at its
+  // default and the run looks entirely plausible, which is a different and
+  // worse outcome than a confusing error message.
+  // Fixture non-degeneracy: each case starts from a configuration the parser
+  // ACCEPTS - asserted first - and then adds one misspelling of that
+  // sensor's own vocabulary, so a rejection can only come from the unknown
+  // name and not from an otherwise invalid config.
+  struct Case {
+    const char* kind;
+    const char* typo;
+  };
+  const Case cases[] = {
+      {"startracker", "sun_exclusion_deg"},   // real name ends _rad
+      {"sunsensor", "fov_half_angle_deg"},    // real name ends _rad
+      {"navfix", "gm_position_tau"},          // real name ends _tau_s
+      {"altimeter", "sigma_noise_meters"},    // real name ends _m
+      {"camera", "focal_px"},                 // real name is fx_px / fy_px
+      {"imu", "arw_rad_per_sqrt_hour"},       // not the configured spelling
+  };
+  for (const Case& c : cases) {
+    star::gnc::GncSensorCfg base;
+    base.kind = c.kind;
+    base.sample_rate_hz = 10;
+    if (base.kind == "camera") {
+      base.scalars["fx_px"] = 800.0;
+      base.scalars["fy_px"] = 800.0;
+      base.scalars["width_px"] = 1024.0;
+      base.scalars["height_px"] = 768.0;
+    }
+    CHECK_NOTHROW(star::sensors::make_sensor(base, 42));
+
+    star::gnc::GncSensorCfg typo = base;
+    typo.scalars[c.typo] = 1.0;
+    CHECK_THROWS_AS(star::sensors::make_sensor(typo, 42),
+                    std::invalid_argument);
+  }
+
+  // Vector-valued parameters go through the same allow-list.
+  star::gnc::GncSensorCfg vec;
+  vec.kind = "startracker";
+  vec.sample_rate_hz = 10;
+  vec.vectors["boresight_body"] = {0.0, 0.0, 1.0};  // real name is boresight_b
+  CHECK_THROWS_AS(star::sensors::make_sensor(vec, 42), std::invalid_argument);
 }

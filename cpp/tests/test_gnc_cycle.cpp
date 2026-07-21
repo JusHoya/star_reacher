@@ -186,6 +186,129 @@ void ensure_probe_registered() {
   (void)once;
 }
 
+// --- innovation-reporting probe -------------------------------------------
+
+// What the innovating probe should emit on the next cycle. Set before the
+// run; `narrow_first` alternates a short and a full-width sample so both the
+// zero-padding and the structural embedding of a short covariance triangle
+// execute inside the same run.
+struct InnovPlan {
+  bool alternate = true;
+  std::size_t forced_y = 0;        // 0 = follow the alternation
+  std::size_t forced_s_upper = 0;  // 0 = the consistent triangle for forced_y
+};
+InnovPlan g_innov_plan;
+
+// m_max = 3 with real m of 2 and 3: the short case is what makes the padding
+// loop's row stride observable, because a 2-by-2 packed triangle and the
+// leading corner of a 3-by-3 one are laid out differently.
+constexpr int kInnovMaxDim = 3;
+
+class InnovNav final : public star::gnc::IGncComponent {
+ public:
+  void init(const star::gnc::GncInitContext& ctx) override { q0_ = ctx.q0_i2b; }
+
+  star::gnc::GncOutput update(const star::gnc::GncInput&) override {
+    samples_.clear();
+    star::gnc::InnovationSample s;
+    s.sensor_id = 0;  // the run's single configured sensor
+    if (g_innov_plan.forced_y > 0) {
+      // Deliberately malformed, for the loop's own length guards.
+      s.y.assign(g_innov_plan.forced_y, 1.0);
+      s.s_upper.assign(g_innov_plan.forced_s_upper, 1.0);
+    } else if ((cycle_ % 2) == 0) {
+      // m = 2 < m_max: y pads to three, and the 2-by-2 triangle
+      // [ [4, 0.5], [., 9] ] must land in the leading corner of the 3-by-3.
+      s.y = {1.0, 2.0};
+      s.s_upper = {4.0, 0.5, 9.0};
+    } else {
+      s.y = {1.0, 2.0, 3.0};
+      s.s_upper = {4.0, 0.5, 0.25, 9.0, 0.75, 16.0};
+    }
+    cycle_ += 1;
+    samples_.push_back(s);
+
+    star::gnc::GncOutput out;
+    out.valid = true;
+    out.q_i2b = q0_;
+    return out;
+  }
+
+  int innov_max_dim() const override { return kInnovMaxDim; }
+
+  const std::vector<star::gnc::InnovationSample>& innovations() const override {
+    return samples_;
+  }
+
+ private:
+  Eigen::Quaterniond q0_ = Eigen::Quaterniond::Identity();
+  std::vector<star::gnc::InnovationSample> samples_;
+  int cycle_ = 0;
+};
+
+std::unique_ptr<star::gnc::IGncComponent> make_innov_nav(
+    const star::gnc::GncComponentCfg&) {
+  return std::unique_ptr<star::gnc::IGncComponent>(new InnovNav);
+}
+
+void ensure_innov_registered() {
+  static const bool once = [] {
+    star::gnc::register_component("test_innov_nav", &make_innov_nav);
+    return true;
+  }();
+  (void)once;
+}
+
+struct InnovRecord {
+  double t_s = 0.0;
+  std::uint32_t sensor_id = 0;
+  std::uint32_t m = 0;
+  double y[kInnovMaxDim] = {0.0, 0.0, 0.0};
+  double s_upper[kInnovMaxDim * (kInnovMaxDim + 1) / 2] = {0.0, 0.0, 0.0,
+                                                           0.0, 0.0, 0.0};
+};
+
+// Extract the nav.innov records from a log written by the innovating probe.
+// The probe declares state_dim() == 0, so no nav.est or nav.err group is
+// declared and the order is truth 0, events 1, sensors.imu 2, nav.innov 3,
+// gnc.cmd 4 (srlog_writer.cpp declaration order).
+std::vector<InnovRecord> read_nav_innov_records(const std::string& path) {
+  const std::vector<unsigned char> bytes = read_all_bytes(path);
+  const std::uint32_t json_len = read_le<std::uint32_t>(bytes, 12);
+  std::size_t off = 16 + json_len;
+  std::vector<InnovRecord> out;
+  while (off < bytes.size()) {
+    const std::uint16_t gi = read_le<std::uint16_t>(bytes, off);
+    off += 2;
+    if (gi == 0) {
+      off += 120;
+    } else if (gi == 1) {
+      const std::uint16_t len = read_le<std::uint16_t>(bytes, off + 12);
+      off += 8 + 4 + 2 + len;
+    } else if (gi == 2) {
+      off += 56;
+    } else if (gi == 3) {
+      InnovRecord rec;
+      rec.t_s = read_le<double>(bytes, off);
+      rec.sensor_id = read_le<std::uint32_t>(bytes, off + 8);
+      rec.m = read_le<std::uint32_t>(bytes, off + 12);
+      for (int i = 0; i < kInnovMaxDim; ++i) {
+        rec.y[i] = read_le<double>(bytes, off + 16 + 8 * i);
+      }
+      for (int i = 0; i < kInnovMaxDim * (kInnovMaxDim + 1) / 2; ++i) {
+        rec.s_upper[i] = read_le<double>(bytes, off + 40 + 8 * i);
+      }
+      out.push_back(rec);
+      off += 88;
+    } else if (gi == 4) {
+      off += 92;
+    } else {
+      FAIL("unexpected group index in innovation scenario log: ", gi);
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 TEST_CASE("gnc_cycle_header_declarations") {
@@ -608,4 +731,140 @@ TEST_CASE("gnc_cycle_close_after_a_completed_run_is_a_no_op") {
                        doctest::Contains("after the run ended"),
                        std::logic_error);
   std::remove(path.c_str());
+}
+
+// --- nav.innov consumer, driven from the C++ tier -------------------------
+
+TEST_CASE("gnc_cycle_innovation_consumer_pads_and_embeds") {
+  // The nav.innov consumer block of the cycle, driven end to end by a real
+  // run. Until this case the block ran only under the Python tier, against a
+  // wheel carrying no instrumentation, so the embedding loop where this
+  // phase's two heap defects lived was outside the reach of the sanitizer
+  // and warnings-as-errors legs that build the doctest binary.
+  //
+  // Fixture non-degeneracy: the probe declares innov_max_dim() == 3 and
+  // emits a SHORT (m = 2) sample on even cycles. Padding and embedding are
+  // both no-ops when m always equals m_max, so a probe that only ever
+  // emitted full-width samples would execute the loop while checking
+  // nothing. The two assertions below distinguish the structural embedding
+  // from a flat copy, which is the defect the loop exists to prevent.
+  ensure_innov_registered();
+  const std::string path = "test_gnc_cycle_innov.srlog";
+  g_innov_plan = InnovPlan{};
+
+  star::RunConfig cfg = gnc_scenario(false, 0);
+  cfg.gnc.nav.component = "test_innov_nav";
+  {
+    star::VehicleCycle vc(cfg, path);
+    while (vc.step()) {
+    }
+  }
+
+  const std::vector<InnovRecord> recs = read_nav_innov_records(path);
+  std::remove(path.c_str());
+  REQUIRE(recs.size() == 21);  // one aiding update per cycle, 0..20
+
+  for (std::size_t k = 0; k < recs.size(); ++k) {
+    const InnovRecord& r = recs[k];
+    CHECK(r.sensor_id == 0);
+    CHECK(r.t_s == doctest::Approx(0.1 * static_cast<double>(k)));
+    if ((k % 2) == 0) {
+      // m = 2: y carries two entries and a zero pad.
+      CHECK(r.m == 2);
+      CHECK(r.y[0] == 1.0);
+      CHECK(r.y[1] == 2.0);
+      CHECK(r.y[2] == 0.0);
+      // The 2-by-2 triangle [4, 0.5; ., 9] embedded in the leading corner of
+      // the 3-by-3 packed upper triangle, whose entry order is
+      // (0,0) (0,1) (0,2) (1,1) (1,2) (2,2). Row 0 of the short block
+      // occupies the first two slots and row 1 occupies slot 3 - NOT slot 2,
+      // which is where a flat copy of the three packed entries would put it.
+      CHECK(r.s_upper[0] == 4.0);
+      CHECK(r.s_upper[1] == 0.5);
+      CHECK(r.s_upper[2] == 0.0);
+      CHECK(r.s_upper[3] == 9.0);
+      CHECK(r.s_upper[4] == 0.0);
+      CHECK(r.s_upper[5] == 0.0);
+    } else {
+      // m = m_max: the record is the sample verbatim, which is the control
+      // showing the padding path above is not simply zeroing everything.
+      CHECK(r.m == 3);
+      CHECK(r.y[0] == 1.0);
+      CHECK(r.y[1] == 2.0);
+      CHECK(r.y[2] == 3.0);
+      const double expect[6] = {4.0, 0.5, 0.25, 9.0, 0.75, 16.0};
+      for (int i = 0; i < 6; ++i) CHECK(r.s_upper[i] == expect[i]);
+    }
+  }
+  g_innov_plan = InnovPlan{};
+}
+
+TEST_CASE("gnc_cycle_innovation_consumer_refuses_a_malformed_sample") {
+  // The consumer's two length guards, in the tier a sanitizer instruments.
+  // Both are asserted from Python against the exception message; what is
+  // added here is that they run inside an instrumented binary, because an
+  // unguarded copy of an over-wide y writes past a heap buffer sized once at
+  // activation.
+  // Fixture non-degeneracy: the run is otherwise the same working scenario
+  // as the case above, which is shown to complete, so the throw can only
+  // come from the malformed sample and not from a broken configuration.
+  ensure_innov_registered();
+  const std::string path = "test_gnc_cycle_innov_bad.srlog";
+
+  {
+    // y wider than the declared maximum.
+    g_innov_plan = InnovPlan{};
+    g_innov_plan.forced_y = kInnovMaxDim + 1;
+    g_innov_plan.forced_s_upper =
+        (kInnovMaxDim + 1) * (kInnovMaxDim + 2) / 2;  // self-consistent
+    star::RunConfig cfg = gnc_scenario(false, 0);
+    cfg.gnc.nav.component = "test_innov_nav";
+    star::VehicleCycle vc(cfg, path);
+    CHECK_THROWS_WITH_AS(vc.step(), doctest::Contains("innov_max_dim"),
+                         std::length_error);
+    vc.close();
+  }
+  {
+    // A covariance triangle too short for the sample's own dimension, which
+    // the embedding loop would otherwise read past the end of.
+    g_innov_plan = InnovPlan{};
+    g_innov_plan.forced_y = 3;
+    g_innov_plan.forced_s_upper = 5;  // 3-by-3 needs exactly 6
+    star::RunConfig cfg = gnc_scenario(false, 0);
+    cfg.gnc.nav.component = "test_innov_nav";
+    star::VehicleCycle vc(cfg, path);
+    CHECK_THROWS_WITH_AS(vc.step(), doctest::Contains("packed upper triangle"),
+                         std::length_error);
+    vc.close();
+  }
+  g_innov_plan = InnovPlan{};
+  std::remove(path.c_str());
+}
+
+TEST_CASE("gnc_cycle_innovation_run_is_byte_identical") {
+  // The aiding path carries no clock and no ordering hazard of its own: two
+  // runs of the innovating scenario produce identical files, so the nav.innov
+  // records are as reproducible as the rest of the log (FR-21).
+  ensure_innov_registered();
+  const std::string p1 = "test_gnc_innov_det_a.srlog";
+  const std::string p2 = "test_gnc_innov_det_b.srlog";
+  g_innov_plan = InnovPlan{};
+  star::RunConfig cfg = gnc_scenario(false, 0);
+  cfg.gnc.nav.component = "test_innov_nav";
+  {
+    star::VehicleCycle vc(cfg, p1);
+    while (vc.step()) {
+    }
+  }
+  {
+    star::VehicleCycle vc(cfg, p2);
+    while (vc.step()) {
+    }
+  }
+  const std::vector<unsigned char> a = read_all_bytes(p1);
+  const std::vector<unsigned char> b = read_all_bytes(p2);
+  std::remove(p1.c_str());
+  std::remove(p2.c_str());
+  REQUIRE(!a.empty());
+  CHECK(a == b);
 }
