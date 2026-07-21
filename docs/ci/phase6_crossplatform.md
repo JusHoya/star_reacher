@@ -23,6 +23,11 @@ Source under test: branch `phase-6-gnc-sensors` at
 Two legs fail to build. Neither failure is a memory-safety defect; both are
 diagnostics that the MSVC Release-only history could not surface.
 
+Both have since been closed, and one claim made below about `-Wshadow` has
+been superseded by measurement. This section records the state at the commit
+named above and is left as that snapshot; see "Resolution at `1c717d1`" at the
+end of this document for the current state.
+
 The sanitizer legs are clean, but a mutation test performed here shows they
 are clean partly because they do not reach the code that motivated them. The
 coverage findings are the more consequential result of this pass and are
@@ -453,3 +458,132 @@ was replicated. The `asan` preset was used under its own name on Linux.
 - **Determinism across platforms for Phase 6 outputs.** This pass compared
   test counts and one probe value, not logged run output. The FR-30
   cross-platform divergence gate is a separate CI job and was not run here.
+
+## Resolution at `1c717d1`
+
+Both failing legs are now green and the altimeter coverage gap is closed.
+Measured on the same host and the same two toolchains as the pass above.
+
+| Leg | Result at `1c717d1` |
+|---|---|
+| CI `cpp-tests` replication (`-Wall -Wextra -Werror`), GCC 13.3.0 | **PASS** — clean build from an empty binary directory, zero warnings |
+| Doctest suite, Ubuntu 24.04.4 / GCC 13.3.0 | **PASS** — 163 cases, 56,670 assertions |
+| `ci` preset (`/W4 /WX`), Windows 11 / MSVC 14.44.35207 | **PASS** — configures and builds clean, zero warnings |
+| `ctest --preset release`, Windows 11 / MSVC | **PASS** — 163 cases, 56,670 assertions |
+
+Proof the builds were real: the Linux `-Werror` build emitted 61 `Building CXX
+object` lines and left 61 `.o` files from an empty directory, producing
+`build/ci/star_tests` at 2,643,136 B, SHA-256 `fef030d2…`. The Windows `ci`
+build left 62 `.obj` files and relinked `star_tests.exe` from 1,976,832 B to
+1,984,000 B; the `release` binary is 1,984,000 B, SHA-256 `851acfd0…`. Both
+binaries were additionally invoked directly rather than only through CTest,
+and both report the same 163 cases and 56,670 assertions.
+
+Case and assertion counts move from 162 / 56,537 to 163 / 56,670 on both
+toolchains, the difference being the 133 assertions of the new altimeter case.
+
+### The array-bounds diagnostic: mechanism pinned, then suppressed
+
+The false-positive verdict recorded above was re-derived from Eigen's sources
+rather than inherited, and the mechanism is now identified exactly rather than
+described as a mis-modelled trip count.
+
+The inlining chain GCC prints runs from `ekf.cpp:388` through
+`LDLT::_solve_impl_transposed` (`Eigen/src/Cholesky/LDLT.h:610`, the
+`dst = m_transpositions * rhs` line) into
+`transposition_matrix_product::run` at
+`Eigen/src/Core/ProductEvaluators.h:1128`, whose body is
+`dst.row(k).swap(dst.row(j))` with `j = tr.coeff(k)`. Both sides of that swap
+are `Block<Matrix<double, 1, 15>, 1, 15, true>`.
+
+Two readings of the reported offsets are possible, and the offset pattern
+discriminates between them:
+
+- If GCC were continuing row 0's unrolled packets past the end of the object,
+  the notes would fall at bytes 128, 144, 160, … — packet subscript 8 begins
+  at byte 128.
+- If GCC is modelling `j = 1`, the block base sits at byte 120, and that
+  row's own seven vector packets fall at 120, 136, 152, 168, 184, 200 and
+  216, with its scalar tail element at 232.
+
+The 16 diagnostics report offsets 120, 136, 152, 168, 184, 200, 216 and 232 —
+seven packet offsets and a tail, each once as a load (`emmintrin.h:134`) and
+once as a store (`emmintrin.h:176`), with the 232 entry reported from
+`bits/move.h` at double subscript 29. Only the second reading produces that
+set, so GCC is modelling a swap against row 1 of a single-row matrix.
+
+That index cannot be 1. `ldlt_inplace<Lower>::unblocked` returns early on
+`size <= 1` having called `transpositions.setIdentity()`, and `setIdentity`
+assigns `coeffRef(i) = i`, so `tr.coeff(0) == 0` and the swap is row 0
+against itself. Eigen's own guarantee of that bound is the `eigen_assert`
+inside `row()`, which `-DNDEBUG` compiles out — which is why `-DNDEBUG` is
+the single necessary trigger in the bisection above.
+
+Eigen's unroller also cannot run off the end on its own account:
+`dense_assignment_loop<…, LinearVectorizedTraversal, CompleteUnrolling>`
+computes `alignedSize = (15/2)*2 = 14` and instantiates
+`copy_using_evaluator_innervec_CompleteUnrolling<Kernel, 0, 14>`, which emits
+packets at inner indices 0 through 12 and leaves element 14 to the scalar
+remainder unrolling. Every access it generates for row 0 is inside the
+120-byte object.
+
+**Verdict unchanged, now independently grounded: the diagnostic is a false
+positive and the code at that line is correct.** The remedy applied is a
+suppression scoped to the single declaration, naming only `-Warray-bounds`
+and guarded to GCC proper, with the mechanism above recorded at the site.
+`-Warray-bounds` remains fatal everywhere else in the tree. Restructuring the
+`M = 1` path was rejected: the destination of `ldlt.solve` must have `M` rows,
+so for `M = 1` it is necessarily a single-row matrix, which Eigen requires to
+be row-major — the shape cannot be avoided without either special-casing
+`M = 1` against the template's stated purpose or replacing the LDLT the
+specification pins.
+
+### `joseph_update<1>` is no longer dead
+
+`gcov`, rerun over a `--coverage -O0` build of the same source, now reports
+the altimeter call site executed once where it previously reported `#####`:
+
+| Call site | Line | Executions |
+|---|---|---|
+| `joseph_update<6>` (nav fix) | 470 | 21 |
+| `joseph_update<3>` (star tracker) | 510 | 21 |
+| `joseph_update<1>` (altimeter) | 550 | **1** |
+
+Line coverage of `ekf.cpp` is 97.61% of 377 lines. The line numbers moved by
+19 relative to the table above because of the comment and pragma block added
+at the suppression site.
+
+The case that closes the gap,
+`ekf_altimeter_update_matches_the_closed_form_scalar_solution` in
+`cpp/tests/test_ekf.cpp`, pins the `M = 1` update against an analytic result
+rather than a regenerated golden: on the equator along +x under an identity
+body-fixed rotation the ellipsoidal normal is exactly `(1, 0, 0)`, so `H`
+selects the position-x error state alone, `S` is the sum of the fixture's
+50 m position variance and 20 m measurement variance, and the Joseph form
+reduces to `P+ = P R / (P + R)`. The correctness of that path no longer rests
+on code reading plus an uncommitted scratch probe.
+
+### `-Wshadow`: the two legs are redundant, not complementary
+
+The claim above that "the two warnings-as-errors legs are genuinely
+complementary; neither subsumes the other" is **superseded** for the
+shadowing class. It was inferred from the two legs' behaviour rather than
+measured, and the measurement does not support it:
+
+- The whole tree at `1c717d1` compiles under `-Wall -Wextra -Wshadow` with
+  **zero** warnings across all 61 translation units.
+- The pre-fix `cpp/src/vehicle_cycle.cpp` (from `9364b88^`), compiled with
+  the same flag set plus `-Wshadow`, emits **exactly four** `-Wshadow`
+  warnings, at lines 855, 864, 873 and 1163 — the same four sites, at the
+  same lines, that MSVC `/W4` reported as C4457 and C4458. GCC names three of
+  them "shadows a parameter" and the fourth "shadows a member of
+  'star::VehicleCycle::Impl'", matching MSVC's split between C4457 and C4458.
+
+GCC therefore sees these defects; the Linux leg missed them only because
+`-Wshadow` is not enabled, not because the diagnostic is outside its reach.
+Adding `-Wshadow` to the `cpp-tests` configure at
+`.github/workflows/ci.yml:168` would cost zero renames today and would have
+caught all four Phase 6 sites on the leg that actually gates CI, rather than
+on a Windows preset no CI job builds. The change is recommended; it is not
+applied here, because enabling a new fatal diagnostic in CI is a project
+policy decision rather than part of closing this build failure.
