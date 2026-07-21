@@ -639,6 +639,137 @@ def test_full_sensor_suite_reruns_bit_identical(tmp_path):
                 f"{group}.{channel} differs across two seeded runs")
 
 
+# The IMU's full error chain. The suite above leaves the mission's ideal
+# IMU alone, so the stochastic path -- the Gauss-Markov bias recursion, the
+# angle/velocity random-walk draws, and the quantizer's residual carry --
+# reaches no bit-identity assertion through it. The carry matters most: it
+# is the only sensor state that persists from one sample to the next, so it
+# is the one place where a perturbed draw schedule would contaminate every
+# later sample rather than a single one. Coefficients sit inside the
+# documented typical ranges of ``_SENSOR_PARAMS["imu"]``.
+_IMU_FULL_ERROR_CHAIN = """
+gyro_turnon_bias_sigma_radps = 2.0e-6
+gyro_bias_instability_radps = 1.0e-7
+gyro_bias_tau_s = 100.0
+gyro_arw_rad_per_sqrt_s = 1.0e-5
+gyro_quantum_rad = 1.0e-7
+gyro_scale_factor_ppm = [120.0, 80.0, 45.0]
+gyro_misalignment_rad = [1.0e-4, 2.0e-4, 3.0e-4, 1.5e-4, 2.5e-4, 3.5e-4]
+accel_turnon_bias_sigma_mps2 = 5.0e-4
+accel_bias_instability_mps2 = 1.0e-5
+accel_bias_tau_s = 100.0
+accel_vrw_mps_per_sqrt_s = 1.0e-4
+accel_quantum_mps = 1.0e-6
+accel_scale_factor_ppm = [200.0, 150.0, 90.0]
+accel_misalignment_rad = [2.0e-4, 1.0e-4, 1.5e-4, 2.5e-4, 3.0e-4, 1.0e-4]
+"""
+
+_NOISY_IMU_SUITE = [
+    ("[sensors.imu]",
+     _FULL_SENSOR_SUITE.lstrip() + "\n[sensors.imu]" + _IMU_FULL_ERROR_CHAIN),
+]
+
+
+def _noisy_imu_variant(extra=""):
+    """The full suite with the IMU error chain, optionally further edited."""
+    return [
+        ("[sensors.imu]",
+         _FULL_SENSOR_SUITE.lstrip() + "\n[sensors.imu]"
+         + _IMU_FULL_ERROR_CHAIN + extra),
+    ]
+
+
+def test_stochastic_imu_reruns_bit_identical(tmp_path):
+    """Exit criterion 1 clause C, for the IMU's stochastic path.
+
+    ``test_full_sensor_suite_reruns_bit_identical`` runs a NOISE-FREE IMU:
+    the reference mission declares only ``sample_rate_hz`` under
+    ``[sensors.imu]``, so its ``sensors.imu`` group is a deterministic
+    trapezoid and its bit identity says nothing about the draw schedule.
+    This runs the same suite with the full error chain active.
+
+    Identity here is evidence about the DRAW SCHEDULE, not merely about the
+    outputs: the quantizer carries a residual from each sample into the
+    next, so a draw schedule that diverged at any one sample would
+    contaminate every sample after it rather than a single value. Agreement
+    across all 601 records therefore cannot arise from two runs that
+    happened to match sample by sample.
+    """
+    _core_or_fail()
+    from star_reacher import load
+
+    r1 = _run_variant(tmp_path, "noisy_a", _NOISY_IMU_SUITE)
+    r2 = _run_variant(tmp_path, "noisy_b", _NOISY_IMU_SUITE)
+    assert r1.srlog_sha256 == r2.srlog_sha256
+
+    a = load(r1.srlog_path)
+    b = load(r2.srlog_path)
+    for kind in ("imu", "startracker", "sunsensor", "navfix", "altimeter",
+                 "camera"):
+        group = f"sensors.{kind}"
+        assert group in a.groups, f"{group} missing from the log"
+        for channel in a.groups[group].dtype.names:
+            assert np.array_equal(a.groups[group][channel],
+                                  b.groups[group][channel]), (
+                f"{group}.{channel} differs across two seeded runs with the "
+                f"IMU error chain active")
+
+
+def test_stochastic_imu_identity_is_not_degenerate(tmp_path):
+    """The identity above is not the trivial identity of an ideal IMU.
+
+    Three separate ways the fixture could be silently degenerate, each
+    closed by a run that must DIFFER. Without these, a build that dropped
+    every IMU noise coefficient on the floor would pass the bit-identity
+    test above perfectly.
+    """
+    _core_or_fail()
+    from star_reacher import load
+
+    base = load(_run_variant(tmp_path, "nd_base", _NOISY_IMU_SUITE).srlog_path)
+    imu = base.groups["sensors.imu"]
+
+    # 1. Seed sensitivity. If the coefficients were ignored, changing the
+    #    master seed would leave the IMU channels untouched.
+    reseeded = load(_run_variant(
+        tmp_path, "nd_seed",
+        _noisy_imu_variant() + [("seed = 20260601", "seed = 20260602")],
+    ).srlog_path)
+    assert not np.array_equal(imu["dtheta_b_rad"],
+                              reseeded.groups["sensors.imu"]["dtheta_b_rad"]), (
+        "changing the master seed left the IMU angle increments unchanged: "
+        "the stochastic path is not live, so the bit-identity gate is vacuous")
+    assert not np.array_equal(imu["dv_b_mps"],
+                              reseeded.groups["sensors.imu"]["dv_b_mps"])
+
+    # 2. The quantizer -- and with it the residual carry, the only sensor
+    #    state persisting across samples -- is really in the path.
+    unquantized = load(_run_variant(
+        tmp_path, "nd_quant",
+        _noisy_imu_variant() + [
+            ("gyro_quantum_rad = 1.0e-7\n", ""),
+            ("accel_quantum_mps = 1.0e-6\n", ""),
+        ],
+    ).srlog_path)
+    assert not np.array_equal(imu["dtheta_b_rad"],
+                              unquantized.groups["sensors.imu"]["dtheta_b_rad"]), (
+        "removing the quantizer step changed nothing: the quantizer and its "
+        "residual carry are not exercised by this fixture")
+
+    # 3. The error chain as a whole moves the measurement off ideal truth.
+    ideal = load(_run_variant(
+        tmp_path, "nd_ideal",
+        [("[sensors.imu]", _FULL_SENSOR_SUITE.lstrip() + "\n[sensors.imu]")],
+    ).srlog_path)
+    assert not np.array_equal(imu["dtheta_b_rad"],
+                              ideal.groups["sensors.imu"]["dtheta_b_rad"]), (
+        "the error chain produced the ideal IMU's increments exactly")
+
+    # The stream advances per sample rather than being drawn once and held:
+    # a frozen stream would still satisfy every assertion above.
+    assert len(np.unique(imu["dtheta_b_rad"][:, 0])) > 100
+
+
 def test_full_sensor_suite_groups_and_rates(full_sensor_run):
     """Every declared group is present, decimated on the cycle grid."""
     result, run = full_sensor_run

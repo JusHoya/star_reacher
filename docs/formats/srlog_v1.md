@@ -28,7 +28,7 @@ embedded timestamps, and no host-dependent content anywhere.
 |---|---|---|
 | 0-7 | bytes | Magic: `53 52 4C 4F 47 00 0D 0A` (ASCII `SRLOG`, NUL, CR, LF) |
 | 8-9 | u16 | `version_major` = 1 |
-| 10-11 | u16 | `version_minor` = 2 (the version this document specifies; readers accept any minor, section 6) |
+| 10-11 | u16 | `version_minor` = 3 (the version this document specifies; readers accept any minor, section 6) |
 | 12-15 | u32 | `header_json_len` = L |
 | 16..16+L | bytes | UTF-8 JSON, no BOM (section 3) |
 
@@ -49,7 +49,7 @@ loss in common readers.
 Shown pretty-printed for readability; the file contains one compact line:
 
 ```json
-{"format":{"name":"SRLOG","major":1,"minor":2},
+{"format":{"name":"SRLOG","major":1,"minor":3},
  "producer":{"core_version":"0.1.0","git_hash":"<40-hex or 'unknown'>"},
  "config_sha256":"<64-hex>",
  "master_seed":"<decimal u64 as string>",
@@ -95,7 +95,37 @@ Field semantics:
   v1.2 group rate; `latency_cycles` is the FR-25 command-application delay
   in control cycles, echoed here so a latency study is identifiable from
   the header alone; `sensors` lists the declared sensor kinds in canonical
-  order and is the identity table `nav.innov.sensor_id` indexes.
+  order and is the identity table `nav.innov.sensor_id` indexes. In v1.3
+  the object carries a fourth key, `camera`, after `sensors` and present
+  exactly when a `sensors.camera` group is declared (section 3.2).
+- `gnc.camera` *(v1.3, optional)* - the camera intrinsics and extrinsics,
+  echoed once so a consumer composes `eq:camera:pose` and `eq:camera:K`
+  from the log alone. Fixed key order:
+  `{"float_encoding":"ieee754-binary64-hex","width_px":<int>,"height_px":<int>,"fx_px":<hex>,"fy_px":<hex>,"cx_px":<hex>,"cy_px":<hex>,"q_b2c":[<hex>x4],"r_cam_b_m":[<hex>x3]}`.
+  `q_b2c` is Hamilton scalar-first (D-7), body to camera; `r_cam_b_m` is
+  the mount station relative to the composite CG in body axes, metres.
+
+  **The `ieee754-binary64-hex` encoding.** Floats never appear in this
+  header (see above), so each double rides as its IEEE-754 binary64
+  interchange encoding rendered as **16 lowercase hex digits, most
+  significant nibble first** - the integer value of the encoding, so the
+  rendering is endianness-free. The writer's encoder is pure integer
+  shifting and a nibble lookup: no float formatter, rounding mode, or
+  locale can perturb the header bytes, which is what keeps the FR-21
+  whole-file determinism gate meaningful. The encoding is also exact,
+  which a shortest-round-trip decimal is only when the reader's parser is
+  correctly rounded. `star_reacher.decode_f64_hex` decodes one value or a
+  list of them; `star_reacher.camera_echo` returns the whole object with
+  its floats already decoded. `float_encoding` is emitted first and names
+  the encoding, so a consumer never infers it from a format version it may
+  not know; a reader MUST reject an encoding string it does not implement
+  rather than guess.
+
+  Landmark **positions** are not echoed. The landmark count L already
+  rides in the `sensors.camera` record dtype `f64[2L]`, and a
+  fixture-scale landmark table would add kilobytes to every camera header
+  to restate configuration; landmark positions remain resolved-config
+  data.
 - `groups` - the channel dictionary that makes the file self-describing.
   Readers derive record layout entirely from this array; nothing about group
   or channel structure is hard-coded in a conforming reader. `rate_hz` is an
@@ -275,10 +305,17 @@ same `ISensor` interface.
 | `q_i2b` | `f64[4]` | `1` | GCRF->body Hamilton scalar-first | camera (vehicle) attitude |
 | `px_uv` | `f64[2L]` | `px` | `image` | *(only when the configuration declares L > 0 landmarks)* interleaved pixel pairs `u0, v0, u1, v1, ...` in the configured landmark order |
 
-The landmark count L is fixed at header-write time; camera intrinsics are
-configuration data (they ride in the resolved config, not the record
-stream). Per FR-23 the camera hook emits geometric truth only — no in-core
-rendering.
+The landmark count L is fixed at header-write time. Camera intrinsics and
+extrinsics are not record channels — they are constants, so repeating them
+per sample would be waste — but as of v1.3 they are **echoed once in the
+header** at `gnc.camera` (section 3), which is what lets a consumer form
+`eq:camera:pose` and `eq:camera:K` without the mission file. That matters
+because FR-23 scopes this hook to geometric truth for *offline external
+rendering*: the pose channels carry the vehicle state rather than the
+camera's, so before the echo a renderer could not place the camera or
+build its projection matrix from the file at all. Landmark positions
+remain resolved-config data (section 3). Per FR-23 the camera hook emits
+geometric truth only — no in-core rendering.
 
 #### `nav.est` - estimator state and covariance (FR-26)
 
@@ -493,6 +530,16 @@ records until EOF, and a trailing partial record is corruption.
   group's layout changed; a v1.2 file that declares none of the new groups
   differs from a v1.1 file only in the version words. Older readers read
   v1.2 files by the dictionary-driven rule above.
+- **1.3** (Phase 6) - additive: the optional header key `gnc.camera`
+  (section 3), echoing the camera intrinsics and extrinsics so a camera log
+  is self-contained, together with the `ieee754-binary64-hex` value
+  encoding it introduces. No group's layout changed and no channel was
+  added or removed: a v1.3 file that declares no camera sensor is
+  byte-identical to the v1.2 file the same configuration produced apart
+  from the version words. This is a minor bump because a new header JSON
+  key is one by the rule above, not because anything a v1.2 reader
+  consumes moved — such a reader ignores the new key and reads the file
+  unchanged.
 
 ### Reserved group names
 

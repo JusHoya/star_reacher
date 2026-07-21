@@ -491,6 +491,161 @@ def _camera_projections(run, config):
     return results
 
 
+def _projections_from_log_alone(run, config, echo=None, truth_rows_shifted=0):
+    """Recompute logged pixels from the LOG only -- header echo plus truth.
+
+    The intrinsics and extrinsics come from the ``gnc.camera`` header echo
+    and the pose from the ``truth`` channels, so neither side of the
+    comparison reads the mission file. That is the distinction from
+    ``_camera_projections``, which sources both from the resolved config and
+    therefore cannot say anything about whether the log records the
+    constants the core actually projected through.
+
+    ``config`` still supplies the landmark table, the epoch, and the
+    ephemeris path: those are shared INPUTS to both sides, disclosed here in
+    the same spirit as the module docstring's shared-inputs list, and the
+    criterion's clause is about intrinsics rather than landmarks.
+    ``echo`` overrides the header echo so a mutation can be injected;
+    ``truth_rows_shifted`` misaligns the truth row lookup for the same
+    reason.
+    """
+    from star_reacher import _core, camera_echo
+
+    truth = run.groups["truth"]
+    camera = run.groups["sensors.camera"]
+    if echo is None:
+        echo = camera_echo(run.header)
+    intrinsics = pinhole.Intrinsics(
+        echo["fx_px"], echo["fy_px"], echo["cx_px"], echo["cy_px"],
+        echo["width_px"], echo["height_px"],
+    )
+    q_b2c = np.asarray(echo["q_b2c"], dtype=float)
+    r_cam_b = np.asarray(echo["r_cam_b_m"], dtype=float)
+    landmarks = np.array(config["sensors"]["camera"]["landmarks_fixed_m"]).reshape(-1, 3)
+
+    ephemeris = _Ephemeris()
+    epoch_tai = _epoch_tai(_core, config)
+    rows = _truth_rows(truth, camera["t_s"])
+
+    results = []
+    for j, t_s in enumerate(camera["t_s"]):
+        row = rows[j] + truth_rows_shifted
+        tai = _core.tai_add_seconds(epoch_tai[0], epoch_tai[1], float(t_s))
+        tdb_s = _tdb_s_at(_core, epoch_tai, float(t_s))
+        _, v_earth = ephemeris.earth_ssb(tdb_s)
+        beta = beta_vector(truth["v_mps"][row], v_earth)
+        dcm_i2t = np.array(_core.gcrf_to_itrf(tai[0], tai[1], 0.0)).reshape(3, 3)
+        for k in range(len(landmarks)):
+            results.append((
+                j, k,
+                pinhole.project_landmark(
+                    truth["r_m"][row], truth["q_i2b"][row], q_b2c, r_cam_b,
+                    intrinsics, np.zeros(3), dcm_i2t, landmarks[k], beta,
+                ),
+            ))
+    return results
+
+
+def _worst_pixel_residual(run, projections):
+    """Worst absolute pixel residual against the logged ``px_uv``."""
+    camera = run.groups["sensors.camera"]
+    worst = 0.0
+    for j, k, projection in projections:
+        if not (np.isfinite(projection.u) and np.isfinite(projection.v)):
+            return float("inf")
+        worst = max(
+            worst,
+            abs(projection.u - camera["px_uv"][j][2 * k]),
+            abs(projection.v - camera["px_uv"][j][2 * k + 1]),
+        )
+    return worst
+
+
+def test_camera_echo_fixture_is_not_degenerate(optical_run):
+    """The echoed constants are separately resolvable on this fixture.
+
+    Guards the gate below against the failure shape this phase has found
+    repeatedly: a fixture whose geometry lets one constant stand in for
+    another, so a wrong echo reproduces the right pixels anyway. Each
+    assertion pins a specific substitution the geometry must forbid.
+    """
+    _, run, _ = optical_run
+    from star_reacher import camera_echo
+
+    echo = camera_echo(run.header)
+    # fx == fy would make an fx/fy swap invisible.
+    assert echo["fx_px"] != echo["fy_px"]
+    # A centred principal point is recoverable from the image dimensions, so
+    # dropping cx/cy entirely would still reproduce the pixels.
+    assert echo["cx_px"] != (echo["width_px"] - 1) / 2.0
+    assert echo["cy_px"] != (echo["height_px"] - 1) / 2.0
+    # An identity mount rotation would make a dropped or transposed q_b2c
+    # undetectable; a zero mount station would do the same for r_cam_b.
+    assert not np.allclose(echo["q_b2c"], [1.0, 0.0, 0.0, 0.0])
+    assert np.linalg.norm(echo["r_cam_b_m"]) > 0.0
+
+
+def test_camera_intrinsics_echo_reproduces_logged_pixels(optical_run):
+    """Exit criterion 7, intrinsics clause: the echo is the real thing.
+
+    The criterion asks that the camera hook's pose AND intrinsics equal the
+    ``truth`` channels bit-exactly. Read literally the intrinsics half is
+    ill-posed -- ``truth`` carries r, v, q, omega, and mass, so no truth
+    channel is an intrinsic. What it can mean, and what this gates, is that
+    the intrinsics the core used are recoverable from the log and are the
+    ones the logged pixels were actually computed with.
+
+    Both sides come off the log: intrinsics and extrinsics from the
+    ``gnc.camera`` header echo, pose from the ``truth`` channels. Neither
+    reads the mission file, so this is not a config-against-config
+    comparison that would compare a value against itself.
+    """
+    _, run, config = optical_run
+    worst = _worst_pixel_residual(run, _projections_from_log_alone(run, config))
+    assert worst < PIXEL_TOL, (
+        f"reconstructing the logged pixels from the header echo and the truth "
+        f"channels leaves a worst residual of {worst:.6e} px, exceeding the "
+        f"exit-criterion-7 gate of {PIXEL_TOL} px"
+    )
+
+
+def test_camera_echo_mutation_is_detected(optical_run):
+    """The gate above cannot pass while ignoring the echo.
+
+    Perturbs each echoed constant in turn and requires the reconstruction to
+    move past the tolerance. Without this, a gate that silently fell back to
+    the configuration would look identical from the outside -- which is
+    exactly how a blind gate is built.
+    """
+    _, run, config = optical_run
+    from star_reacher import camera_echo
+
+    baseline = camera_echo(run.header)
+    mutations = {
+        # One part in 1e6 of the focal length moves a landmark near the image
+        # edge by ~4e-4 px, far above the 1e-6 px gate.
+        "fx_px": lambda e: dict(e, fx_px=e["fx_px"] * (1.0 + 1.0e-6)),
+        "fy_px": lambda e: dict(e, fy_px=e["fy_px"] * (1.0 + 1.0e-6)),
+        "cx_px": lambda e: dict(e, cx_px=e["cx_px"] + 1.0e-5),
+        "cy_px": lambda e: dict(e, cy_px=e["cy_px"] + 1.0e-5),
+        "q_b2c": lambda e: dict(e, q_b2c=np.array([e["q_b2c"][0], e["q_b2c"][1],
+                                                   e["q_b2c"][2],
+                                                   e["q_b2c"][3] + 1.0e-9])),
+        "r_cam_b_m": lambda e: dict(
+            e, r_cam_b_m=e["r_cam_b_m"] + np.array([1.0e-3, 0.0, 0.0])
+        ),
+    }
+    for name, mutate in mutations.items():
+        worst = _worst_pixel_residual(
+            run, _projections_from_log_alone(run, config, echo=mutate(baseline))
+        )
+        assert worst > PIXEL_TOL, (
+            f"perturbing the echoed {name} left a worst residual of "
+            f"{worst:.6e} px, inside the {PIXEL_TOL} px gate: the criterion-7 "
+            f"intrinsics gate is blind to {name}"
+        )
+
+
 def test_landmark_pixels_match_independent_reference(optical_run):
     """Exit criterion 7: logged pixels to < 1e-6 px of the reference.
 
