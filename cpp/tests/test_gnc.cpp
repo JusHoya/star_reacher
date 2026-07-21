@@ -221,7 +221,8 @@ TEST_CASE("gnc_dead_reckoning_golden") {
   CHECK(layout[0].offset == 0);
   CHECK(layout[1].quantity == star::gnc::ErrorQuantity::kAngularRate);
   CHECK(layout[1].offset == 4);
-  star::gnc::validate_error_layout(layout, nav->state_dim(), false);
+  star::gnc::validate_error_layout(layout, nav->state_dim(), nav->cov_dim(),
+                                   false);
 
   star::gnc::TruthState truth;
   truth.valid = true;
@@ -523,14 +524,17 @@ TEST_CASE("gnc_attitude_block_last_layout_cannot_outrun_the_state_buffer") {
        0},
       {star::gnc::ErrorQuantity::kAttitude,
        star::gnc::ErrorForm::kQuatErrorLocal, 3}};
-  CHECK_THROWS_AS(star::gnc::validate_error_layout(layout, 6, false),
+  // cov_dim is passed equal to state_dim throughout this case so the
+  // quaternion-led rule stays inert and the rejection under test is the width
+  // mismatch alone.
+  CHECK_THROWS_AS(star::gnc::validate_error_layout(layout, 6, 6, false),
                   std::invalid_argument);
 
   // The rejection names the arithmetic, so a plugin author reads why rather
   // than guessing: the blocks cover seven slots against a declared six.
   bool reported_the_width = false;
   try {
-    star::gnc::validate_error_layout(layout, 6, false);
+    star::gnc::validate_error_layout(layout, 6, 6, false);
   } catch (const std::invalid_argument& e) {
     const std::string msg(e.what());
     reported_the_width = msg.find("cover 7 slots") != std::string::npos &&
@@ -541,7 +545,7 @@ TEST_CASE("gnc_attitude_block_last_layout_cannot_outrun_the_state_buffer") {
   // And the honest seven-slot declaration of the same shape is accepted, so
   // the rejection above is about the width mismatch and not a blanket refusal
   // of an attitude-last layout.
-  star::gnc::validate_error_layout(layout, 7, false);
+  star::gnc::validate_error_layout(layout, 7, 7, false);
 
   // Reading it back writes exactly the seven slots it declared, leaving an
   // eighth guard element untouched. This is the assertion the removed forms
@@ -569,4 +573,71 @@ TEST_CASE("gnc_attitude_block_last_layout_cannot_outrun_the_state_buffer") {
   CHECK(e[3] != doctest::Approx(1.0));
   CHECK(std::fabs(e[3]) > 1e-6);
   CHECK(std::fabs(e[4]) + std::fabs(e[5]) + std::fabs(e[6]) > 1e-6);
+}
+
+TEST_CASE("gnc_quaternion_led_rule_rejects_the_mangled_reduction_shape") {
+  // KNOWN-ISSUE-P6-5's surviving half. `star consistency` collapses slots
+  // 0..3 as a scalar-first error quaternion whenever n == m + 1 (n >= 4), and
+  // the SRLOG header carries no layout for it to check that against. The
+  // shape below is the one that reaches the collapse with no quaternion
+  // there: a 3-slot velocity block first, a 4-slot attitude block second,
+  // n == 7 against m == 6.
+  const std::vector<star::gnc::ErrorBlock> velocity_led = {
+      {star::gnc::ErrorQuantity::kVelocity, star::gnc::ErrorForm::kDifference,
+       0},
+      {star::gnc::ErrorQuantity::kAttitude,
+       star::gnc::ErrorForm::kQuatErrorLocal, 3}};
+
+  // Fixture non-degeneracy: this exact layout at n == 7 is ACCEPTED by the
+  // case above when cov_dim == 7, so the rejection here is attributable to
+  // the n == m + 1 pairing and to nothing else about the layout. The two
+  // calls differ in one argument.
+  star::gnc::validate_error_layout(velocity_led, 7, 7, false);
+  CHECK_THROWS_AS(star::gnc::validate_error_layout(velocity_led, 7, 6, false),
+                  std::invalid_argument);
+
+  // The rejection names the problem rather than only refusing: the block that
+  // holds offset 0, the two dimensions that put it in the collapse's path,
+  // and the consumer that would misread it.
+  bool named_the_problem = false;
+  try {
+    star::gnc::validate_error_layout(velocity_led, 7, 6, false);
+  } catch (const std::invalid_argument& e) {
+    const std::string msg(e.what());
+    named_the_problem = msg.find("velocity") != std::string::npos &&
+                        msg.find("state_dim() == 7") != std::string::npos &&
+                        msg.find("cov_dim() == 6") != std::string::npos &&
+                        msg.find("star consistency") != std::string::npos;
+  }
+  CHECK(named_the_problem);
+
+  // OVER-REJECTION CHECK, dead_reckoning half (the error_state_ekf half is
+  // gnc_ekf_layout_survives_the_quaternion_led_rule in test_ekf.cpp, where
+  // the filter's config helper lives). The component is constructed rather
+  // than having its layout restated as a literal, so a future edit to the
+  // layout is checked against the rule instead of against a drifting copy.
+  //
+  // n == m == 7 here, so the rule does not apply at all. The attitude block
+  // leads anyway, but the acceptance turns on the dimensions, which is the
+  // distinction worth pinning.
+  {
+    star::gnc::GncComponentCfg cfg;
+    cfg.component = "dead_reckoning";
+    cfg.vectors["q0"] = {1.0, 0.0, 0.0, 0.0};
+    const std::unique_ptr<star::gnc::IGncComponent> nav =
+        star::gnc::make_component(cfg);
+    REQUIRE(nav->state_dim() == 7);
+    REQUIRE(nav->cov_dim() == 7);
+    star::gnc::validate_error_layout(nav->error_layout(), nav->state_dim(),
+                                     nav->cov_dim(), false);
+  }
+
+  // And the rule stays off the shapes the consumer already reports rather
+  // than reduces. Its n >= 4 guard means an n == m + 1 narrower than four
+  // slots is never collapsed, so refusing it here would be over-reach: a
+  // single 3-slot velocity block at n == 3 against m == 2 is accepted.
+  const std::vector<star::gnc::ErrorBlock> narrow = {
+      {star::gnc::ErrorQuantity::kVelocity, star::gnc::ErrorForm::kDifference,
+       0}};
+  star::gnc::validate_error_layout(narrow, 3, 2, false);
 }

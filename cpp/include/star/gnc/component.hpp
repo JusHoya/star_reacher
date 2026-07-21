@@ -344,8 +344,25 @@ int error_block_size(ErrorQuantity quantity, ErrorForm form);
 // when the truth is "not known" - the same distinction TruthState draws with
 // imu_bias_valid. imu_bias_available reports whether the run configures an
 // IMU, without which the bias quantities have no truth to difference.
+//
+// cov_dim is the component's declared covariance dimension, and it is here
+// for one rule that the tiling alone cannot express. `star consistency` must
+// pair an n-dimensional nav.err with the m-dimensional covariance nav.est
+// reports, and at n == m + 1 (n >= 4) it collapses slots 0..3 as a
+// scalar-first error quaternion, dtheta = 2 sgn(dq_w) dq_v. The SRLOG header
+// carries only a boolean for whether a layout is present, not the layout
+// itself, so the consumer cannot check that assumption and instead relies on
+// it. A layout that reaches n == m + 1 without an attitude block at offset 0
+// - [kVelocity(3), kAttitude(4)] against m == 6, say - therefore has three
+// velocity-error slots and one quaternion component collapsed as though they
+// were a rotation, yielding a NEES that is positive, order-unity, and wrong.
+// That shape is refused HERE, at run construction, rather than downstream: it
+// is the last point where the declared layout still exists. Putting the
+// attitude block first satisfies the rule, and a component that declares no
+// layout at all is unaffected (it writes no nav.err, so nothing is reduced).
 void validate_error_layout(const std::vector<ErrorBlock>& layout,
-                           int state_dim, bool imu_bias_available);
+                           int state_dim, int cov_dim,
+                           bool imu_bias_available);
 
 // Write truth minus estimate into e[0..state_dim) from the estimate x_hat
 // (the component's own state vector, as returned by state()) and the truth

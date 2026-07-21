@@ -653,11 +653,14 @@ resulting NEES has the right shape, is positive, and is order-unity — it looks
 entirely plausible while being wrong.
 
 > **Since: the two named forms were removed** (every attitude form is now four
-> slots), so the specific route above is closed. The finding itself stands —
-> a layout whose attitude block is not first, such as `[VELOCITY(3),
-> ATTITUDE(4)]` against a 6-dimensional covariance, still reaches `n = m + 1`
-> without a quaternion in slots 0..3 and is mangled identically. The remedy
-> below is unchanged and still open. See KNOWN-ISSUE-P6-5.
+> slots), so the specific route above is closed. The attitude-block-not-first
+> shape — `[VELOCITY(3), ATTITUDE(4)]` against a 6-dimensional covariance —
+> outlived that removal and reached `n = m + 1` without a quaternion in slots
+> 0..3. It is now refused at run construction:
+> `validate_error_layout` takes the component's `cov_dim()` and rejects a
+> declared layout at `n == m + 1` (`n >= 4`) whose offset-0 block is not the
+> attitude block. The remedy below is still the one that would close the
+> reader; it remains open. See KNOWN-ISSUE-P6-5.
 
 **Remedy.** Carry the estimator's declared error layout, or at minimum a
 "quaternion-led attitude block" flag, in the SRLOG header, and require it

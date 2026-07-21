@@ -518,7 +518,7 @@ TEST_CASE("ekf_error_state_reports_the_multiplicative_attitude_error") {
   // compute_error_state.
   std::unique_ptr<IGncComponent> f = make_ekf();
   const std::vector<star::gnc::ErrorBlock>& layout = f->error_layout();
-  star::gnc::validate_error_layout(layout, f->state_dim(), true);
+  star::gnc::validate_error_layout(layout, f->state_dim(), f->cov_dim(), true);
   REQUIRE(layout.size() == 5);
   CHECK(layout[0].quantity == star::gnc::ErrorQuantity::kAttitude);
   CHECK(layout[0].form == star::gnc::ErrorForm::kQuatErrorLocal);
@@ -558,4 +558,42 @@ TEST_CASE("ekf_error_state_reports_the_multiplicative_attitude_error") {
     CHECK(e2[0] > 0.0);
     CHECK(e2[1] == doctest::Approx(e[1]));
   }
+}
+
+TEST_CASE("gnc_ekf_layout_survives_the_quaternion_led_rule") {
+  // The over-rejection half of KNOWN-ISSUE-P6-5's closure (the rejection
+  // itself is gnc_quaternion_led_rule_rejects_the_mangled_reduction_shape in
+  // test_gnc.cpp). This filter is the layout that matters most: it is the one
+  // shipped estimator that actually sits in the n == m + 1 shape the rule
+  // polices, so if the rule over-reached it would ground the built-in EKF.
+  std::unique_ptr<IGncComponent> f = make_ekf();
+
+  // Non-vacuity: the rule's trigger condition genuinely holds here, so the
+  // acceptance below is evidence rather than a shape that never met the test.
+  REQUIRE(f->state_dim() == 16);
+  REQUIRE(f->cov_dim() == 15);
+  REQUIRE(f->state_dim() == f->cov_dim() + 1);
+  REQUIRE(f->state_dim() >= 4);
+
+  // What earns the acceptance is the attitude block holding offset 0 - the
+  // premise `star consistency` relies on when it collapses slots 0..3.
+  const std::vector<star::gnc::ErrorBlock>& layout = f->error_layout();
+  REQUIRE(!layout.empty());
+  CHECK(layout[0].offset == 0);
+  CHECK(layout[0].quantity == star::gnc::ErrorQuantity::kAttitude);
+  star::gnc::validate_error_layout(layout, f->state_dim(), f->cov_dim(), true);
+
+  // Demonstrating the rule is live on this very layout rather than dormant:
+  // move the attitude block off offset 0 by swapping it with the velocity
+  // block that follows it, keep every width and the total tiling intact, and
+  // the same call is refused. This is the mutation of the test's own target.
+  std::vector<star::gnc::ErrorBlock> velocity_led = layout;
+  velocity_led[0] = {star::gnc::ErrorQuantity::kVelocity,
+                     star::gnc::ErrorForm::kDifference, 0};
+  velocity_led[1] = {star::gnc::ErrorQuantity::kAttitude,
+                     star::gnc::ErrorForm::kQuatErrorLocal, 3};
+  CHECK_THROWS_AS(
+      star::gnc::validate_error_layout(velocity_led, f->state_dim(),
+                                       f->cov_dim(), true),
+      std::invalid_argument);
 }

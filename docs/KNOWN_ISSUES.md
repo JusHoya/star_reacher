@@ -329,22 +329,41 @@ first is dropped, the next two are doubled, and the fourth — an unrelated stat
 — is doubled and carried forward as an attitude component. The resulting NEES is
 positive, order-unity, and wrong.
 
-**Narrowed, not closed.** This entry originally named a three-slot attitude
-block (`ErrorForm.ROTATION_VECTOR_LOCAL` or `_GLOBAL`) as the route in. Those
-two forms have since been removed — every attitude form is now four slots —
-so that particular route no longer exists. The hazard survives in a second
-shape the original entry did not name: a layout whose attitude block is not
-*first*, for example `[VELOCITY(3), ATTITUDE(4)]` against a 6-dimensional
-covariance, reaches `n == m + 1` with slots 0..3 spanning the velocity error
-and one quaternion component. The collapse misreads it exactly as described
-above. The remedy is unchanged and still deferred: carry the declared layout
-in the SRLOG header and require it before collapsing.
+**Closed for runs this simulator produces; the reader-side assumption
+remains.** The hazard reached the consumer by two routes, and both are now
+shut at the producer.
 
-Closing this properly means carrying the declared layout in the SRLOG header and
+The first route was a three-slot attitude block (`ErrorForm`'s removed
+`ROTATION_VECTOR_LOCAL` / `_GLOBAL`). Every attitude form is now four slots, so
+that route no longer exists.
+
+The second route was a layout whose attitude block is not *first* —
+`[VELOCITY(3), ATTITUDE(4)]` against a 6-dimensional covariance reaches
+`n == m + 1` with slots 0..3 spanning three velocity-error components and one
+quaternion component, and the collapse misreads it exactly as described above.
+Removing the rotation-vector forms did nothing about this shape; the earlier
+revision of this entry recorded it as surviving. It is now rejected at run
+construction. `validate_error_layout` (`cpp/src/gnc/component.cpp:135-215`)
+takes the component's `cov_dim()` alongside its `state_dim()` and refuses any
+declared layout that reaches `n == m + 1` with `n >= 4` unless the block at
+offset 0 is the attitude block, naming both dimensions and the offending block.
+The bound to `n >= 4` matches `_reduce_error`'s own guard: a narrower
+`n == m + 1` is not collapsed but reported as a mismatch, so refusing it would
+over-reach. Neither shipped estimator is affected — `error_state_ekf` is
+quaternion-led at 16/15, and `dead_reckoning` is 7/7, where the rule does not
+apply. Evidence:
+`cpp/tests/test_gnc.cpp` `gnc_quaternion_led_rule_rejects_the_mangled_reduction_shape`
+and `cpp/tests/test_ekf.cpp` `gnc_ekf_layout_survives_the_quaternion_led_rule`.
+
+What is **not** closed is the reader. `_reduce_error` still collapses slots
+0..3 on the strength of the dimensions alone, because the SRLOG header still
+carries only a boolean for whether a layout is present. Any log that reaches
+the CLI without having been produced by this simulator's run construction — a
+hand-written file, a synthetic fixture, or a log from a future version whose
+producer-side rule differs — is reduced with the assumption unchecked.
+Closing that means carrying the declared layout in the SRLOG header and
 requiring it before the collapse; the layout already exists in the core as
-`error_layout()`. That is a format field and is deferred. Until then, a plugin
-estimator that is not quaternion-led at `n == m + 1` must not be evaluated with
-`star consistency`.
+`error_layout()`. That is a format field and remains deferred.
 
 **Exit-criterion impact: none.** Every criterion that computes NEES does so on
 the built-in EKF, for which the collapse is the correct reduction.

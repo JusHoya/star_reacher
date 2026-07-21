@@ -465,7 +465,8 @@ std::vector<gnc::ErrorBlock> capture_error_layout(
   for (const gnc::GncSensorCfg& s : cfg.gnc.sensors) {
     if (s.kind == "imu") imu_configured = true;
   }
-  gnc::validate_error_layout(layout, nav->state_dim(), imu_configured);
+  gnc::validate_error_layout(layout, nav->state_dim(), nav->cov_dim(),
+                             imu_configured);
   return layout;
 }
 

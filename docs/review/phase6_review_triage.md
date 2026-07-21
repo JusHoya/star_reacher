@@ -574,10 +574,14 @@ the built-in EKF, for which the collapse is the correct reduction.
 ```
 
 > **Since:** the two `ROTATION_VECTOR_*` forms quoted above were removed, so
-> the three-slot route into this misreading no longer exists. The issue
-> itself remains open under a second shape (an attitude block that is not
-> first); the current wording is in `docs/KNOWN_ISSUES.md` under
-> KNOWN-ISSUE-P6-5.
+> the three-slot route into this misreading no longer exists. The second
+> shape — an attitude block that is not first — outlived that removal and has
+> since been closed at the producer: `validate_error_layout` now takes the
+> component's `cov_dim()` and refuses a declared layout that reaches
+> `n == m + 1` with `n >= 4` unless the attitude block holds offset 0. The
+> reader-side assumption in `_reduce_error` is unchanged and still deferred
+> behind the SRLOG header field. The current wording is in
+> `docs/KNOWN_ISSUES.md` under KNOWN-ISSUE-P6-5.
 
 ### `docs/KNOWN_ISSUES.md` — new entry, finding 15
 

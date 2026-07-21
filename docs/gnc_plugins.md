@@ -212,6 +212,33 @@ equals its state width. That is what lets one number — `error_block_size` —
 both tile the state vector during validation and size the write into
 `nav.err`.
 
+### At `state_dim() == cov_dim() + 1` the attitude block must come first
+
+If your estimator declares a state one slot wider than its covariance — the
+shape a four-slot quaternion state with a three-slot attitude error produces —
+then the block at offset 0 must be the attitude block. `validate_error_layout`
+refuses any other arrangement at run construction, naming the two dimensions
+and the block that holds offset 0.
+
+The rule exists because of what happens downstream. `star consistency` pairs
+an `n`-dimensional `nav.err` with the `m`-dimensional covariance `nav.est`
+reports, and at `n == m + 1` (with `n >= 4`) it collapses slots 0..3 as a
+scalar-first error quaternion, `dtheta = 2 sgn(dq_w) dq_v`. The SRLOG header
+records only whether a layout is present, not the layout itself, so the
+consumer cannot verify that slots 0..3 really are a quaternion. A layout such
+as `[VELOCITY(3), ATTITUDE(4)]` against `m == 6` reaches that collapse with
+three velocity-error components and one quaternion component in those slots;
+they are reduced as though they were a rotation, and the resulting NEES is
+positive, order-unity, and wrong. Refusing the layout at construction is what
+keeps such a log from being written in the first place.
+
+Two ways out if your state is genuinely not quaternion-led. Reorder the layout
+so the attitude block leads, which costs nothing but the declaration order.
+Or declare no layout at all: a component that returns an empty `error_layout()`
+writes no `nav.err` channel, so nothing is reduced and `star consistency`
+simply has no error state to evaluate. The rule does not apply when
+`n == m`, which is the shape the built-in `dead_reckoning` navigator presents.
+
 ### Three-parameter attitude states are not supported
 
 An estimator whose state carries a three-parameter attitude directly — MRP,

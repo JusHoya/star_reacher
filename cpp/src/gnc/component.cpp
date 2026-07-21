@@ -133,7 +133,8 @@ int error_block_size(ErrorQuantity quantity, ErrorForm form) {
 }
 
 void validate_error_layout(const std::vector<ErrorBlock>& layout,
-                           int state_dim, bool imu_bias_available) {
+                           int state_dim, int cov_dim,
+                           bool imu_bias_available) {
   if (layout.empty()) return;  // "no layout declared" is a valid declaration
   if (state_dim <= 0) {
     throw std::invalid_argument(
@@ -179,6 +180,28 @@ void validate_error_layout(const std::vector<ErrorBlock>& layout,
         " slots but the component declares state_dim() == " +
         std::to_string(state_dim) +
         "; a layout must describe the whole state vector or be left empty");
+  }
+  // The quaternion-led rule (header commentary). n == m + 1 with n >= 4 is
+  // exactly the shape `star consistency` reduces by collapsing slots 0..3 as
+  // an error quaternion, and the log does not carry the layout that would let
+  // it check the assumption. Bounding the rule to n >= 4 keeps it to the
+  // shape that is silently mangled: a narrower n == m + 1 does not meet the
+  // consumer's own n >= 4 guard and is already reported there as a mismatch
+  // rather than reduced.
+  if (state_dim == cov_dim + 1 && state_dim >= 4 &&
+      ordered.front()->quantity != ErrorQuantity::kAttitude) {
+    throw std::invalid_argument(
+        "gnc error layout: block '" +
+        std::string(quantity_name(ordered.front()->quantity)) +
+        "' occupies offset 0, but the component declares state_dim() == " +
+        std::to_string(state_dim) + " with cov_dim() == " +
+        std::to_string(cov_dim) +
+        ", the one-slot-wider shape 'star consistency' reduces by collapsing "
+        "slots 0..3 as a scalar-first error quaternion; the log carries no "
+        "layout for it to check that against, so those slots would be "
+        "misread as a rotation and the NEES would be wrong. Declare the "
+        "attitude block at offset 0, or declare no layout at all if this "
+        "estimator is not meant to be evaluated for consistency");
   }
 }
 
