@@ -452,6 +452,15 @@ was replicated. The `asan` preset was used under its own name on Linux.
   unexecuted branches may exist and would be equally outside the sanitizers'
   reach. Given that two of two paths investigated turned out to be dead, such
   an audit is worth doing before the ASan legs are treated as broad evidence.
+  **Superseded at `5fe1351`:** that audit was performed and is recorded in
+  [`docs/review/phase6_coverage_audit.md`](../review/phase6_coverage_audit.md).
+  It measures the doctest tier at 75.5% line and 45.6% branch over the Phase 6
+  core surface — the exact bound on what the sanitizer legs can observe — and
+  classifies every uncovered path. Four further dead paths are classified
+  critical there. The audit also narrows one claim made in this document: the
+  nav.innov consumer guards are dead in the C++ tier but are exercised with
+  assertions by two Python cases, so they are untested where sanitizers reach
+  rather than untested outright.
 - **Clang warnings-as-errors.** Clang was used only for the `asan` preset,
   which does not set `-Wall -Wextra -Werror`. Clang's warning surface over
   the Phase 6 code is unmeasured.
