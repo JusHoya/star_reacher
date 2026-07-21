@@ -554,6 +554,180 @@ def test_pitch_program_guidance_equals_openloop_command(tmp_path):
     assert np.array_equal(q_ol, q_cl)
 
 
+# --- closed-loop ascent insertion elements ------------------------------
+#
+# KNOWN-ISSUE-P6-3 quotes the closed-loop insertion elements as evidence that
+# the pitch discontinuity costs no mission performance. That figure went stale
+# for one commit cycle -- the pitch-program roll fix 8f09032 moved the apogee
+# by 1.88 km and the paragraph kept the pre-fix number -- because nothing in
+# the repository measured the quantity. test_pitch_program_guidance_equals_
+# openloop_command runs the same closed-loop mission but compares only the
+# COMMANDED attitude, which is a pure function of mission time and the frozen
+# pad basis and is therefore identical whether or not the vehicle reaches
+# orbit; scripts/perf_gate.py gates throughput. This is the gate that reads
+# the trajectory.
+
+EARTH_EQ_RADIUS_M = 6378137.0
+
+# The insertion event fires at the first integrator step whose osculating
+# perigee reaches this altitude (missions/ascent_leo.toml, terminate rule).
+INSERTION_PERIGEE_M = 180_000.0
+
+# dt_s = 0.1 in both ascent missions, and per D-5 the control cycle IS the
+# integrator step, so the EC-6 reduction point cannot be refined below this
+# without changing the closed loop itself.
+ASCENT_DT_S = 0.1
+
+
+def _osculating_apsides(core, r, v, radius_m=EARTH_EQ_RADIUS_M):
+    """Perigee and apogee altitude [m] above ``radius_m`` from one state.
+
+    The EC-6 reduction, matching tests/python/test_vehicle_missions.py.
+    """
+    mu = core.gm("earth")
+    r = np.asarray(r, dtype=float)
+    v = np.asarray(v, dtype=float)
+    rn = np.linalg.norm(r)
+    energy = 0.5 * np.dot(v, v) - mu / rn
+    a = -mu / (2.0 * energy)
+    h = np.cross(r, v)
+    e = np.linalg.norm(np.cross(v, h) / mu - r / rn)
+    return a * (1.0 - e) - radius_m, a * (1.0 + e) - radius_m
+
+
+def _apsides_at_exact_perigee(core, t, r, v, target_m=INSERTION_PERIGEE_M):
+    """Apsides interpolated to the exact ``target_m`` perigee crossing.
+
+    The EC-11 reduction (tests/crosscheck/ascent_3dof.interpolate_to_perigee).
+    Reducing at a perigee both runs share removes the gate-cycle overshoot, so
+    the apogee reflects insertion energy rather than which 0.1 s step happened
+    to trip the terminate rule.
+    """
+    prev = None
+    for i in range(len(t)):
+        per, _ = _osculating_apsides(core, r[i], v[i])
+        if prev is not None and prev[3] < target_m <= per:
+            pt, pr, pv, pper = prev
+            f = (target_m - pper) / (per - pper)
+            return _osculating_apsides(
+                core, pr + f * (r[i] - pr), pv + f * (v[i] - pv)
+            )
+        prev = (t[i], r[i], v[i], per)
+    return None
+
+
+def test_closed_loop_ascent_insertion_elements(tmp_path):
+    """The GNC-in-loop ascent inserts at the elements KNOWN-ISSUE-P6-3 quotes.
+
+    Two reductions of the same run, because they fail on different things.
+
+    EC-6 (final truth record) is the reduction the issue paragraph quotes, so
+    gating it is what keeps that paragraph honest. Its weakness is that the
+    reduction point is a grid point: the terminate rule fires at the first
+    step reaching 180 km perigee, so the reported elements include up to one
+    full step of overshoot past the true crossing, and a physics change that
+    moves the crossing across a step boundary jumps the reported apogee by
+    that whole step. Tolerances are therefore one step of the measured local
+    rate, and are wide.
+
+    EC-11 (interpolated to the exact 180.000 km perigee) removes that term by
+    construction and is continuous in the physics, so it carries the sharp
+    assertion.
+
+    Fixture non-degeneracy. The mission must actually reach orbit for these
+    numbers to mean anything, so the insertion event is asserted before the
+    elements are read -- without it a suborbital run would be reduced at
+    whatever state the time limit left, and this is not hypothetical: seeding
+    ``[gnc.nav] q0`` wrong by ~105 degrees (the mission file's own warning)
+    flies the vehicle to a -2321 km perigee that never triggers insertion,
+    and the EC-11 reduction returns None rather than a wrong number. Neither
+    assertion can be satisfied by an identity or a copy: both elements are
+    recomputed here from the logged Cartesian truth through an orbital-element
+    reduction the core never performs, so nothing on the reference side comes
+    from the value under test.
+    """
+    core = _core_or_fail()
+    from star_reacher import load
+    from star_reacher.runner import run_mission
+
+    import os
+
+    cwd = os.getcwd()
+    os.chdir(REPO_ROOT)
+    try:
+        result = run_mission(
+            REPO_ROOT / "missions" / "ascent_leo_gnc.toml", tmp_path / "gnc_ascent"
+        )
+    finally:
+        os.chdir(cwd)
+
+    run = load(result.srlog_path)
+
+    # Non-degeneracy gate: the run inserted, rather than ending on the clock.
+    details = [str(d) for d in run.events["detail"]]
+    assert any("insertion" in d for d in details), (
+        "the closed-loop ascent did not reach orbit insertion; the elements "
+        f"below would be meaningless. events: {details}"
+    )
+
+    truth = run.groups["truth"]
+    t, r, v = truth["t_s"], truth["r_m"], truth["v_mps"]
+    perigee_m, apogee_m = _osculating_apsides(core, r[-1], v[-1])
+
+    # The EC-6 perigee is bounded on both sides by the terminate rule itself:
+    # below by the 180 km threshold that fired it, above by one step of
+    # perigee growth. Measured d(perigee)/dt = 11.4984 km/s at insertion, so
+    # one 0.1 s step is 1.1498 km; the bound is set at 1.5 km, ~1.3x that, so
+    # a legitimate shift in where the crossing lands inside its step cannot
+    # trip it. Measured value 180.7025 km sits 0.70 km into the band.
+    perigee_overshoot_m = 1_500.0
+    assert INSERTION_PERIGEE_M <= perigee_m <= (
+        INSERTION_PERIGEE_M + perigee_overshoot_m
+    ), (
+        f"closed-loop insertion perigee {perigee_m / 1e3:.4f} km is outside "
+        f"[180.000, {(INSERTION_PERIGEE_M + perigee_overshoot_m) / 1e3:.3f}] km"
+    )
+
+    # The EC-6 apogee carries the same one-step ambiguity, mapped through the
+    # apogee's much larger local rate: measured d(apogee)/dt = 324.6397 km/s
+    # at insertion, so one 0.1 s step is 32.46 km. This tolerance is what the
+    # reduction can support and no tighter; it is deliberately too coarse to
+    # resolve the 1.88 km drift that motivated this test, which is why the
+    # EC-11 assertion below exists and carries that duty.
+    ec6_apogee_ref_m = 3_357_982.4
+    ec6_apogee_tol_m = 324_639.7 * ASCENT_DT_S
+    assert abs(apogee_m - ec6_apogee_ref_m) <= ec6_apogee_tol_m, (
+        f"closed-loop EC-6 insertion apogee {apogee_m / 1e3:.4f} km differs "
+        f"from the recorded {ec6_apogee_ref_m / 1e3:.4f} km by more than the "
+        f"one-step reduction band {ec6_apogee_tol_m / 1e3:.3f} km"
+    )
+
+    # EC-11: reduced at a perigee both this run and the open-loop reference
+    # share exactly, so the grid term is gone and the residual is the linear
+    # interpolation's own truncation error. That was measured against a
+    # quadratic interpolant on the same bracket at 6.6 m of apogee. The gate
+    # is set at 500 m: ~76x the measured truncation, so the reduction's own
+    # numerics cannot trip it, and 3.8x inside the 1.88 km drift it has to
+    # resolve. Those two measured numbers are the whole derivation -- the
+    # bound is above what the method's error can produce and below the
+    # smallest regression it must catch.
+    exact = _apsides_at_exact_perigee(core, t, r, v)
+    assert exact is not None, (
+        "no 180.000 km perigee crossing found in the closed-loop truth"
+    )
+    ec11_perigee_m, ec11_apogee_m = exact
+    ec11_apogee_ref_m = 3_338_127.3
+    ec11_apogee_tol_m = 500.0
+    assert abs(ec11_perigee_m - INSERTION_PERIGEE_M) <= 10.0, ec11_perigee_m
+    assert abs(ec11_apogee_m - ec11_apogee_ref_m) <= ec11_apogee_tol_m, (
+        f"closed-loop EC-11 insertion apogee {ec11_apogee_m / 1e3:.4f} km "
+        f"differs from the recorded {ec11_apogee_ref_m / 1e3:.4f} km by more "
+        f"than {ec11_apogee_tol_m:.0f} m. This figure is quoted in "
+        f"docs/KNOWN_ISSUES.md under KNOWN-ISSUE-P6-3; if the change is "
+        f"intended, re-measure and update both."
+    )
+
+
 # --- FR-23 full sensor suite in the loop --------------------------------
 
 # All six canonical sensor kinds appended to the reference mission, with

@@ -231,12 +231,57 @@ than a trajectory benchmark, that is the point to revisit it.
 
 **Exit-criterion impact: none for criterion 10**, which gates throughput
 rather than tracking accuracy, and the closed-loop mission still reaches
-orbit insertion (180.7 x 3356.1 km, against the open-loop 181 x 3444 km).
+orbit insertion (180.7 x 3358.0 km, against the open-loop 181.0 x 3444.1 km).
 It is recorded because the transient is visible in every plot of the
 closed-loop ascent and would otherwise read as a controller defect, and
 because a smoothed pitch table is the obvious remediation if a future phase
 wants the closed-loop ascent to be a tracking benchmark rather than a
 throughput benchmark.
+
+Both pairs are the EC-6 reduction — osculating apsides at the final truth
+record, no root refinement — of `missions/ascent_leo.toml` and
+`missions/ascent_leo_gnc.toml`. Measured at core `git_hash` 6011d7b:
+open-loop `181.0318 x 3444.1456` km at t = 400.4000 s, closed-loop
+`180.7025 x 3357.9824` km at t = 400.3000 s. The EC-11 reduction, which
+interpolates both trajectories to the exact 180.000 km perigee and so
+removes the gate-cycle overshoot, gives open-loop `180.0011 x 3416.0804` km
+and closed-loop `180.0021 x 3338.1273` km; the open-loop row there is the
+figure `tests/crosscheck/manifest.toml` records.
+
+The apogee in this paragraph formerly read 3356.1 km. That was the value
+from before the pitch-program roll fix commit `8f09032`, which moved the
+closed-loop apogee by 1.88 km and left the figure behind. Nothing measured
+it, so nothing caught it: no test, fixture, or gate read the closed-loop
+insertion elements, and `scripts/perf_gate.py` gates throughput only. That
+gap is now closed by
+`tests/python/test_gnc_missions.py::test_closed_loop_ascent_insertion_elements`,
+which is what will fail the next time this paragraph goes stale.
+
+**The gate's tolerances are derived, and both were shown to fire.** The EC-6
+bounds are one 0.1 s integrator step of the measured local rate at insertion
+(`d(perigee)/dt = 11.4984` km/s and `d(apogee)/dt = 324.6397` km/s), because
+the terminate rule fires on a grid point and the reduction therefore carries
+up to one step of overshoot. The EC-11 bound is 500 m: about 76x the
+linear-interpolation truncation measured against a quadratic interpolant on
+the same bracket (6.6 m of apogee), and 3.8x inside the 1.88 km drift it has
+to resolve. Mutating the closed-loop ascent itself:
+
+| Mutation of `missions/ascent_leo_gnc.toml` | EC-6 apogee | EC-11 apogee | Gate |
+|---|---:|---:|---|
+| baseline | 3357.9824 km | 3338.1273 km | passes, both residuals 0.0 |
+| terminal pitch entry −22.0 → −21.99 deg | +0.0719 km | **+709.0 m** | EC-11 fires |
+| terminal pitch entry −22.0 → −21.95 deg | +0.3590 km | **+3546.1 m** | EC-11 fires |
+| terminal pitch entry −22.0 → −21.75 deg | **+1.7904 km** | **+17765.2 m** | EC-11 fires, EC-6 does **not** |
+| `[gnc.nav] q0` seeded wrong (~105 deg) | −2040.19 km | no 180 km crossing | every assertion fires |
+
+The third row is the load-bearing one. It moves the apogee by 1.79 km —
+the same magnitude as the historical drift — and the EC-6 assertion passes,
+because 1.79 km is well inside the 32.46 km its own reduction can support.
+That is measured confirmation that an EC-6-only gate would not have caught
+the drift that motivated this test, and that the EC-11 assertion is what
+carries the duty. The last row is the non-degeneracy check: the mission
+file's own documented failure mode flies suborbital, and the insertion-event
+assertion fires before any element is read.
 
 ## KNOWN-ISSUE-P6-4 — the plugin loader caches by path, and wraps every import failure
 
