@@ -561,6 +561,94 @@ experiment specified.
 5. **Criterion 10.** The measurement itself, on Pi 5 hardware, against a
    committed GNC-in-loop ascent mission that does not yet exist.
 
+## Addendum: the rebuild-required experiments, run
+
+The five experiments above were specified but not executed, because the
+audit could not compile. Four of them have since been run on a rebuilt
+core. Every figure below was measured, not predicted; each mutation was
+applied to the source, built, run, and reverted.
+
+**Experiment 4, criterion 8 — the FIFO depth. Both gates fire.**
+`gnc_latency_fifo_full_history_shift` (`cpp/tests/test_gnc.cpp:339`) was
+added as the open-loop assertion this document called for: it drives the
+FIFO with a recorded 20-command sequence for k in 0..4 and asserts
+`applied[i + k] == produced[i]` on all three axes for every i, plus the
+pre-fill holds and the drain at run end.
+
+| Mutation of `cpp/src/gnc/component.cpp:318` | Latency cases | Result |
+|---|---|---|
+| baseline | 3 of 3 pass, 1328 assertions | — |
+| pre-fill depth k -> k+1 | 0 of 3 pass, 285 assertions fail | detected |
+| pre-fill depth k -> k-1 | 0 of 3 pass, 222 assertions fail | detected |
+
+Under the k -> k+1 mutation the Python gate
+`test_latency_two_cycles_shifts_application` also fails, at
+`cmd0["valid"][0] == 1` (measured `0`). Criterion 8's gates are sharp
+against an off-by-one in either direction.
+
+**Experiment 1, criterion 1 clause C — and the finding.** The
+bit-identity gate's target is reproducibility, so the mutation of its
+target is non-determinism rather than a changed value: a deterministic
+perturbation of the Gauss-Markov initialization changes the numbers but
+leaves two runs of one build identical, which is the correct behaviour of
+an identity gate. The IMU stream was therefore seeded
+`master_seed ^ std::random_device{}()`.
+
+| Gate | Verdict under a non-deterministic IMU stream |
+|---|---|
+| `test_full_sensor_suite_reruns_bit_identical` | **PASSED** |
+| `test_stochastic_imu_reruns_bit_identical` (new) | failed, SHA-256 mismatch |
+| `test_ensemble_rerun_is_bit_identical` (criterion 3) | failed, ordered SHA list mismatch |
+
+**The criterion-1 clause C gate named in this document does not fire when
+the IMU's random-number stream is made completely non-deterministic.** Its
+mission declares an ideal IMU, so every draw the stream produces is
+multiplied by a zero coefficient and never reaches an output. The clause
+was not wholly uncovered — criterion 3's ensemble identity test runs
+`leo_ekf_consistency.toml`, whose IMU enables the random-walk and
+Gauss-Markov terms, and it does fire — but the coverage was incidental to
+another criterion and reached only two of the six error terms. The
+quantizer's residual carry, the turn-on bias, the scale factor, and the
+misalignment matrix were enabled by no committed mission at all.
+`test_stochastic_imu_reruns_bit_identical` closes this with the full error
+chain.
+
+**Criterion 1 clause A — the Allan gate is sharp and selective.**
+
+| Mutation | `n_hat/N - 1` | `b_hat/B - 1` | Result |
+|---|---|---|---|
+| baseline | — | — | passes |
+| ARW coefficient x 1.2 | **0.190033** | 0.030107 | ARW clause detected |
+| Gauss-Markov sigma x 1.2 | 0.004078 | **0.229376** | bias clause detected |
+
+Each mutation is caught by its own clause and by neither the other's, so
+the two coefficients are separately resolvable rather than one standing in
+for the other.
+
+**Criterion 1 clause B — sharp on magnitude, blind on composition order.**
+Scaling the star-tracker error sigma by 1.2 moves the statistic to
+`q_mean = 4.33832` against the upper bound `3.154` (the expected
+1.2^2 x 3 = 4.32), and the per-axis variance ratios to 1.414, 1.531, and
+1.394 against 1.0900. The gate resolves a 20 % noise mis-scale.
+
+Experiment 2 confirms the structural finding by measurement. With the
+`q_ab` composition order reversed in `cpp/src/sensors/optical.cpp` —
+`q_true (x) q_ab` in place of `q_ab (x) q_true` —
+`sensors_startracker_chi_square_over_1000_draws` **passes unchanged**, 8
+of 8 assertions. The fixture sets `truth.v_end_i_mps` to zero, which makes
+`q_ab` the identity, and the identity commutes.
+
+That order is not uncovered repository-wide: the Python integration
+re-gate `test_star_tracker_statistic_passes_the_reference_gate` rejects
+the same mutation at `statistic=104.463254` against `bounds=[2.729187,
+3.283440]` over 300 draws, because it runs a real mission with non-zero
+velocity. The composition hazard is covered; the criterion-1 C++ gate is
+simply not what covers it.
+
+**Experiment 5, criterion 10** remains unrun: it needs Pi 5 hardware and a
+committed GNC-in-loop ascent mission. **Experiment 3, criterion 2** was
+not run in this pass.
+
 ## Independence of evidence
 
 The three modules under `tests/refs/` — `aberration.py`, `pinhole.py`,

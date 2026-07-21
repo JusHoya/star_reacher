@@ -336,6 +336,62 @@ TEST_CASE("gnc_attitude_hold_guidance") {
   CHECK(out0.q_i2b.z() == 0.5);
 }
 
+TEST_CASE("gnc_latency_fifo_full_history_shift") {
+  // Exit criterion 8 over the WHOLE history, not one cycle pair.
+  //
+  // The mission-level gates can only compare cycle 0 between a k = 0 and a
+  // k = ell run: the loop is closed, so a delayed torque changes the plant
+  // trajectory and from cycle 1 onward the two runs' COMPUTED commands
+  // genuinely differ. The criterion's claim - that application is the k = 0
+  // history delayed by exactly k cycles - is a statement about the FIFO,
+  // and it is only checkable where the produced sequence is held fixed.
+  // This drives the FIFO open loop with a recorded sequence and asserts
+  // applied[i + k] == produced[i] for every i, including the drain at the
+  // end of the run, which no committed test covered.
+  GncOutput neutral;
+  neutral.q_i2b = Eigen::Quaterniond(0.5, 0.5, 0.5, 0.5);
+  neutral.torque_b_nm = Eigen::Vector3d::Zero();
+
+  const int n = 20;
+  for (std::uint32_t k = 0; k <= 4; ++k) {
+    CAPTURE(k);
+    star::gnc::LatencyFifo fifo(k, neutral);
+    std::vector<GncOutput> produced;
+    std::vector<GncOutput> applied;
+    for (int i = 0; i < n; ++i) {
+      GncOutput o;
+      o.valid = true;
+      // Distinct per cycle on all three axes, so an off-by-one shift cannot
+      // be masked by two neighbouring commands that happen to agree.
+      o.torque_b_nm = Eigen::Vector3d(1.0 + i, 100.0 - i, 2.0 * i + 0.5);
+      produced.push_back(o);
+      applied.push_back(fifo.push(o));
+    }
+    // The first k applications are pre-fill holds, flagged invalid.
+    for (std::uint32_t i = 0; i < k; ++i) {
+      CHECK_FALSE(applied[i].valid);
+    }
+    // Every later application is the command produced exactly k cycles
+    // earlier, on every axis.
+    for (int i = 0; i + static_cast<int>(k) < n; ++i) {
+      CAPTURE(i);
+      CHECK(applied[i + static_cast<int>(k)].valid);
+      for (int a = 0; a < 3; ++a) {
+        CHECK(applied[i + static_cast<int>(k)].torque_b_nm[a] ==
+              produced[i].torque_b_nm[a]);
+      }
+    }
+    // The drain: the last k produced commands are never applied. Asserting
+    // this pins the depth from the other side - a FIFO one entry too
+    // shallow would have applied produced[n - k] somewhere.
+    for (int i = n - static_cast<int>(k); i < n; ++i) {
+      for (const GncOutput& a : applied) {
+        CHECK(a.torque_b_nm[0] != produced[i].torque_b_nm[0]);
+      }
+    }
+  }
+}
+
 TEST_CASE("gnc_latency_fifo_semantics") {
   GncOutput neutral;
   neutral.q_i2b = Eigen::Quaterniond(0.5, 0.5, 0.5, 0.5);
