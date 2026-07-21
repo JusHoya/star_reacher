@@ -101,7 +101,7 @@ def test_gnc_mission_reruns_bit_identical(tmp_path):
 def test_v12_groups_present_and_shaped(reference_run):
     _, run = reference_run
     header = run.header
-    assert header["format"] == {"name": "SRLOG", "major": 1, "minor": 2}
+    assert header["format"] == {"name": "SRLOG", "major": 1, "minor": 3}
     # The "gnc" header object makes cycle rate, latency, and the sensor
     # identity table readable from the header alone (format doc section 3).
     assert header["gnc"] == {

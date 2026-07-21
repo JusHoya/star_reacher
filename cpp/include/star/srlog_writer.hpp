@@ -38,6 +38,34 @@ struct SensorGroupDecl {
   std::uint32_t landmarks = 0;
 };
 
+// Camera intrinsics and extrinsics echoed once in the header (v1.3, format
+// doc section 3.2). FR-23 scopes the camera hook to geometric truth for
+// OFFLINE external rendering, and a renderer cannot form eq:camera:pose or
+// eq:camera:K from the record stream alone: the pose channels carry the
+// vehicle state, not the camera's, and no intrinsic appears in any record.
+// Echoing the constants once makes a camera log self-contained, which is
+// what exit criterion 7's intrinsics clause is checked against.
+//
+// The doubles ride as their IEEE-754 binary64 bit patterns in 16 lowercase
+// hex digits, most significant nibble first. That keeps the header's
+// integers-booleans-and-strings-only rule intact: the encoder is pure
+// integer shifting, so no float formatter, rounding mode, or locale can
+// perturb the header bytes and weaken the FR-21 whole-file determinism
+// gate. It is also exact, which a shortest-round-trip decimal is only if
+// the reader's parser is correctly rounded.
+struct CameraEchoDecl {
+  double fx_px = 0.0;
+  double fy_px = 0.0;
+  double cx_px = 0.0;
+  double cy_px = 0.0;
+  std::uint32_t width_px = 0;
+  std::uint32_t height_px = 0;
+  // Hamilton scalar-first (D-7), body -> camera.
+  double q_b2c[4] = {1.0, 0.0, 0.0, 0.0};
+  // Mount station relative to the composite CG, body axes, metres.
+  double r_cam_b_m[3] = {0.0, 0.0, 0.0};
+};
+
 // Header identity fields. Everything here is input-derived or build-derived;
 // wall-clock and host data are banned from the file by D-11 (they live in the
 // Python-written meta.json sidecar).
@@ -82,6 +110,15 @@ struct SrlogHeaderFields {
   // (kSensorKinds), mirroring the force_sources discipline: the header
   // bytes are a pure function of the declared set.
   std::vector<SensorGroupDecl> sensors;
+  // Camera constants echoed in the header's "gnc" object, declared exactly
+  // when a "camera" sensor group is (both directions are rejected, so a
+  // camera log can never omit the echo and a non-camera log can never carry
+  // one). Landmark POSITIONS are deliberately not echoed: the count already
+  // rides in the record dtype f64[2L], and a fixture-scale landmark table
+  // would add kilobytes to every header to restate configuration the
+  // criterion does not name.
+  bool camera_echo_present = false;
+  CameraEchoDecl camera;
   // nav.est: t_s, x_hat f64[n], P f64[m(m+1)/2] (packed row-major upper
   // triangle, the FR-26 convention shared with the mass group's inertia).
   // Rate and state dimension are declared together or not at all. The

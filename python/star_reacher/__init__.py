@@ -12,6 +12,8 @@ from star_reacher.srlog import (
     SrlogCorruptError,
     SrlogError,
     SrlogVersionError,
+    camera_echo,
+    decode_f64_hex,
     load,
 )
 
@@ -26,5 +28,7 @@ __all__ = [
     "SrlogError",
     "SrlogVersionError",
     "__version__",
+    "camera_echo",
+    "decode_f64_hex",
     "load",
 ]

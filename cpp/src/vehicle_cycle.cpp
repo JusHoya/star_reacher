@@ -510,9 +510,27 @@ log::SrlogHeaderFields build_header_fields(const RunConfig& cfg,
       if (s.kind == "camera") {
         // The camera record's pixel-pair count is fixed at header-write
         // time, so the declaration reads the landmark count out of the
-        // resolved config through the same parser the sensor uses.
-        decl.landmarks = static_cast<std::uint32_t>(
-            sensors::parse_camera_cfg(s).landmarks_fixed_m.size());
+        // resolved config through the same parser the sensor uses. The
+        // header echo comes off the same parsed struct the CameraHook is
+        // constructed from, so the echoed constants cannot drift from the
+        // ones the projections were computed with.
+        const sensors::CameraCfg cam = sensors::parse_camera_cfg(s);
+        decl.landmarks =
+            static_cast<std::uint32_t>(cam.landmarks_fixed_m.size());
+        fields.camera_echo_present = true;
+        fields.camera.fx_px = cam.fx;
+        fields.camera.fy_px = cam.fy;
+        fields.camera.cx_px = cam.cx;
+        fields.camera.cy_px = cam.cy;
+        fields.camera.width_px = cam.width_px;
+        fields.camera.height_px = cam.height_px;
+        fields.camera.q_b2c[0] = cam.q_b2c.w();
+        fields.camera.q_b2c[1] = cam.q_b2c.x();
+        fields.camera.q_b2c[2] = cam.q_b2c.y();
+        fields.camera.q_b2c[3] = cam.q_b2c.z();
+        fields.camera.r_cam_b_m[0] = cam.r_cam_b_m.x();
+        fields.camera.r_cam_b_m[1] = cam.r_cam_b_m.y();
+        fields.camera.r_cam_b_m[2] = cam.r_cam_b_m.z();
       }
       fields.sensors.push_back(decl);
     }

@@ -51,6 +51,26 @@ void append_json_string(std::string& out, std::string_view s) {
   out += '"';
 }
 
+// A double as its IEEE-754 binary64 bit pattern, 16 lowercase hex digits,
+// most significant nibble first (format doc section 3.2, "camera").
+// Deliberately not a float formatter: only integer shifting and a lookup
+// table run here, so the bytes cannot depend on locale, rounding mode, or
+// the libc's dtoa. The rendering is endianness-free because it serializes
+// the INTEGER value of the interchange encoding, not its storage order.
+void append_f64_bits_hex(std::string& out, double v) {
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &v, sizeof(bits));
+  static const char* hex = "0123456789abcdef";
+  char digits[16];
+  for (int i = 15; i >= 0; --i) {
+    digits[i] = hex[bits & 0xFU];
+    bits >>= 4;
+  }
+  out += '"';
+  out.append(digits, 16);
+  out += '"';
+}
+
 // One channel entry with the fixed key order name, dtype, units, frame.
 void append_channel(std::string& out, std::string_view name, const char* dtype,
                     const char* units, const char* frame) {
@@ -196,7 +216,7 @@ void check_gnc_fields(const SrlogHeaderFields& fields) {
         fields.nav_state_dim != 0 || fields.nav_cov_dim != 0 ||
         fields.nav_err_enabled || fields.nav_innov_enabled ||
         fields.nav_innov_max_dim != 0 || fields.gnc_cmd_rate_hz != 0 ||
-        fields.latency_cycles != 0) {
+        fields.latency_cycles != 0 || fields.camera_echo_present) {
       throw std::invalid_argument(
           "SRLOG writer: a v1.2 GNC group (or latency_cycles) is declared "
           "but cycle_rate_hz is 0; the control-cycle rate anchors every "
@@ -205,6 +225,39 @@ void check_gnc_fields(const SrlogHeaderFields& fields) {
     return;
   }
   check_sensor_decls(fields.sensors, fields.cycle_rate_hz);
+  // The camera echo and the camera group stand or fall together. A camera
+  // log missing the echo would silently reopen the gap exit criterion 7's
+  // intrinsics clause exists to close, and an echo without a camera group
+  // would describe a sensor the file does not contain.
+  bool camera_declared = false;
+  for (const SensorGroupDecl& s : fields.sensors) {
+    if (s.kind == "camera") camera_declared = true;
+  }
+  if (camera_declared != fields.camera_echo_present) {
+    throw std::invalid_argument(
+        camera_declared
+            ? "SRLOG writer: a sensors.camera group is declared without its "
+              "header intrinsics echo (camera_echo_present is false); the "
+              "echo is what makes a camera log self-contained"
+            : "SRLOG writer: a camera intrinsics echo is declared without a "
+              "sensors.camera group; the echo describes a camera the file "
+              "does not carry");
+  }
+  if (fields.camera_echo_present) {
+    // Mirrors the FR-15 validator's camera constraints at the writer
+    // boundary: a zero focal length or a zero image dimension makes
+    // eq:camera:K singular, so a consumer composing it from the echo would
+    // divide by zero rather than see a malformed configuration.
+    if (!(fields.camera.fx_px > 0.0) || !(fields.camera.fy_px > 0.0)) {
+      throw std::invalid_argument(
+          "SRLOG writer: camera echo needs strictly positive fx_px and "
+          "fy_px; eq:camera:K is singular otherwise");
+    }
+    if (fields.camera.width_px == 0 || fields.camera.height_px == 0) {
+      throw std::invalid_argument(
+          "SRLOG writer: camera echo needs nonzero width_px and height_px");
+    }
+  }
   if ((fields.nav_est_rate_hz != 0) != (fields.nav_state_dim != 0)) {
     throw std::invalid_argument(
         "SRLOG writer: nav.est needs both a rate and a state dimension "
@@ -255,7 +308,7 @@ std::string SrlogWriter::header_json(const SrlogHeaderFields& fields) {
   check_gnc_fields(fields);
   std::string j;
   j.reserve(1024);
-  j += "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":2}";
+  j += "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":3}";
   j += ",\"producer\":{\"core_version\":";
   append_json_string(j, fields.core_version);
   j += ",\"git_hash\":";
@@ -288,7 +341,39 @@ std::string SrlogWriter::header_json(const SrlogHeaderFields& fields) {
       first = false;
       append_json_string(j, s.kind);
     }
-    j += "]}";
+    j += ']';
+    // v1.3: the camera constants, present exactly when a camera group is.
+    // float_encoding is emitted first and self-describes the hex bit
+    // patterns, so a consumer never has to infer the encoding from the
+    // format version it may not know.
+    if (fields.camera_echo_present) {
+      const CameraEchoDecl& c = fields.camera;
+      j += ",\"camera\":{\"float_encoding\":\"ieee754-binary64-hex\"";
+      j += ",\"width_px\":";
+      j += std::to_string(c.width_px);
+      j += ",\"height_px\":";
+      j += std::to_string(c.height_px);
+      j += ",\"fx_px\":";
+      append_f64_bits_hex(j, c.fx_px);
+      j += ",\"fy_px\":";
+      append_f64_bits_hex(j, c.fy_px);
+      j += ",\"cx_px\":";
+      append_f64_bits_hex(j, c.cx_px);
+      j += ",\"cy_px\":";
+      append_f64_bits_hex(j, c.cy_px);
+      j += ",\"q_b2c\":[";
+      for (int i = 0; i < 4; ++i) {
+        if (i != 0) j += ',';
+        append_f64_bits_hex(j, c.q_b2c[i]);
+      }
+      j += "],\"r_cam_b_m\":[";
+      for (int i = 0; i < 3; ++i) {
+        if (i != 0) j += ',';
+        append_f64_bits_hex(j, c.r_cam_b_m[i]);
+      }
+      j += "]}";
+    }
+    j += '}';
   }
   j += ",\"groups\":[";
   // Group 0: truth.
@@ -527,7 +612,7 @@ SrlogWriter::SrlogWriter(const std::string& path,
   }
   put_bytes(kMagic, sizeof(kMagic));
   put_u16(1);  // version_major
-  put_u16(2);  // version_minor
+  put_u16(3);  // version_minor
   put_u32(static_cast<std::uint32_t>(json.size()));
   put_bytes(json.data(), json.size());
 }

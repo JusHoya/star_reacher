@@ -55,7 +55,7 @@ TEST_CASE("srlog_writer_header_roundtrip") {
   // byte (compact separators, fixed key order per contract section 2). Any
   // serializer change that alters the bytes must fail here first.
   const std::string expected_json =
-      "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":2},"
+      "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":3},"
       "\"producer\":{\"core_version\":\"0.1.0-test\","
       "\"git_hash\":\"0123456789abcdef0123456789abcdef01234567\"},"
       "\"config_sha256\":"
@@ -101,7 +101,7 @@ TEST_CASE("srlog_writer_header_roundtrip") {
   REQUIRE(bytes.size() >= 16);
   CHECK(std::memcmp(bytes.data(), magic, 8) == 0);
   CHECK(read_le<std::uint16_t>(bytes, 8) == 1);    // version_major
-  CHECK(read_le<std::uint16_t>(bytes, 10) == 2);   // version_minor
+  CHECK(read_le<std::uint16_t>(bytes, 10) == 3);   // version_minor
   const std::uint32_t json_len = read_le<std::uint32_t>(bytes, 12);
   CHECK(json_len == expected_json.size());
   REQUIRE(bytes.size() >= 16 + json_len);
@@ -182,7 +182,7 @@ TEST_CASE("srlog_v11_header_declares_vehicle_groups") {
   // fixed order forces, mass, env, with the source-derived forces channels
   // in declaration order.
   const std::string expected_json =
-      "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":2},"
+      "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":3},"
       "\"producer\":{\"core_version\":\"0.3.0-test\","
       "\"git_hash\":\"0123456789abcdef0123456789abcdef01234567\"},"
       "\"config_sha256\":"
@@ -467,7 +467,7 @@ TEST_CASE("srlog_v12_header_declares_gnc_groups") {
   // order sensors.* (canonical kind order), nav.est, nav.err, nav.innov,
   // gnc.cmd.
   const std::string expected_json =
-      "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":2},"
+      "{\"format\":{\"name\":\"SRLOG\",\"major\":1,\"minor\":3},"
       "\"producer\":{\"core_version\":\"0.6.0-test\","
       "\"git_hash\":\"0123456789abcdef0123456789abcdef01234567\"},"
       "\"config_sha256\":"

@@ -1573,9 +1573,9 @@ def _check_v023(ctx: dict) -> None:
                 f"vacuous: missing {missing}"
             )
         fmt = run.header["format"]
-        if fmt != {"name": "SRLOG", "major": 1, "minor": 2}:
+        if fmt != {"name": "SRLOG", "major": 1, "minor": 3}:
             raise CheckFailure(
-                f"expected SRLOG v1.2 with major unchanged at 1, got {fmt}"
+                f"expected SRLOG v1.3 with major unchanged at 1, got {fmt}"
             )
         # Identifiable from the HEADER ALONE: read the flag off both headers
         # without touching a single record.
