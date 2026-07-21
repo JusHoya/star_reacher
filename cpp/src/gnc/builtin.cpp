@@ -223,9 +223,11 @@ class PitchProgramGuidance final : public IGncComponent {
     const double p1 = deg2rad_g(models::pwl_interp_clamped(
         pitch_t_s_, pitch_deg_, input.t_s + input.dt_s));
     const Eigen::Quaterniond q0 = models::attitude_from_body_x(
-        models::pitch_program_axis(az_rad_, p0, up_, east_, north_), up_);
+        models::pitch_program_axis(az_rad_, p0, up_, east_, north_),
+        models::pitch_program_roll_ref(az_rad_, p0, up_, east_, north_));
     const Eigen::Quaterniond q1 = models::attitude_from_body_x(
-        models::pitch_program_axis(az_rad_, p1, up_, east_, north_), up_);
+        models::pitch_program_axis(az_rad_, p1, up_, east_, north_),
+        models::pitch_program_roll_ref(az_rad_, p1, up_, east_, north_));
     GncOutput out;
     out.valid = true;
     out.q_i2b = q0;

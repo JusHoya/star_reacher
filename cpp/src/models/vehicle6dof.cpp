@@ -84,6 +84,30 @@ Eigen::Vector3d pitch_program_axis(double az_rad, double pitch_rad,
   return cp * (sa * east_i + ca * north_i) + sp * up_i;
 }
 
+Eigen::Vector3d pitch_program_roll_ref(double az_rad, double pitch_rad,
+                                       const Eigen::Vector3d& up_i,
+                                       const Eigen::Vector3d& east_i,
+                                       const Eigen::Vector3d& north_i) {
+  const double cp = std::cos(pitch_rad);
+  // The Gram-Schmidt of eq:vehicle6dof:attitude leaves a residual of norm
+  // |cos(pitch)| before normalization, so this is exactly the conditioning of
+  // that construction. The switch sits two decades above the 1e-8 guard inside
+  // attitude_from_body_x so the azimuth-independent fallback is unreachable
+  // from the pitch program, and passing up_i below the switch reproduces the
+  // direct construction bit-for-bit.
+  if (std::fabs(cp) > 1.0e-6) {
+    return up_i;
+  }
+  const double sp = std::sin(pitch_rad);
+  const double sa = std::sin(az_rad);
+  const double ca = std::cos(az_rad);
+  // eq:vehicle6dof:rollref -- the closed form of the same Gram-Schmidt,
+  // already unit and orthogonal to the commanded axis. At cos(pitch) = 0 it is
+  // -sin(pitch) times the ground-track direction, so the commanded azimuth
+  // still fixes the roll and the command is continuous through vertical.
+  return cp * up_i - sp * (sa * east_i + ca * north_i);
+}
+
 Eigen::Quaterniond attitude_from_body_x(const Eigen::Vector3d& xb_i,
                                         const Eigen::Vector3d& ref_i) {
   // eq:vehicle6dof:attitude -- body +X along xb_i, body +Y from Gram-Schmidt of

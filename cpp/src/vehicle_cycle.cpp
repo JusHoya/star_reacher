@@ -1325,9 +1325,11 @@ struct VehicleCycle::Impl {
       const double p1 =
           deg2rad_v(models::pwl_interp_clamped(pitch_t, pitch_d, t + dt));
       const Eigen::Quaterniond q0 = models::attitude_from_body_x(
-          models::pitch_program_axis(az, p0, up0, east0, north0), up0);
+          models::pitch_program_axis(az, p0, up0, east0, north0),
+          models::pitch_program_roll_ref(az, p0, up0, east0, north0));
       const Eigen::Quaterniond q1 = models::attitude_from_body_x(
-          models::pitch_program_axis(az, p1, up0, east0, north0), up0);
+          models::pitch_program_axis(az, p1, up0, east0, north0),
+          models::pitch_program_roll_ref(az, p1, up0, east0, north0));
       q = q0;
       omega_b = models::omega_from_quaternions(q0, q1, dt);
     } else if (mode == AttMode::kRateCommand) {

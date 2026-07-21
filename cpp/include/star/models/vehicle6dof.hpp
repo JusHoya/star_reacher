@@ -81,6 +81,24 @@ Eigen::Vector3d pitch_program_axis(double az_rad, double pitch_rad,
                                    const Eigen::Vector3d& east_i,
                                    const Eigen::Vector3d& north_i);
 
+// Roll reference to hand to attitude_from_body_x for a pitch-program command
+// (eq:vehicle6dof:rollref). At pitch = 90 deg the commanded axis is local up,
+// so up_i itself is parallel to body +X and the Gram-Schmidt of
+// eq:vehicle6dof:attitude is degenerate: the generic fallback would clock the
+// triad to an azimuth-independent inertial axis, stepping the command by tens
+// of degrees in roll on the first cycle that leaves vertical. The pitch program
+// does not need the fallback, because its azimuth is commanded rather than
+// inferred: the Gram-Schmidt result has the closed form
+// cos(pitch) up - sin(pitch) (sin(az) east + cos(az) north), which stays unit
+// and azimuth-resolved as pitch -> 90 deg. This returns up_i where the
+// Gram-Schmidt is well conditioned (bit-identical to the direct construction)
+// and that closed form where it is not, so the command is continuous through a
+// true vertical hold.
+Eigen::Vector3d pitch_program_roll_ref(double az_rad, double pitch_rad,
+                                       const Eigen::Vector3d& up_i,
+                                       const Eigen::Vector3d& east_i,
+                                       const Eigen::Vector3d& north_i);
+
 // Attitude q_i2b whose body +X maps to the unit GCRF direction xb_i
 // (eq:vehicle6dof:attitude), completing the triad by Gram-Schmidt of ref_i
 // against xb_i (body +Y in the xb_i-ref_i plane). The vehicle aerodynamics and
