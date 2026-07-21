@@ -207,6 +207,234 @@ def test_gnc_validation_rejections(tmp_path, monkeypatch, mutation, expected_fra
     assert any(expected_fragment in e for e in errors), (expected_fragment, errors)
 
 
+# The [gnc.nav] block that makes a mission build a measurement-noise matrix R
+# out of the aiding sigmas below. Only the error-state EKF does; substituting
+# GOLDEN_MISSION's dead reckoner is what
+# test_zero_sigma_accepted_without_an_r_building_navigator uses to show the
+# rules are scoped to the component that owns R.
+EKF_NAV = """
+[gnc.nav]
+component = "error_state_ekf"
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+v0_mps = [0.0, 7546.0, 0.0]
+p0_m = [7.0e6, 0.0, 0.0]
+bg0_radps = [0.0, 0.0, 0.0]
+ba0_mps2 = [0.0, 0.0, 0.0]
+p0_sigma_att_rad = [1.0e-3, 1.0e-3, 1.0e-3]
+p0_sigma_vel_mps = [0.5, 0.5, 0.5]
+p0_sigma_pos_m = [50.0, 50.0, 50.0]
+p0_sigma_bg_radps = [1.0e-7, 1.0e-7, 1.0e-7]
+p0_sigma_ba_mps2 = [1.0e-5, 1.0e-5, 1.0e-5]
+"""
+
+DEAD_RECKONING_NAV = """
+[gnc.nav]
+component = "dead_reckoning"
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+"""
+
+
+def _ekf_mission(text=None):
+    """GOLDEN_MISSION navigating with the EKF instead of the dead reckoner."""
+    return (text or GOLDEN_MISSION).replace(DEAD_RECKONING_NAV, EKF_NAV)
+
+
+# The three aiding sensors whose sigmas build the EKF's measurement-noise
+# matrix R, appended to the mission by the R-singularity cases below. Every
+# sigma here is nonzero, so the block is accepted as written and each case
+# below isolates exactly one way of driving a sigma to zero.
+AIDING_SENSORS = """
+[sensors.startracker]
+sample_rate_hz = 1
+boresight_b = [0.0, 0.0, 1.0]
+sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]
+
+[sensors.navfix]
+sample_rate_hz = 1
+sigma_r_m = [10.0, 10.0, 10.0]
+sigma_v_mps = [0.1, 0.1, 0.1]
+
+[sensors.altimeter]
+sample_rate_hz = 1
+sigma_noise_m = 20.0
+sigma_bias_m = 0.0
+h_min_m = 0.0
+h_max_m = 0.0
+"""
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_fragment"),
+    [
+        # A zero sigma is refused for the reason a zero p0_sigma already is:
+        # it makes the matrix it builds singular. Writing the zero and
+        # omitting the key are separate routes to the same R, because the
+        # core-side NavSensorModel members default to zero, so both are
+        # covered for every key.
+        (
+            lambda t: t.replace(
+                "sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]",
+                "sigma_rad = [0.0, 0.0, 0.0]",
+            ),
+            "[sensors.startracker] sigma_rad",
+        ),
+        (
+            lambda t: t.replace("sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]\n", ""),
+            "[sensors.startracker] sigma_rad: missing required key",
+        ),
+        (
+            lambda t: t.replace(
+                "sigma_r_m = [10.0, 10.0, 10.0]", "sigma_r_m = [0.0, 0.0, 0.0]"
+            ),
+            "[sensors.navfix] sigma_r_m",
+        ),
+        (
+            lambda t: t.replace("sigma_r_m = [10.0, 10.0, 10.0]\n", ""),
+            "[sensors.navfix] sigma_r_m: missing required key",
+        ),
+        (
+            lambda t: t.replace(
+                "sigma_v_mps = [0.1, 0.1, 0.1]", "sigma_v_mps = [0.0, 0.0, 0.0]"
+            ),
+            "[sensors.navfix] sigma_v_mps",
+        ),
+        (
+            lambda t: t.replace("sigma_v_mps = [0.1, 0.1, 0.1]\n", ""),
+            "[sensors.navfix] sigma_v_mps: missing required key",
+        ),
+        # A single zeroed axis is enough: R is singular if any diagonal entry
+        # vanishes, not only if all three do.
+        (
+            lambda t: t.replace(
+                "sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]",
+                "sigma_rad = [1.0e-5, 0.0, 5.0e-5]",
+            ),
+            "[sensors.startracker] sigma_rad",
+        ),
+        # The altimeter's rule is the quadrature sum, so it fires only when
+        # both terms vanish.
+        (
+            lambda t: t.replace("sigma_noise_m = 20.0", "sigma_noise_m = 0.0"),
+            "[sensors.altimeter] sigma_noise_m: sigma_noise_m**2 + "
+            "sigma_bias_m**2 must be > 0",
+        ),
+        (
+            lambda t: t.replace("sigma_noise_m = 20.0\n", ""),
+            "[sensors.altimeter] sigma_noise_m: missing required key",
+        ),
+        (
+            lambda t: t.replace("sigma_bias_m = 0.0\n", ""),
+            "[sensors.altimeter] sigma_bias_m: missing required key",
+        ),
+    ],
+)
+def test_singular_r_sigmas_rejected(
+    tmp_path, monkeypatch, mutation, expected_fragment
+):
+    """Every route to a singular R is refused, naming the offending key."""
+    text = mutation(_ekf_mission() + AIDING_SENSORS)
+    resolved, errors = _validate_text(tmp_path, text, monkeypatch)
+    assert resolved is None
+    assert any(expected_fragment in e for e in errors), (
+        expected_fragment, errors
+    )
+
+
+def test_aiding_sensor_block_is_accepted_unmutated(tmp_path, monkeypatch):
+    """The control for the rejection cases above.
+
+    Without it, a typo in AIDING_SENSORS or EKF_NAV would make every case in
+    that parametrization pass for the wrong reason.
+    """
+    resolved, errors = _validate_text(
+        tmp_path, _ekf_mission() + AIDING_SENSORS, monkeypatch
+    )
+    assert not errors, errors
+    assert resolved["gnc"]["nav"]["component"] == "error_state_ekf"
+    assert resolved["sensors"]["altimeter"]["sigma_noise_m"] == 20.0
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda t: t.replace(
+            "sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]",
+            "sigma_rad = [0.0, 0.0, 0.0]",
+        ),
+        lambda t: t.replace("sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]\n", ""),
+        lambda t: t.replace("sigma_noise_m = 20.0", "sigma_noise_m = 0.0"),
+    ],
+)
+def test_zero_sigma_accepted_without_an_r_building_navigator(
+    tmp_path, monkeypatch, mutation
+):
+    """A noise-free instrument stays legal when nothing builds an R from it.
+
+    A sigma has two jobs: it is always the sensor model's noise draw, where
+    zero is the documented ideal (error-free) instrument, and it is R's
+    diagonal only under a navigator that forms R. Under GOLDEN_MISSION's dead
+    reckoner there is no measurement update at all, so the same zero that is
+    rejected above carries no conditioning problem and must be accepted -
+    tests/python/test_p6_optical_gates.py depends on exactly this, running a
+    deliberately noise-free star tracker so its aberration comparison is
+    exact rather than statistical.
+    """
+    resolved, errors = _validate_text(
+        tmp_path, mutation(GOLDEN_MISSION + AIDING_SENSORS), monkeypatch
+    )
+    assert not errors, errors
+    assert resolved["gnc"]["nav"]["component"] == "dead_reckoning"
+
+
+@pytest.mark.parametrize(
+    ("sigma_noise_m", "sigma_bias_m"),
+    [
+        (0.0, 5.0),   # bias-only: white-noise-free, turn-on bias configured
+        (20.0, 0.0),  # noise-only: the form the shipped missions use
+        (20.0, 5.0),  # both terms present
+    ],
+)
+def test_altimeter_accepts_either_sigma_alone(
+    tmp_path, monkeypatch, sigma_noise_m, sigma_bias_m
+):
+    """A bias-only altimeter stays legal.
+
+    cpp/src/gnc/ekf.cpp builds the altimeter's R entry as
+    r = sigma_noise_m**2 + sigma_bias_m**2, so an instrument with no white
+    noise but a configured turn-on bias has a perfectly well-conditioned R.
+    Gating on sigma_noise_m alone - the obvious reading of "sigmas must be
+    positive" - would reject it, so this is the case that pins the rule to
+    the quadrature sum.
+    """
+    text = (_ekf_mission() + AIDING_SENSORS).replace(
+        "sigma_noise_m = 20.0", f"sigma_noise_m = {sigma_noise_m}"
+    ).replace("sigma_bias_m = 0.0", f"sigma_bias_m = {sigma_bias_m}")
+    resolved, errors = _validate_text(tmp_path, text, monkeypatch)
+    assert not errors, errors
+    altimeter = resolved["sensors"]["altimeter"]
+    assert altimeter["sigma_noise_m"] == sigma_noise_m
+    assert altimeter["sigma_bias_m"] == sigma_bias_m
+
+
+def test_every_shipped_mission_still_validates(monkeypatch):
+    """The over-rejection gate for the R-singularity rules.
+
+    Making four sensor keys required can only be right if no mission the
+    repository ships relied on omitting them; this proves it against the
+    whole catalogue rather than the one mission that carries aiding sensors
+    today, so a future mission cannot be added in the rejected shape.
+    """
+    monkeypatch.chdir(REPO_ROOT)
+    missions = sorted((REPO_ROOT / "missions").glob("*.toml"))
+    assert missions, "no shipped missions found"
+    failures = {}
+    for mission in missions:
+        resolved, errors = validate_mission_file(mission)
+        if resolved is None:
+            failures[mission.name] = errors
+    assert not failures, failures
+
+
 def test_sensors_without_gnc_rejected(tmp_path, monkeypatch):
     text = GOLDEN_MISSION
     # Strip every [gnc*] table but keep [sensors.imu].
