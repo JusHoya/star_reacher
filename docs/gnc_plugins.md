@@ -232,6 +232,14 @@ they are reduced as though they were a rotation, and the resulting NEES is
 positive, order-unity, and wrong. Refusing the layout at construction is what
 keeps such a log from being written in the first place.
 
+That refusal bounds what this simulator writes, not what the consumer accepts.
+A log reaching `star consistency` from anywhere else — hand-written, synthetic,
+or produced by a future version whose producer-side rule differs — is still
+reduced with the assumption unverified. Closing that needs the declared layout
+in the SRLOG header, which is a format-version change; it is deferred through
+the PRD section 9 valve and registered, with the field's contents specified, as
+item 4 of [`release_checklist.md`](release_checklist.md). See KNOWN-ISSUE-P6-5.
+
 Two ways out if your state is genuinely not quaternion-led. Reorder the layout
 so the attitude block leads, which costs nothing but the declaration order.
 Or declare no layout at all: a component that returns an empty `error_layout()`

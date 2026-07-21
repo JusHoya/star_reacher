@@ -363,10 +363,29 @@ hand-written file, a synthetic fixture, or a log from a future version whose
 producer-side rule differs — is reduced with the assumption unchecked.
 Closing that means carrying the declared layout in the SRLOG header and
 requiring it before the collapse; the layout already exists in the core as
-`error_layout()`. That is a format field and remains deferred.
+`error_layout()`.
 
-**Exit-criterion impact: none.** Every criterion that computes NEES does so on
-the built-in EKF, for which the collapse is the correct reduction.
+**That is a format field, and it is deferred rather than outstanding.** At the
+Phase 6 close it was routed through the PRD section 9 valve — whose format-field
+provision was added in the same change, the valve having previously been worded
+for unavailable tools and hardware only — and is registered as item 4 of
+[`docs/release_checklist.md`](release_checklist.md). That item specifies what
+the field must carry (per-block quantity, form, offset and width, plus the
+declaring component's `state_dim` and `cov_dim`, since it is their relationship
+that triggers the collapse), names its target format version (SRLOG 1.4, an
+additive minor bump), and enumerates the three sites that re-implement this
+reduction independently and must move with it: `_reduce_error` in
+`python/star_reacher/consistency_cli.py`, `_p6_reduce_error` in
+`python/star_reacher/verify.py`, and `reduce_error` in
+`tests/python/test_ekf_consistency.py`. It is also recorded inline against
+Phase 6 exit criterion 3 in `PRD.md`, so the deferral appears beside the
+criterion whose instrument it affects and not only here.
+
+**Exit-criterion impact: none in substance.** Every criterion that computes NEES
+does so on the built-in EKF, for which the collapse is the correct reduction.
+The deferral is recorded against criterion 3 because that criterion's instrument
+is the consumer carrying the assumption, not because the criterion's verdict is
+in doubt.
 
 ## KNOWN-ISSUE-P6-6 — the reference ellipsoid reaches the sensors and the filter by two paths
 

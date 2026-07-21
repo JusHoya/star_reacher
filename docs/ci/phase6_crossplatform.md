@@ -1326,6 +1326,28 @@ The widest scale-relative divergence found anywhere in this pass is 1.06e-10
 (`gnc.cmd.w_cmd_b_radps`, ascent), which is inside 1e-9 but by only one order
 of magnitude, on a channel the gate does not sample.
 
+**Addressed on the Phase 6 closeout.** The gate was widened rather than
+replaced: the final-state path above is unchanged and still enforces D-10, and
+a channel-level path was added beside it (`extract-channels`,
+`measure-channels`, `gate-channels` in `scripts/cross_platform_divergence.py`,
+recorded in the `[channels]` table of
+`tests/golden/determinism/cross_platform.toml`). It compares **every** channel
+of five missions — the four measured in this section plus the new
+`missions/leo_optical_nav.toml` — splitting them into an exact class asserted
+bit-identical and a tolerance class gated against a derived bound. The exact
+class is where this section's structural split is turned into an assertion:
+every integer and flag channel, every `t_s`, the whole of the basic-ops-only
+two-body mission, and the point-mass missions' `truth.r_m`, `truth.v_mps` and
+`mass.*`. The tolerance class is the libm-bearing remainder, where this
+section established that cross-binary byte identity is false rather than merely
+unmeasured, and is gated at sqrt(1.06e-10 * 1e-9) = 3.2558e-10 — the geometric
+mean of the worst value measured here and the D-10 ceiling, sitting a factor of
+3.07 above the former and the same factor below the latter. Two caveats from
+this section carry straight into that gate and are stated in its record: the
+1.06e-10 figure is a two-leg x86-64 measurement, so macOS and aarch64 remain
+the reason for the upper margin; and it is a worst case over five missions and
+one seed each, not a bound over the mission space.
+
 ### What is now measured
 
 - Windows/MSVC and Linux/GCC produce **byte-identical** `run.srlog` files for
@@ -1394,11 +1416,20 @@ the missions measured here.**
   Error growth in a closed loop is not guaranteed monotone or bounded, and a
   longer or less stable scenario could diverge further; a Monte Carlo over
   seeds and durations would be needed to state a real bound.
-- **Whether any *committed* mission emits a camera group.** None does. The
-  camera header echo was tested through the optical-gate fixture's mission
-  text, which is committed inside a Python test module rather than as a
-  `missions/*.toml`. The echo is therefore verified, but not by anything a
-  user could run from `missions/`.
+- **Whether any *committed* mission emits a camera group.** None did at the
+  time of this pass. The camera header echo was tested through the
+  optical-gate fixture's mission text, which is committed inside a Python
+  test module rather than as a `missions/*.toml`, so the echo was verified
+  but not by anything a user could run from `missions/`.
+  **Closed on the Phase 6 closeout:** `missions/leo_optical_nav.toml` is
+  committed and is the first shipped mission that configures a camera. It
+  emits the `sensors.camera` group and the v1.3 `gnc.camera` header echo,
+  projects five surface landmarks at 2 Hz over a 60 s run, and is one of the
+  five missions the widened gate below compares. Measured on the maintainer
+  host: 453 of 600 landmark-samples are fully visible against the
+  `eq:camera:nearside` and sensor-bounds tests, every one of the 120 camera
+  samples carries at least one visible landmark, and the visible pixels span
+  u = 1.7 to 1275.3 of 1280 and v = 95.4 to 910.8 of 1024.
 - **The FR-30 CI job itself.** Not run here. This pass replicates its
   *question* at a stronger level on one of its four legs' toolchains, but the
   job's own four-leg measurement was not exercised.
