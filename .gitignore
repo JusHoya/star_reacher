@@ -36,6 +36,10 @@ docs/mathlib/*.pdf
 docs/report/*.pdf
 docs/mathlib/version.tex
 docs/report/version.tex
+# pdftotext extractions, used to confirm that table rows actually render
+# rather than falling off a page; regenerated on demand, never tracked.
+docs/mathlib/mathlib_extract.txt
+docs/mathlib/mathlib_layout.txt
 
 # Agent-session state (local permissions, worktrees) is per-machine, never shared
 .claude/
