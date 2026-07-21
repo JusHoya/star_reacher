@@ -583,9 +583,16 @@ def test_close_releases_the_log_of_an_abandoned_run(tmp_path):
         sim.step()
         sim.step()
     log = outdir / "run.srlog"
-    assert log.exists() and log.stat().st_size > 0
+    assert log.exists(), "the log is created when the run opens, not when it ends"
 
     sim.close()
+    # Measured after close() because close() is what flushes: SRLOG v1 section
+    # 5.1 makes the file's size before close unspecified, and libstdc++ really
+    # does leave it at 0 bytes here, where the MSVC runtime happens not to.
+    # Asserting a nonzero size before this line would assert on the C++
+    # standard library's buffer size rather than on any project guarantee.
+    assert log.stat().st_size > 0, "close() did not flush the abandoned prefix"
+
     # The handle is gone: on Windows this is what an open handle would refuse.
     log.unlink()
     assert not log.exists()

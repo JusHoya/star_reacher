@@ -456,6 +456,33 @@ Records appear in the order the core emitted them. Within each group, `t_s`
 is strictly increasing. No count field exists anywhere: readers consume
 records until EOF, and a trailing partial record is corruption.
 
+### 5.1 When records reach disk (normative)
+
+The writer is buffered, and **the only point at which the file is guaranteed
+to hold every record emitted so far is after `close()`.** `VehicleCycle::close()`
+- reached explicitly, through `Sim.close()` or the context manager, or
+implicitly when a run ends normally - flushes the stream and releases the
+handle. A run that ends normally is therefore complete on disk; a run
+abandoned part way is complete on disk only once it is closed.
+
+Before that point the file's size is **unspecified**. It may legitimately be
+0 bytes after any number of steps: the underlying stream flushes when its
+buffer fills, so how much has reached disk mid-run is a property of the C++
+standard library's buffer size, not of this format. The observed granularity
+differs between platforms - libstdc++ flushes in 8192-byte units, so a short
+run reaches disk later there than under the MSVC runtime - and no code should
+depend on either. In particular:
+
+- Nothing may treat a mid-run file size as a progress or liveness signal.
+- Nothing may read a log that is still being written. Section 8 makes a
+  trailing partial record `SrlogCorruptError`, so a concurrent reader is
+  already outside the format's contract; the absence of a flush guarantee is
+  the writer-side statement of the same rule.
+
+This is a deliberate design point rather than an omission. Per-record flushing
+would replace one buffered write per 8 KB with a syscall per record on the
+core's hot loop, for a durability property no reader is permitted to use.
+
 ### Phase 1 (two-body placeholder) semantics
 
 - `truth` records are written at `truth_rate_hz`: one record at t = 0 and one
