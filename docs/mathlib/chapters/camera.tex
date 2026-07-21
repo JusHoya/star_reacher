@@ -346,17 +346,26 @@ The module implementing this chapter is
   \end{tabular}
 \end{table}
 
-\begin{table}[htbp]
-  \centering
+% longtable rather than table: these rows outgrew a single page once the
+% criterion-7 intrinsics clause was gated, and a float too large for the
+% page silently drops its trailing rows rather than warning usefully.
+\begin{longtable}{lp{8.2cm}}
   \caption{Validation evidence for the camera hook: in-loop behavior and
     the blind pinhole re-gate (pytest,
     \texttt{tests/python/test\_p6\_optical\_gates.py} and
     \texttt{test\_gnc\_missions.py}).}
-  \label{tab:camera:validation-py}
-  \begin{tabular}{lp{8.2cm}}
-    \toprule
-    Test ID & Acceptance basis \\
-    \midrule
+  \label{tab:camera:validation-py} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
     \testid{test_full_sensor_suite_reruns_bit_identical} &
       Exit criterion~1 bit identity, camera half. Two seeded runs of the
       reference mission with all six FR-23 sensor kinds declared agree on
@@ -373,11 +382,14 @@ The module implementing this chapter is
       $< 10^{-6}$ pixels, on a fixture with $f_x \ne f_y$, an off-axis
       principal point, a nonzero mount station, and a non-identity mount
       rotation, so a transposed convention or a shared scale cannot
-      hide. The principal point is off-axis \emph{as of} the fixture
-      revision recorded with
-      \testid{test_camera_echo_fixture_is_not_degenerate}: it previously
-      sat at $(511.5, 383.5)$, which under the pixel-center convention is
-      exactly the image center $((W-1)/2, (H-1)/2)$ of the
+      hide. The principal point is off-axis only as of the fixture
+      revision recorded in the next row. \\
+    \testid{test_camera_echo_fixture_is_not_degenerate} &
+      Pins the four fixture properties that make each camera constant
+      separately resolvable, so the geometry cannot drift into a state
+      where one constant stands in for another. The principal point
+      previously sat at $(511.5, 383.5)$, which under the pixel-center
+      convention is exactly the image center $((W-1)/2, (H-1)/2)$ of the
       $1024 \times 768$ sensor. On that geometry $c_x$ and $c_y$ were
       recoverable from the image dimensions, so discarding the principal
       point entirely and substituting the center changed the worst
@@ -403,17 +415,21 @@ The module implementing this chapter is
       non-degenerate by the same fixture that serves the pixel clause
       ($f_x \ne f_y$, off-axis principal point, nonzero mount station,
       non-identity mount rotation), so no echoed constant is recoverable
-      from another; a companion assertion pins those four properties so
-      the fixture cannot silently become degenerate. \\
+      from another. Measured worst residual, \num{1.705303e-13} pixels
+      against the $10^{-6}$ gate. \\
     \testid{test_camera_echo_mutation_is_detected} &
       Non-vacuity of the row above, by construction rather than by
-      inspection: the test rewrites the echoed $f_x$ in the emitted
-      header bytes and requires the reconstruction to move by more than
-      the gate tolerance, so a gate that ignored the echo could not
-      pass. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+      inspection: each echoed constant is perturbed in turn and the
+      reconstruction is required to leave the gate tolerance, so a gate
+      that read the intrinsics from anywhere but the header could not
+      pass. Measured worst residuals --- $f_x$ and $f_y$ scaled by
+      $1 + 10^{-6}$: \num{4.75e-4} and \num{5.11e-5} pixels; $c_x$, $c_y$
+      shifted \num{1e-5} pixels: \num{1.0e-5} each; the mount quaternion
+      perturbed \num{1e-9} in one component: \num{1.55e-6}; the mount
+      station shifted \qty{1}{\milli\metre}: \num{1.29e-6}. All ten
+      mutations tried, including dropping the mount rotation and the
+      mount station entirely, are rejected. \\
+\end{longtable}
 
 Exit criterion~7's pose bit-exactness clause is satisfied \emph{by
 construction} rather than by a test tolerance: the emitted pose channels

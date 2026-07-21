@@ -611,16 +611,25 @@ exact identity, which is itself asserted rather than assumed.
   \end{tabular}
 \end{table}
 
-\begin{table}[htbp]
-  \centering
-  \caption{Validation evidence for the ideal IMU: in-loop increments and
+% longtable rather than table: these rows outgrew a single page once the
+% stochastic-path identity rows landed, and a float too large for the page
+% silently drops its trailing rows rather than warning usefully.
+\begin{longtable}{lp{7.2cm}}
+  \caption{Validation evidence for the IMU: in-loop increments and
     run-to-run identity (pytest,
     \texttt{tests/python/test\_gnc\_missions.py}).}
-  \label{tab:imu:validation-py}
-  \begin{tabular}{lp{7.2cm}}
-    \toprule
-    Test ID & Acceptance basis \\
-    \midrule
+  \label{tab:imu:validation-py} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
     \testid{test_ideal_imu_increments_bit_exact} &
       On a logged free-flyer run the emitted $\Delta\vv{\theta}$ equals the
       quadrature~\eqref{eq:imu:quadrature} of the logged truth rate over
@@ -636,9 +645,32 @@ exact identity, which is itself asserted rather than assumed.
       file hash. The \texttt{sensors.imu} group is included; that mission
       declares the IMU with a sample rate alone, so the identity it
       establishes for this chapter is again of the noise-free path. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+    \testid{test_stochastic_imu_reruns_bit_identical} &
+      Exit criterion~1's every-sensor clause for the \emph{stochastic}
+      path, which the row above does not reach. The same six-sensor
+      mission is run twice with the IMU's full error chain active ---
+      turn-on bias, Gauss-Markov bias instability, angle and velocity
+      random walk, quantization, scale factor, and misalignment --- and
+      compared by whole-file SHA-256 and then channel by channel. The
+      quantizer carries a residual from each sample into the next
+      (equation~\eqref{eq:imu:quant}), so a draw schedule that diverged at
+      any one sample would contaminate every later sample rather than a
+      single value; agreement across the whole record is therefore
+      evidence about the schedule and not only about the outputs.
+      Measured: seeding the IMU stream non-deterministically fails this
+      row while leaving
+      \testid{test_full_sensor_suite_reruns_bit_identical} green, which is
+      the coverage gap it exists to close. \\
+    \testid{test_stochastic_imu_identity_is_not_degenerate} &
+      Non-vacuity of the row above. A build that dropped every IMU noise
+      coefficient would satisfy a bit-identity assertion perfectly, so
+      three runs that must \emph{differ} pin the fixture: a changed master
+      seed (measured, \qty{1.68e-5}{\radian} worst increment difference),
+      the quantizer step removed (\qty{9.86e-8}{\radian}), and the ideal
+      IMU of the row above (\qty{1.26e-5}{\radian}). A fourth assertion
+      requires the increment stream to take many distinct values, so a
+      stream drawn once and held could not pass. \\
+\end{longtable}
 
 Three items specified by this chapter remain outstanding and are recorded
 here rather than tabled, so the evidence tables state only evidence that
