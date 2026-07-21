@@ -472,15 +472,21 @@ identifier is machine-checked to exist in the test tree by
 discharged --- the exit-criterion-10 performance re-gate --- is stated
 after the tables.
 
-\begin{table}[htbp]
-  \centering
+\begin{longtable}{lp{8.4cm}}
   \caption{Validation evidence for the built-in GNC components: core
     (doctest, \texttt{cpp/tests/test\_gnc.cpp}).}
-  \label{tab:gnc:validation}
-  \begin{tabular}{lp{8.4cm}}
-    \toprule
-    Test ID & Acceptance basis \\
-    \midrule
+  \label{tab:gnc:validation} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
     \testid{gnc_pd_attitude_golden} &
       Five committed golden cases drive
       equations~\eqref{eq:gnc:deltaq}--\eqref{eq:gnc:sat} against
@@ -536,9 +542,7 @@ after the tables.
       wrote. The remaining default introspection is asserted to be well
       defined and empty, which is what makes the two throws a contract
       rather than a gap. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\end{longtable}
 
 \begin{table}[htbp]
   \centering

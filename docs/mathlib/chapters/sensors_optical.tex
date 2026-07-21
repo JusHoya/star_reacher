@@ -412,17 +412,23 @@ The modules implementing this chapter are
 \texttt{cpp/src/sensors/optical.cpp} (both sensors and the shared
 aberration function).
 
-\begin{table}[htbp]
-  \centering
+\begin{longtable}{lp{8.2cm}}
   \caption{Validation evidence for the optical sensors (doctest,
     \texttt{cpp/tests/test\_sensors.cpp}; pytest,
     \texttt{tests/python/test\_p6\_optical\_gates.py} and
     \texttt{test\_gnc\_missions.py}).}
-  \label{tab:optical:validation}
-  \begin{tabular}{lp{8.2cm}}
-    \toprule
-    Test ID & Acceptance basis \\
-    \midrule
+  \label{tab:optical:validation} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
     \testid{sensors_aberration_magnitude_and_direction} &
       Equation~\eqref{eq:optical:aberration} against the closed-form
       magnitude~\eqref{eq:optical:abmag}: the perpendicular-source
@@ -540,9 +546,7 @@ aberration function).
       A wrong $\quat{q}_{\mathrm{ab}}$ appears here as a mean offset rather
       than as noise --- coverage the C++ gate cannot supply, since it fixes
       $\vv{v} = \vv{0}$ and so composes against the identity. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\end{longtable}
 
 \paragraph{What the criterion-9 tolerance is, and what it is not.} The
 \qty{1}{\mas} figure is the \emph{requirement} exit criterion~9 states, not

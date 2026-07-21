@@ -242,15 +242,21 @@ Binding implementation notes for the Phase~6 modules:
 The module implementing this chapter is
 \texttt{cpp/src/sensors/radio.cpp}.
 
-\begin{table}[htbp]
-  \centering
+\begin{longtable}{lp{8.2cm}}
   \caption{Validation evidence for the radio-class sensors: core (doctest,
     \texttt{cpp/tests/test\_sensors.cpp}).}
-  \label{tab:radio:validation}
-  \begin{tabular}{lp{8.2cm}}
-    \toprule
-    Test ID & Acceptance basis \\
-    \midrule
+  \label{tab:radio:validation} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
     \testid{sensors_navfix_altimeter_chi_square_over_1000_draws} &
       Exit criterion~6: the three ensemble-mean
       statistics~\eqref{eq:radio:chi2} over $M = 1000$ seeded draws at
@@ -294,9 +300,7 @@ The module implementing this chapter is
     \testid{sensors_factory_kind_vocabulary} &
       Both radio kinds construct from the factory at their configured rate
       and report their own \texttt{sensors.*} group names. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\end{longtable}
 
 \begin{table}[htbp]
   \centering

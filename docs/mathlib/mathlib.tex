@@ -10,6 +10,11 @@
 \usepackage{amssymb}
 \usepackage{bm}
 \usepackage{booktabs}
+% The validation-evidence tables are longer than a page. As ordinary floats
+% they overflowed silently ("Float too large for page"), which drops rows off
+% the bottom of the PDF while the source still lists them - an evidence table
+% that cannot be read is not evidence.
+\usepackage{longtable}
 \usepackage{array}
 \usepackage{siunitx}
 % Milliarcsecond: standard astrometric unit used by the frames chapter,
