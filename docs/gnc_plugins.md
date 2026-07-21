@@ -201,12 +201,39 @@ rather than a subtraction, and which side it is composed on and how it is
 parameterized are the estimator's own convention, so the descriptor carries
 `QUAT_ERROR_LOCAL` (`dq = conj(q_est) ⊗ q_true`, resolved in the estimated
 body frame), `QUAT_ERROR_GLOBAL` (`dq = q_true ⊗ conj(q_est)`, resolved in
-the inertial frame), the `ROTATION_VECTOR_*` small-angle reductions
-`2 sgn(dq_w) dq_v` of each, and `QUAT_DIFFERENCE_ALIGNED` for an estimator
-that treats the four quaternion components as ordinary state entries.
+the inertial frame), and `QUAT_DIFFERENCE_ALIGNED` for an estimator that
+treats the four quaternion components as ordinary state entries.
 Quaternion forms are sign-canonicalized to the `+w` hemisphere so the double
 cover cannot flip the logged error between neighbouring epochs. Quaternions
 are scalar-first (D-7).
+
+Every attitude form occupies **four** slots, so a block's error width always
+equals its state width. That is what lets one number — `error_block_size` —
+both tile the state vector during validation and size the write into
+`nav.err`.
+
+### Three-parameter attitude states are not supported
+
+An estimator whose state carries a three-parameter attitude directly — MRP,
+Gibbs/Rodrigues, or a rotation-vector error state — has no admissible form
+here, and this is a real gap rather than an oversight in the enumeration.
+Every attitude form reads `q_est` as four consecutive state slots at the
+block's offset, and a three-parameter state does not publish one. Serving
+that case requires a way for a component to supply its estimated quaternion
+independently of its state layout, which is a change to the descriptor
+rather than an added enumerator.
+
+A pair of three-slot `ROTATION_VECTOR_LOCAL` / `ROTATION_VECTOR_GLOBAL`
+forms was removed for appearing to serve this case while not doing so. They
+declared three slots but were read as four, so an estimator that placed its
+attitude block last could pass `validate_error_layout` and then have its
+error state read one `double` past the state buffer. The reduction itself is
+not lost: the consistency evaluator already applies
+`dtheta = 2 sgn(dq_w) dq_v` downstream, to exactly the `n = 16` / `m = 15`
+case the built-in EKF presents ([`docs/formats/srlog_v1.md`](formats/srlog_v1.md)).
+If you need a three-parameter attitude state, the descriptor must grow —
+re-adding the enumerators would restore the out-of-bounds read without
+serving the case.
 
 A worked example — the built-in `pd_attitude` law reimplemented in Python and
 validated against it — is at

@@ -93,8 +93,7 @@ Eigen::Quaterniond attitude_error(ErrorForm form,
                                   const Eigen::Quaterniond& q_true) {
   // kQuatDifferenceAligned is additive rather than a composition and is
   // handled by the caller; only the multiplicative forms reach here.
-  const bool local = form == ErrorForm::kQuatErrorLocal ||
-                     form == ErrorForm::kRotationVectorLocal;
+  const bool local = form == ErrorForm::kQuatErrorLocal;
   Eigen::Quaterniond dq =
       local ? rotation::quat_multiply(rotation::quat_conjugate(q_est), q_true)
             : rotation::quat_multiply(q_true, rotation::quat_conjugate(q_est));
@@ -112,10 +111,10 @@ int error_block_size(ErrorQuantity quantity, ErrorForm form) {
       case ErrorForm::kQuatErrorLocal:
       case ErrorForm::kQuatErrorGlobal:
       case ErrorForm::kQuatDifferenceAligned:
+        // Every attitude form is four slots, which is what makes this one
+        // number serve as both the state width validate_error_layout tiles
+        // with and the error width compute_error_state writes.
         return 4;
-      case ErrorForm::kRotationVectorLocal:
-      case ErrorForm::kRotationVectorGlobal:
-        return 3;
       case ErrorForm::kDifference:
         break;
     }
@@ -208,19 +207,13 @@ void compute_error_state(const std::vector<ErrorBlock>& layout,
         e[o + 3] = qt.z() - q_est.z();
         continue;
       }
+      // The remaining multiplicative forms are both four slots, matching the
+      // four state slots q_est was read from just above.
       const Eigen::Quaterniond dq = attitude_error(b.form, q_est, truth.q_i2b);
-      if (b.form == ErrorForm::kQuatErrorLocal ||
-          b.form == ErrorForm::kQuatErrorGlobal) {
-        e[o] = dq.w();
-        e[o + 1] = dq.x();
-        e[o + 2] = dq.y();
-        e[o + 3] = dq.z();
-      } else {
-        // dq is already in the +w hemisphere, so 2 sgn(dq_w) dq_v is 2 dq_v.
-        e[o] = 2.0 * dq.x();
-        e[o + 1] = 2.0 * dq.y();
-        e[o + 2] = 2.0 * dq.z();
-      }
+      e[o] = dq.w();
+      e[o + 1] = dq.x();
+      e[o + 2] = dq.y();
+      e[o + 3] = dq.z();
       continue;
     }
     if (b.quantity == ErrorQuantity::kMass) {

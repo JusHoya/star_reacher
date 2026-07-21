@@ -1327,21 +1327,17 @@ PYBIND11_MODULE(_core, m) {
       "quantity except ATTITUDE. An attitude error is a rotation difference: "
       "QUAT_ERROR_LOCAL is dq = conj(q_est) (x) q_true (4 slots, resolved in "
       "the estimated body frame), QUAT_ERROR_GLOBAL is dq = q_true (x) "
-      "conj(q_est) (4 slots, resolved in the inertial frame), and the "
-      "ROTATION_VECTOR forms are the small-angle reduction 2 sgn(dq_w) dq_v "
-      "of the respective dq (3 slots), and QUAT_DIFFERENCE_ALIGNED is the "
-      "componentwise q_true - q_est with q_true first sign-aligned to the "
-      "estimate's hemisphere (4 slots), for an estimator that treats the "
-      "quaternion components as ordinary state entries. The multiplicative "
-      "forms are sign canonicalized to the +w hemisphere. Quaternions are "
-      "scalar-first (D-7).")
+      "conj(q_est) (4 slots, resolved in the inertial frame), and "
+      "QUAT_DIFFERENCE_ALIGNED is the componentwise q_true - q_est with "
+      "q_true first sign-aligned to the estimate's hemisphere (4 slots), for "
+      "an estimator that treats the quaternion components as ordinary state "
+      "entries. The multiplicative forms are sign canonicalized to the +w "
+      "hemisphere. Every attitude form is four slots, so a block's error "
+      "width always equals its state width. Quaternions are scalar-first "
+      "(D-7).")
       .value("DIFFERENCE", star::gnc::ErrorForm::kDifference)
       .value("QUAT_ERROR_LOCAL", star::gnc::ErrorForm::kQuatErrorLocal)
       .value("QUAT_ERROR_GLOBAL", star::gnc::ErrorForm::kQuatErrorGlobal)
-      .value("ROTATION_VECTOR_LOCAL",
-             star::gnc::ErrorForm::kRotationVectorLocal)
-      .value("ROTATION_VECTOR_GLOBAL",
-             star::gnc::ErrorForm::kRotationVectorGlobal)
       .value("QUAT_DIFFERENCE_ALIGNED",
              star::gnc::ErrorForm::kQuatDifferenceAligned);
 

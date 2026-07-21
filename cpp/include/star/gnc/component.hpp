@@ -271,6 +271,33 @@ enum class ErrorQuantity {
 // is parameterized are conventions the component owns. Declaring the
 // convention lets the loop reproduce the component's own arithmetic exactly
 // rather than imposing one.
+//
+// INVARIANT: a block's error width equals its state width. error_block_size
+// serves both roles - validate_error_layout tiles the STATE vector with it,
+// and compute_error_state writes that many slots of the ERROR vector at the
+// same offset - so a form whose two widths differ makes the two disagree.
+// Every attitude form below occupies four slots, which is what keeps the
+// invariant true by construction rather than by inspection.
+//
+// A pair of three-slot rotation-vector forms was removed for violating it:
+// they declared three slots while compute_error_state read four quaternion
+// components at the block offset, so an attitude-block-last layout that
+// PASSED validate_error_layout read one double past the state buffer. The
+// convention itself is not lost - the consistency evaluator already carries
+// dtheta = 2 sgn(dq_w) dq_v and applies it to the built-in EKF's n=16/m=15
+// (docs/formats/srlog_v1.md), so the forms were a second implementation of a
+// reduction the pipeline performs downstream, not a capability.
+//
+// STILL UNSERVED, and removal does not change this: an estimator whose state
+// carries a THREE-parameter attitude directly (MRP, Gibbs/Rodrigues, or a
+// rotation-vector error state) has no admissible form here. It could not use
+// the removed forms either - attitude_error needs a q_est, which it reads as
+// four consecutive state slots, and a three-parameter state does not publish
+// one. Serving that case needs a way for a component to supply its own
+// estimated quaternion independently of the state layout, which is a
+// descriptor change rather than an enumerator. Removal makes the gap visible
+// instead of appearing to fill it; do not re-add the enumerators believing
+// the capability was merely unfinished.
 enum class ErrorForm {
   // Elementwise truth minus estimate. The only admissible form for every
   // quantity except kAttitude, and inadmissible for kAttitude.
@@ -285,12 +312,6 @@ enum class ErrorForm {
   // the inertial frame (a "global" or left-multiplied error), likewise sign
   // canonicalized.
   kQuatErrorGlobal,
-  // 3 slots: the small-angle vector 2 sgn(dq_w) dq_v of the local dq above,
-  // for an estimator whose state carries a three-component attitude error
-  // rather than the quaternion itself.
-  kRotationVectorLocal,
-  // 3 slots: the same reduction of the global dq.
-  kRotationVectorGlobal,
   // 4 slots: the plain componentwise difference q_true - q_est, with q_true
   // first sign-aligned to the estimate's hemisphere (q and -q are the same
   // attitude, and alignment is what keeps the difference continuous). This
