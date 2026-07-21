@@ -600,7 +600,8 @@ after the tables.
     Test ID & Acceptance basis \\
     \midrule
     \testid{test_golden_cases_cover_every_branch} &
-      Non-vacuity of the golden half, asserted from the file itself: the
+      Non-vacuity of the golden half, asserted by re-evaluating the
+      reference law on the committed inputs: the
       committed set contains a case with $\delta q_w < 0$, one with
       $\delta q_w$ exactly zero, one with $\delta q_w > 0$, one clamping
       some axes but not all (without which equation~\eqref{eq:gnc:sat}
@@ -609,6 +610,20 @@ after the tables.
       (without which equation~\eqref{eq:gnc:werr}'s rotation would be
       untested), so a regenerated golden set that quietly lost a branch
       fails here rather than silently weakening the gate. \\
+    \testid{test_golden_expectations_record_the_branches} &
+      The same non-vacuity asked of the committed expectations rather
+      than of the inputs, so a regeneration that kept the saturating
+      inputs while recording an unclamped answer is caught too: some
+      \texttt{expected\_tau\_nm} component equals its $\tau_{\max}$
+      exactly while another axis of that case sits strictly inside it
+      (equation~\eqref{eq:gnc:sat} assigns the limit, which is what makes
+      exact binary64 equality its fingerprint and not a coincidence),
+      each of the three $\delta q_w$ branches carries a non-zero recorded
+      torque so none is present but inert, and every recorded quaternion
+      is unit --- the premise under which $\delta q_w$ alone fixes the
+      error rotation's magnitude. This file is the suite's only evidence
+      for equation~\eqref{eq:gnc:sign} at $\delta q_w = 0$, a point no
+      closed-loop scenario reaches. \\
     \testid{test_pd_scenario_exercises_every_equation} &
       Non-vacuity of the mission half, asserted on the measured log rather
       than assumed from the fixture's construction: commanded rate up to

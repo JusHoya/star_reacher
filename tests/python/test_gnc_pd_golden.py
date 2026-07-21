@@ -25,7 +25,9 @@ at a single instant: a case with ``dq0 < 0``, a case with ``dq0`` exactly
 zero (pinning ``sign(0) = +1``), and a case that clamps some axes while
 leaving others unclamped. ``test_golden_cases_cover_every_branch`` asserts
 that coverage rather than trusting the file, so a regenerated golden set that
-quietly lost a branch fails here instead of silently weakening the gate.
+quietly lost a branch fails here instead of silently weakening the gate;
+``test_golden_expectations_record_the_branches`` asks the same of the
+recorded expectations rather than of the inputs.
 
 Pure Python and NumPy: no compiled core is required, so this half of the
 criterion is gated even on a core-less checkout.
@@ -195,7 +197,7 @@ def _clamped_axes(case) -> list[int]:
     ]
 
 
-def test_golden_expectations_record_the_behaviour_they_are_cited_for(cases):
+def test_golden_expectations_record_the_branches(cases):
     """The committed expectations bear the branches the evidence table claims.
 
     WHY a structural assertion about a fixture exists at all: one branch of the
