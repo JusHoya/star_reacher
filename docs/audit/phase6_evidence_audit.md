@@ -645,9 +645,31 @@ the same mutation at `statistic=104.463254` against `bounds=[2.729187,
 velocity. The composition hazard is covered; the criterion-1 C++ gate is
 simply not what covers it.
 
-**Experiment 5, criterion 10** remains unrun: it needs Pi 5 hardware and a
-committed GNC-in-loop ascent mission. **Experiment 3, criterion 2** was
-not run in this pass.
+**Experiment 3, criterion 2 — the C++ golden side. Both mutations fire.**
+This experiment asked whether `gnc_pd_attitude_golden`
+(`cpp/tests/test_gnc.cpp:110`) rejects against the mpmath goldens what the
+mission-level Python gate cannot: a `kp`/`kd` swap and a dropped saturation
+clamp. Each mutation was applied to `cpp/src/gnc/builtin.cpp`, built, run,
+and reverted; the case carries 53 assertions over five golden cases.
+
+| Mutation of `cpp/src/gnc/builtin.cpp` | Assertions | Worst residual | Result |
+|---|---|---:|---|
+| baseline | 53 of 53 pass | — | — |
+| `kp`/`kd` swapped in the torque sum | 13 of 53 fail | 0.225 N·m against 1.375e-15 | detected |
+| saturation clamp removed (both lines) | 1 of 53 fails | 4.546 N·m against 2.5e-14 | detected |
+
+The swap is rejected broadly, across both gain terms and several cases. The
+clamp is rejected decisively — the residual exceeds its tolerance by
+fourteen orders of magnitude — but by a **single assertion**, one axis of the
+one golden case named `mixed_saturation` (`tests/golden/gnc/pd_attitude.toml:147`).
+The clamp is therefore covered rather than vacuous, which is what this
+experiment was asked to establish, and it is the coverage the Python gate
+genuinely cannot supply: the mission fixture the audit measured reaches the
+clamp on 0 of 601 cycles. It is worth recording that the margin is one
+assertion wide; a golden regenerated without a saturating case would silence
+`eq:gnc:sat` entirely and nothing else would notice.
+
+**Experiment 5, criterion 10** remains unrun: it needs Pi 5 hardware.
 
 ## Independence of evidence
 
