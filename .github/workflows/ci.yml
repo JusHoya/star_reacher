@@ -158,6 +158,10 @@ jobs:
   # configure is used rather than a preset so this job has no coupling to
   # preset binary-directory naming; the determinism flags are applied
   # unconditionally by the core CMakeLists, not by any preset.
+  # -Wshadow is listed explicitly because -Wall -Wextra does not imply it:
+  # four name-shadowing defects reached the Phase 6 branch and were caught
+  # only by MSVC /W4 (C4457/C4458), which no CI job builds. GCC diagnoses
+  # the same four sites once the flag is present.
   cpp-tests:
     runs-on: ubuntu-24.04
     steps:
@@ -166,7 +170,7 @@ jobs:
         run: >-
           cmake -S . -B build/ci
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_CXX_FLAGS="-Wall -Wextra -Werror"
+          -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wshadow -Werror"
       - name: Build
         run: cmake --build build/ci --parallel 4
       - name: Run doctest suite
