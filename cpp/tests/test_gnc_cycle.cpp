@@ -149,6 +149,11 @@ struct ProbeLog {
   int cycles = 0;
   int oracle_valid_cycles = 0;
   Eigen::Vector3d first_oracle_r = Eigen::Vector3d::Zero();
+  // Per-cycle aiding flags exactly as the loop presented them. Held as char
+  // rather than bool because vector<bool> hands back a proxy, not a
+  // reference, which reads badly in a CHECK.
+  std::vector<char> navfix_valid;
+  std::vector<char> navfix_fresh;
 };
 ProbeLog g_probe;
 
@@ -157,6 +162,8 @@ class ProbeNav final : public star::gnc::IGncComponent {
   void init(const star::gnc::GncInitContext& ctx) override { q0_ = ctx.q0_i2b; }
   star::gnc::GncOutput update(const star::gnc::GncInput& in) override {
     g_probe.cycles += 1;
+    g_probe.navfix_valid.push_back(in.navfix.valid ? 1 : 0);
+    g_probe.navfix_fresh.push_back(in.navfix.fresh ? 1 : 0);
     if (in.oracle.valid) {
       if (g_probe.oracle_valid_cycles == 0) {
         g_probe.first_oracle_r = in.oracle.r_i_m;
@@ -409,6 +416,50 @@ TEST_CASE("gnc_cycle_oracle_gating") {
     CHECK(g_probe.first_oracle_r[2] == 0.0);
   }
   std::remove(path.c_str());
+}
+
+TEST_CASE("gnc_cycle_navfix_validity_is_forwarded_not_asserted") {
+  // FR-24 observation surface: GncInput.navfix.valid carries the sensor's
+  // own flag, as the star tracker's and the altimeter's already do, rather
+  // than a constant true. A 1 Hz fix under the scenario's 10 Hz control rate
+  // leaves cycles 0..9 with no fix ever taken, which is precisely where a
+  // forwarded flag and a hardcoded true disagree.
+  ensure_probe_registered();
+  const std::string path = "test_gnc_cycle_navfix_valid.srlog";
+  star::RunConfig cfg = gnc_scenario(false, 0);
+  cfg.gnc.nav.component = "test_probe_nav";
+  star::gnc::GncSensorCfg fix;
+  fix.kind = "navfix";
+  fix.sample_rate_hz = 1;
+  cfg.gnc.sensors.push_back(fix);
+  g_probe = ProbeLog{};
+  {
+    star::VehicleCycle vc(cfg, path);
+    while (vc.step()) {
+    }
+  }
+  std::remove(path.c_str());
+
+  REQUIRE(g_probe.navfix_valid.size() == 21);  // 2 s at 10 Hz, cycles 0..20
+  REQUIRE(g_probe.navfix_fresh.size() == 21);
+
+  // Before the first fix the sensor still holds the zero vectors it was
+  // constructed with, so the flag must be false. This is the assertion a
+  // hardcoded true cannot satisfy.
+  for (std::size_t c = 0; c < 10; ++c) {
+    CHECK(g_probe.navfix_valid[c] == 0);
+    CHECK(g_probe.navfix_fresh[c] == 0);
+  }
+
+  // Cycle 10 is the first sample: fresh and valid together. Validity then
+  // persists, because the held fix stays a real measurement, while freshness
+  // is true only on the cycles that actually sampled.
+  CHECK(g_probe.navfix_fresh[10] == 1);
+  CHECK(g_probe.navfix_fresh[11] == 0);
+  CHECK(g_probe.navfix_fresh[20] == 1);
+  for (std::size_t c = 10; c < 21; ++c) {
+    CHECK(g_probe.navfix_valid[c] == 1);
+  }
 }
 
 TEST_CASE("gnc_cycle_latency_shifts_application_by_exactly_k") {

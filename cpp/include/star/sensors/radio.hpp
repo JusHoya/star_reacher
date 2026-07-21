@@ -47,6 +47,11 @@ class NavFix final : public ISensor {
 
   const Eigen::Vector3d& last_position_m() const { return r_meas_; }
   const Eigen::Vector3d& last_velocity_mps() const { return v_meas_; }
+  // The fix service carries no operating-band or exclusion gate, so validity
+  // here reports only that the held pair is a measurement at all: before the
+  // first sample() the accessors above return the zero vectors they were
+  // constructed with, which is not a position anywhere near a central body.
+  bool last_valid() const { return sampled_; }
 
  private:
   // Advance one three-axis Gauss-Markov component (eq:radio:gm) in place.
@@ -64,6 +69,7 @@ class NavFix final : public ISensor {
   Eigen::Vector3d c_v_ = Eigen::Vector3d::Zero();
   Eigen::Vector3d r_meas_ = Eigen::Vector3d::Zero();
   Eigen::Vector3d v_meas_ = Eigen::Vector3d::Zero();
+  bool sampled_ = false;
 };
 
 struct AltimeterCfg {

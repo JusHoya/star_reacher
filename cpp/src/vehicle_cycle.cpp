@@ -1013,7 +1013,7 @@ struct VehicleCycle::Impl {
     in.imu_fresh = imu_fresh;
     in.prev_applied = fifo->applied();
     if (navfix != nullptr) {
-      in.navfix.valid = true;  // the nav fix carries no gating flag
+      in.navfix.valid = navfix->last_valid();
       in.navfix.fresh = navfix_fresh;
       in.navfix.sensor_id = navfix_id;
       in.navfix.r_i_m = navfix->last_position_m();

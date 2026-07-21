@@ -138,6 +138,7 @@ void NavFix::sample(double t_s, log::SrlogWriter& writer) {
     v_meas_[i] = latest_.v_end_i_mps[i] + c_v_[i] +
                  cfg_.sigma_v_mps[i] * normals_.next();
   }
+  sampled_ = true;
   writer.write_sensor_navfix(t_s, r_meas_, v_meas_);
 }
 
