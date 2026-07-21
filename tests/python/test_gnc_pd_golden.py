@@ -167,3 +167,115 @@ def test_golden_cases_cover_every_branch(cases):
         "no golden case combines a non-zero commanded rate with a non-identity "
         "error DCM; eq:gnc:werr's rotation would be untested"
     )
+
+
+# A recorded quaternion is unit to this tolerance. Measured on the committed
+# file every norm is exactly 1.0 in binary64, so the tolerance is slack for a
+# legitimate regeneration rather than a bit-exact change detector.
+UNIT_NORM_TOL = 1e-12
+
+
+def _clamped_axes(case) -> list[int]:
+    """Axes whose recorded expectation sits exactly on the configured limit.
+
+    Exact binary64 equality is used as the clamp's fingerprint rather than a
+    near-miss comparison because ``eq:gnc:sat`` ASSIGNS the limit: a saturated
+    component reproduces the ``tau_max`` config constant in all 53 bits.
+    ``tests/golden/gnc/manifest.toml`` records the same fact from the other
+    direction, citing it as the reason the golden tolerance's absolute floor
+    suffices for saturated components. An unsaturated component is a
+    once-rounded 60-digit mpmath evaluation, so its landing bit-for-bit on a
+    round limit constant is a 2**-52 coincidence rather than a plausible
+    outcome of a regeneration.
+    """
+    tau_max = _hex_vector(case["tau_max"])
+    expected = _hex_vector(case["expected_tau_nm"])
+    return [
+        i for i in range(3) if tau_max[i] > 0.0 and abs(expected[i]) == tau_max[i]
+    ]
+
+
+def test_golden_expectations_record_the_behaviour_they_are_cited_for(cases):
+    """The committed expectations bear the branches the evidence table claims.
+
+    WHY a structural assertion about a fixture exists at all: one branch of the
+    PD law is reachable through this file and through nothing else in the
+    suite, so a routine, well-intentioned regeneration could delete its
+    coverage without turning any other test red. That branch is
+    ``sign(0) = +1``. A closed-loop mission never lands ``dq0`` exactly on
+    zero, so no scenario gate can reach ``eq:gnc:sign`` at its boundary;
+    measured by mutating ``tests/refs/pd_attitude.pd_torque`` to
+    ``sign(0) = -1``, the only failure in the criterion-2 gates is this file's
+    ``sign_zero_is_plus_one`` case. The golden set is likewise the open-loop
+    half of the evidence for ``eq:gnc:sat``.
+
+    This test and ``test_golden_cases_cover_every_branch`` above answer
+    neighbouring but different questions, which is why they are separate. That
+    one re-evaluates the reference law on the golden INPUTS and asks whether
+    those inputs would saturate. This one reads the committed
+    ``expected_tau_nm`` -- the array the C++ ``gnc_pd_attitude_golden`` doctest
+    and the parametrized test above actually compare against -- and
+    asks whether the recorded answer carries the clamp's fingerprint. A
+    regeneration whose expectations lost the clamp while its inputs kept it
+    would satisfy the first check and fail this one.
+
+    Every assertion below is a property of the file's own contents; the
+    control law is not re-derived here.
+    """
+    # dq0 is the file's own descriptor of the error rotation, and the sign
+    # assertions below read it alone. That is only sufficient while the
+    # recorded quaternions are unit: |dq| = |q_cmd||q_est|, so unit inputs give
+    # |dq_vec| = sqrt(1 - dq0**2) and a case with dq0 == 0 necessarily carries
+    # a full-magnitude vector for the sign term to multiply. Without this
+    # premise a dq0 == 0 case could be inert and the guard would not know.
+    for case in cases:
+        for key in ("q_cmd", "q_est"):
+            norm = float(np.linalg.norm(_hex_vector(case[key])))
+            assert abs(norm - 1.0) <= UNIT_NORM_TOL, (
+                f"case {case['name']}: {key} has norm {norm!r}, so dq0 no "
+                f"longer determines the error rotation's magnitude"
+            )
+
+    # eq:gnc:sat. A case must record a clamped axis AND an unclamped one. The
+    # mixed requirement is what rules out the degenerate ways this could pass
+    # without evidencing a per-axis clamp: a case whose every axis rails says
+    # nothing about the unsaturated path, and a case with tau_max == 0 would
+    # rail trivially on an all-zero expectation (excluded in _clamped_axes).
+    mixed = []
+    for case in cases:
+        clamped = _clamped_axes(case)
+        tau_max = _hex_vector(case["tau_max"])
+        expected = _hex_vector(case["expected_tau_nm"])
+        inside = [i for i in range(3) if abs(expected[i]) < tau_max[i]]
+        if clamped and inside:
+            mixed.append((case["name"], clamped))
+    assert mixed, (
+        "no committed expectation sits exactly on its tau_max while another "
+        "axis of the same case sits strictly inside it; eq:gnc:sat leaves no "
+        "trace in the goldens and a law without the clamp would reproduce "
+        "every recorded torque"
+    )
+
+    # Scope, measured rather than assumed: across the committed set exactly one
+    # axis of one case rails, on the positive side. Mutations that clamp only
+    # axis 0, or only the positive rail, are therefore invisible here; both are
+    # caught instead by test_gnc_missions.test_pd_law_python_reimplementation_
+    # contract, whose scenario clamps on a substantial run of cycles. The
+    # assertion above is deliberately not narrowed to the observed axis and
+    # rail, which would pin the current file rather than state a property.
+
+    # eq:gnc:sign. Each branch must be represented by a case that records a
+    # non-zero response, so a branch cannot be present but inert -- a case
+    # whose expectation is all zeros distinguishes no sign convention.
+    responses = {}
+    for case in cases:
+        dq0 = float.fromhex(case["dq0"])
+        branch = "negative" if dq0 < 0.0 else ("zero" if dq0 == 0.0 else "positive")
+        peak = float(np.abs(_hex_vector(case["expected_tau_nm"])).max())
+        responses[branch] = max(responses.get(branch, 0.0), peak)
+    for branch in ("negative", "zero", "positive"):
+        assert responses.get(branch, 0.0) > 0.0, (
+            f"no golden case on the dq0 {branch} branch records a non-zero "
+            f"torque; eq:gnc:sign's choice on that branch is unobservable in "
+            f"the committed expectations"
+        )
