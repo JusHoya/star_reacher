@@ -725,6 +725,17 @@ def test_camera_pose_channels_are_bit_exact_truth(optical_run):
 _STATISTICS_MISSION = _OPTICAL_GATE_MISSION.replace(
     'name = "p6-optical-gates"', 'name = "p6-optical-statistics"'
 ).replace(
+    # Exit criterion 6 names "1,000 seeded draws" for the external-nav-fix and
+    # altimeter statistics. At the 5 Hz sensor rate declared below a 60 s run
+    # yields 300 draws; extending the propagation to 200 s yields exactly 1,000
+    # (samples land at k >= 1 through t = duration, so count = rate * duration),
+    # so this model-exercising pytest gate meets the criterion's own number
+    # rather than leaning on the C++ gate whose spherical fixture never runs the
+    # geodetic altitude path. The orbit is circular at ~622 km, so the longer
+    # arc stays well inside the altimeter's [0, 1000] km range while sweeping
+    # further off the equator -- more geodetic signal, not less.
+    "duration_s = 60.0", "duration_s = 200.0",
+).replace(
     "sigma_rad = [0.0, 0.0, 0.0]", "sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]"
 ).replace(
     "sigma_rad = 0.0", "sigma_rad = 2.0e-3"
@@ -734,8 +745,9 @@ _STATISTICS_MISSION = _OPTICAL_GATE_MISSION.replace(
     # eq:radio:alt degenerates to |r| - a exactly, so the altimeter gate
     # below would pass unchanged against a spherical radius and could not
     # detect an implementation that never applied the ellipsoid. Inclining
-    # carries the ground track off the equator within the 60 s window, where
-    # the two altitudes differ by tens of metres against a 0.5 m sigma.
+    # carries the ground track off the equator over the 200 s window, where the
+    # geodetic and spherical altitudes differ by enough that an implementation
+    # logging the sphere would be rejected at many sigma against the 0.5 m sigma.
     "v_mps = [0.0, 7546.0, 0.0]",
     "v_mps = [0.0, 5335.827770833687, 5335.827770833687]",
 ) + """
@@ -885,6 +897,9 @@ def test_nav_fix_statistics_pass_the_reference_gate(statistics_run):
     sigma_r = np.array(cfg["sigma_r_m"])
     sigma_v = np.array(cfg["sigma_v_mps"])
     rows = _truth_rows(truth, fix["t_s"])
+    # The criterion names 1,000 seeded draws; pin the count so a shortened
+    # mission cannot silently satisfy the gate at fewer.
+    assert len(fix) == 1000  # 200 s at 5 Hz
 
     position = np.array([
         stats.nav_fix_chi2(fix["r_meas_m"][j], truth["r_m"][row], sigma_r)
@@ -919,6 +934,8 @@ def test_altimeter_statistic_passes_the_reference_gate(statistics_run):
 
     epoch_tai = _epoch_tai(_core, config)
     rows = _truth_rows(truth, altimeter["t_s"])
+    # The criterion names 1,000 seeded draws on the geodetic altitude path.
+    assert len(altimeter) == 1000  # 200 s at 5 Hz
 
     quadratic = np.empty(len(altimeter))
     for j, t_s in enumerate(altimeter["t_s"]):
@@ -930,3 +947,41 @@ def test_altimeter_statistic_passes_the_reference_gate(statistics_run):
             float(altimeter["alt_meas_m"][j]), h_true, sigma
         )
     _assert_gate(stats.evaluate_gate("altimeter", quadratic, 1))
+
+
+def test_altimeter_gate_rejects_a_spherical_reference(statistics_run):
+    """Exit criterion 6, non-degeneracy: the 1,000-draw gate has power.
+
+    A chi-square over 1,000 draws that passes trivially would be worse than a
+    smaller one that discriminates. The gate above recomputes the truth
+    altitude through the WGS84 geodetic model; here the same statistic is
+    recomputed against a spherical ``|r| - a`` reference and required to be
+    REJECTED, so a build that logged radius instead of geodetic altitude could
+    not slip through the 1,000-draw gate. The inclined ground track is what
+    separates the two altitudes (equatorial they would coincide, and this test
+    would be vacuous), so it also guards the fixture's inclination.
+    """
+    import sensor_stats as stats
+    from star_reacher import _core
+
+    _, run, config = statistics_run
+    truth = run.groups["truth"]
+    altimeter = run.groups["sensors.altimeter"]
+    sigma = float(config["sensors"]["altimeter"]["sigma_noise_m"])
+    epoch_tai = _epoch_tai(_core, config)
+    rows = _truth_rows(truth, altimeter["t_s"])
+
+    spherical = np.empty(len(altimeter))
+    for j, t_s in enumerate(altimeter["t_s"]):
+        tai = _core.tai_add_seconds(epoch_tai[0], epoch_tai[1], float(t_s))
+        dcm = np.array(_core.gcrf_to_itrf(tai[0], tai[1], 0.0)).reshape(3, 3)
+        r_fixed = dcm @ truth["r_m"][rows[j]]
+        h_spherical = float(np.linalg.norm(r_fixed)) - _WGS84_A_M
+        spherical[j] = stats.altimeter_chi2(
+            float(altimeter["alt_meas_m"][j]), h_spherical, sigma
+        )
+    gate = stats.evaluate_gate("altimeter", spherical, 1)
+    assert not gate.passed, (
+        "the altimeter gate accepted a spherical |r| - a reference over 1,000 "
+        f"draws, so it does not discriminate the geodetic model: {gate.describe()}"
+    )
