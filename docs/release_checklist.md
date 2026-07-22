@@ -144,3 +144,115 @@ register always states what has and has not been done.
   producer-side refusal is committed and proven at three levels, and the
   field's contents are specified above so whoever implements it is not
   starting from scratch.
+
+## Disclosed Phase 6 residuals (red-team registered)
+
+The Phase 6 exit-criteria red-team (`docs/review/phase6_red_team.md`) found
+nine of ten criteria substantively closed and the tenth (criterion 7) closed
+on documentation alone. The items below are the bounded residuals it surfaced
+behind the closed criteria. They are registered here — per the
+register-deferred-evidence discipline — so each has an owner and a closure
+step rather than living only in a review paragraph. Unlike items 1–4, these
+do **not** block the phase close or gate a release: every criterion they touch
+is met by committed gates demonstrated able to fail. They are follow-up
+hardening and coverage work, tracked here to completion.
+
+## 5. Criterion 3 — NEES epoch-structure null (windowed statistic)
+
+- **Carries:** the disclosed null direction behind Phase 6 exit criterion 3.
+  The headline ensemble NEES averages over 601 epochs, so a covariance defect
+  whose sign reverses across the run cancels in the average and does not set
+  the exit code even while it is visible in the reported coverage number. The
+  limitation is spec-registered, not undiscovered:
+  `docs/mathlib/chapters/ekf.tex:641` states the consequence verbatim and
+  records measured instances, and `ekf.tex:747` names the out-of-scope
+  successor — gate on a windowed statistic over a segment short enough to
+  resolve the transient. This is distinct from the criterion-3 reader-side
+  format field carried by item 4 (KNOWN-ISSUE-P6-5).
+- **Procedure:** implement the windowed NEES statistic named at `ekf.tex:747`
+  over a segment short enough to resolve a sustained sign-reversing transient,
+  add it to the ensemble gate alongside the whole-run aggregate, and
+  demonstrate it rejects one of the measured instances the chapter records.
+  Test and chapter work only; no compile and no format change.
+- **Records to:** the ekf chapter (extend the consistency/validation sections)
+  and the ensemble-gate driver and its tests.
+- **Status:** open — registered at Phase 6 close (2026-07-21). Not a
+  phase-close or release blocker: criterion 3's committed gates (NEES on the
+  headline, NIS on binomial coverage) pass and are proven able to fail; this
+  is added detection power for a class the headline aggregate does not gate.
+
+## 6. Criterion 9 — V026 fixture velocity and the star-tracker mas gate
+
+- **Carries:** two confined sub-gate residuals behind Phase 6 exit criterion 9
+  (optical velocity aberration). (a) `_v026_ephemeris`
+  (`python/star_reacher/verify.py`) builds the Earth-about-EMB segment with
+  `const_record(4671.0, 0.0, 0.0)` — a zero linear Chebyshev term, hence zero
+  velocity — so the barycentric-velocity composition's second term is
+  multiplied by zero and `star verify` alone is blind to a dropped term worth
+  ~5.5 mas (5.5× the criterion's own 1 mas). The pytest gate
+  `test_aberration_matches_independent_reference` uses the real DE440 excerpt
+  and catches it, so criterion 9 is closed by the gate union, not by
+  `star verify` in isolation. (b) The star-tracker aberration path
+  `eq:optical:rho` (`rho = b_I × beta`, `cpp/src/sensors/optical.cpp`) is gated
+  only by a chi-square statistic, never at the mas level against an independent
+  computation as the sun-sensor and camera bearings are.
+- **Procedure:** (a) give V026's `emb` and `earth` segments independent nonzero
+  linear Chebyshev terms (the fixture builder already takes per-segment
+  coefficients) so the composition's second term carries real signal and
+  `star verify` alone would catch the dropped term; (b) add a direct mas-level
+  comparison of the logged star-tracker quaternion on the noise-free optical
+  fixture against an independent `eq:optical:rho` computation. Both are
+  test/fixture edits; no compile and no format change.
+- **Records to:** `python/star_reacher/verify.py` (`_v026_ephemeris`) and the
+  optical-gate tests.
+- **Status:** open — registered at Phase 6 close (2026-07-21). Not a
+  phase-close or release blocker: criterion 9 is met by the gate union (its
+  reference mutations are rejected far outside the tightened 1e-5 mas gate, per
+  the criterion-9 remediation record in `PRD.md`). These close the fixture
+  degeneracy and extend mas-level coverage to the third aberration path.
+
+## 7. Criterion 1 — Allan `b_hat` flakiness and the orphaned `allan.py`
+
+- **Carries:** two bounded residuals behind Phase 6 exit criterion 1 (IMU Allan
+  recovery). (a) The `b_hat` ±10 % recovery check in
+  `sensors_imu_allan_recovers_arw_and_bias_instability`
+  (`cpp/tests/test_sensors.cpp:412`) is fragile on its pinned seed: the
+  red-team measured a ~4.0 % false-failure rate (single-axis `b_hat/B − 1`
+  scatter ~4.9 % std), so a last-bit RNG-stream change from a compiler or
+  platform difference could flip the pinned seed to a false failure. This is
+  flakiness to harden, not a detection gap — the check catches a ×1.15
+  conversion defect at ~81 % power and ×1.30 at 100 %. (b) `tests/refs/allan.py`,
+  the independently validated overlapping-Allan-deviation estimator, is
+  imported only by `tests/python/test_refs_allan.py` (which has no core import)
+  and is never run against core IMU output; the C++ gate computes its own
+  overlapping Allan deviation with no cross-check against it.
+- **Procedure:** (a) reduce the `b_hat` flakiness by averaging the recovery
+  over the three instrument axes (~√3 scatter reduction toward sub-1 %
+  false-failure) or over a seed ensemble; (b) add a cross-check of the C++
+  Allan estimate against `tests/refs/allan.py` on the same core IMU output so
+  the validated reference gates something. (a) needs a rebuild to re-measure;
+  (b) is a test addition.
+- **Records to:** `cpp/tests/test_sensors.cpp` (the Allan gate) and a new
+  cross-check test wiring `tests/refs/allan.py` to core output.
+- **Status:** open — registered at Phase 6 close (2026-07-21). Not a
+  phase-close or release blocker: the criterion's bit-identity clause (C) is
+  closed and its star-tracker chi-square clause holds at 1,000 draws; this
+  hardens a fragile check and retires an orphaned reference.
+
+## 8. Criterion 10 — `perf_gate` `--ascent-gnc` default pin
+
+- **Carries:** the unpinned default behind Phase 6 exit criterion 10 (FR-32
+  ascent ≥ 100× real time with the C++ GNC stack). `scripts/perf_gate.py:574`
+  sets the `--ascent-gnc` mission default to `missions/ascent_leo_gnc.toml`
+  (correct today), but no committed test pins that default, so a deliberate
+  repoint would silently change what CI measures. The criterion is measured
+  correctly today — the nightly job uses the default.
+- **Procedure:** add a one-line assertion that `perf_gate.py`'s `--ascent-gnc`
+  default equals `missions/ascent_leo_gnc.toml` (or that the measured GNC log
+  carries a `gnc.cmd` group), so a changed default fails a committed test
+  rather than passing silently. Pure test addition; no compile.
+- **Records to:** a `perf_gate` unit test under `tests/python/`.
+- **Status:** open — registered at Phase 6 close (2026-07-21). Not a
+  phase-close or release blocker: criterion 10 is measured correctly by the
+  nightly job on the named mission; this pins against silent default drift. The
+  Pi 5 hardware clause of criterion 10 is carried separately by item 1.
