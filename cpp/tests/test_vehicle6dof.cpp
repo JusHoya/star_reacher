@@ -8,6 +8,7 @@
 // Test IDs are cited by the math-library validation table (ch:vehicle6dof); do
 // not rename them.
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -291,4 +292,132 @@ TEST_CASE("vehicle6dof_actuator_hooks") {
       star::models::engine_advance(ep, cmd, es0, 0.01);
   const double expected_step = ep.gimbal_rate_radps * 0.01;
   CHECK(std::fabs(es1.gimbal_rad[0] - expected_step) <= 1e-12 * expected_step);
+}
+
+TEST_CASE("vehicle6dof_pitch_program_triad_matches_definition_at_vertical") {
+  // eq:vehicle6dof:attitude defines body +Y as the Gram-Schmidt of local up
+  // against the commanded axis. Written out, that triad satisfies
+  //   y.u = cos(theta),  y.h = -sin(theta),  x.u = sin(theta),  x.h = cos(theta)
+  // for every pitch theta, with h the ground-track direction of
+  // eq:vehicle6dof:pitchaxis. Those four projections ARE the definition; this
+  // pins them across theta = 90 deg, where the Gram-Schmidt numerator vanishes
+  // and the construction has to be continued rather than evaluated. A triad
+  // that is merely continuous but clocked to some other roll fails here.
+  const double az = d2r(90.0);
+  const Eigen::Vector3d up(0.6, 0.0, 0.8);
+  const Eigen::Vector3d east(0.0, 1.0, 0.0);
+  const Eigen::Vector3d north(-0.8, 0.0, 0.6);
+  const Eigen::Vector3d h = std::sin(az) * east + std::cos(az) * north;
+
+  for (double th_deg : {90.0, 89.999999999, 89.9, 75.0, 40.0, 0.0, -22.0}) {
+    const double th = d2r(th_deg);
+    const Eigen::Quaterniond q = star::models::attitude_from_body_x(
+        star::models::pitch_program_axis(az, th, up, east, north),
+        star::models::pitch_program_roll_ref(az, th, up, east, north));
+    // Columns of C_b2i are the body axes expressed in the inertial basis.
+    const Eigen::Matrix3d c_b2i = star::rotation::dcm_from_quat(q).transpose();
+    const Eigen::Vector3d bx = c_b2i.col(0);
+    const Eigen::Vector3d by = c_b2i.col(1);
+    const Eigen::Vector3d bz = c_b2i.col(2);
+    // Tolerance from the construction's own conditioning, not from taste. The
+    // direct Gram-Schmidt of eq:vehicle6dof:attitude subtracts two nearly equal
+    // unit vectors and normalizes the remainder, whose norm is |cos(theta)|, so
+    // the O(eps) cancellation error in body +Y is amplified by 1/|cos(theta)|.
+    // Below the continuation switch the closed form of eq:vehicle6dof:rollref
+    // involves no cancellation and rounds at a few eps. Either way this stays
+    // ~10 orders of magnitude tighter than any roll-clocking error, which is
+    // O(0.1) or larger.
+    const double eps = std::numeric_limits<double>::epsilon();
+    const double cp = std::cos(th);
+    const double tol = std::fabs(cp) > 1.0e-6
+                           ? std::max(1.0e-14, 32.0 * eps / std::fabs(cp))
+                           : 1.0e-14;
+    CHECK(std::fabs(bx.dot(up) - std::sin(th)) < tol);
+    CHECK(std::fabs(bx.dot(h) - std::cos(th)) < tol);
+    CHECK(std::fabs(by.dot(up) - std::cos(th)) < tol);
+    CHECK(std::fabs(by.dot(h) + std::sin(th)) < tol);
+    // Right-handed orthonormal triad, and body +Y carries no component out of
+    // the pitch plane (the plane spanned by up and h).
+    CHECK(std::fabs(by.norm() - 1.0) < tol);
+    CHECK(std::fabs(bx.dot(by)) < tol);
+    CHECK((bz - bx.cross(by)).norm() < tol);
+    CHECK(std::fabs(by.dot(up.cross(h).normalized())) < tol);
+  }
+}
+
+TEST_CASE("vehicle6dof_pitch_program_command_continuous_through_vertical") {
+  // A pitch table that holds a true vertical and then pitches over at a known
+  // rate. The commanded attitude must slew at that rate and no faster: the
+  // per-cycle rotation is bounded by the table rate times dt, everywhere,
+  // including the cycle that leaves vertical. Before the roll reference was
+  // continued this test saw a single-cycle step of tens of degrees there.
+  const double az = d2r(90.0);
+  const Eigen::Vector3d up(0.6, 0.0, 0.8);
+  const Eigen::Vector3d east(0.0, 1.0, 0.0);
+  const Eigen::Vector3d north(-0.8, 0.0, 0.6);
+  const std::vector<double> t_tab = {0.0, 10.0, 25.0};
+  const std::vector<double> p_tab = {90.0, 90.0, 75.0};
+  const double dt = 0.1;
+  // 15 deg over 15 s = 1 deg/s, so 0.1 deg per cycle once the turn starts.
+  const double rate_dps = 1.0;
+  const double bound_deg = 1.05 * rate_dps * dt;
+
+  auto cmd_at = [&](double t) {
+    const double th =
+        d2r(star::models::pwl_interp_clamped(t_tab, p_tab, t));
+    return star::models::attitude_from_body_x(
+        star::models::pitch_program_axis(az, th, up, east, north),
+        star::models::pitch_program_roll_ref(az, th, up, east, north));
+  };
+
+  double worst_deg = 0.0;
+  Eigen::Quaterniond prev = cmd_at(0.0);
+  for (int k = 1; k <= 200; ++k) {
+    const Eigen::Quaterniond cur = cmd_at(k * dt);
+    // Total rotation angle carrying prev into cur, sign-insensitive (q and -q
+    // are the same rotation).
+    const double dot = std::fabs(prev.dot(cur));
+    const double ang_deg = 2.0 * std::acos(std::min(1.0, dot)) *
+                           (360.0 / star::constants::TWO_PI);
+    worst_deg = std::max(worst_deg, ang_deg);
+    prev = cur;
+  }
+  CHECK(worst_deg <= bound_deg);
+
+  // The commanded body rate follows the same bound: the 90 deg hold must not
+  // log a rate spike on the cycle that leaves vertical.
+  double worst_dps = 0.0;
+  for (int k = 0; k <= 200; ++k) {
+    const double t = k * dt;
+    const Eigen::Vector3d w = star::models::omega_from_quaternions(
+        cmd_at(t), cmd_at(t + dt), dt);
+    worst_dps =
+        std::max(worst_dps, w.norm() * (360.0 / star::constants::TWO_PI));
+  }
+  CHECK(worst_dps <= 1.05 * rate_dps);
+}
+
+TEST_CASE("vehicle6dof_pitch_program_roll_ref_preserves_conditioned_triad") {
+  // The continuation must not perturb the well-conditioned regime: wherever
+  // the direct Gram-Schmidt of up is usable, the roll reference IS up, so the
+  // resulting attitude is bit-identical to the pre-existing construction.
+  // This is what keeps the change's blast radius to the vertical segment.
+  const double az = d2r(90.0);
+  const Eigen::Vector3d up(0.6, 0.0, 0.8);
+  const Eigen::Vector3d east(0.0, 1.0, 0.0);
+  const Eigen::Vector3d north(-0.8, 0.0, 0.6);
+  for (int k = 0; k <= 1800; ++k) {
+    const double th = d2r(-90.0 + 0.1 * k);
+    if (!(std::fabs(std::cos(th)) > 1.0e-6)) continue;
+    const Eigen::Vector3d axis =
+        star::models::pitch_program_axis(az, th, up, east, north);
+    const Eigen::Quaterniond direct =
+        star::models::attitude_from_body_x(axis, up);
+    const Eigen::Quaterniond continued = star::models::attitude_from_body_x(
+        axis, star::models::pitch_program_roll_ref(az, th, up, east, north));
+    CHECK(direct.w() == continued.w());
+    CHECK(direct.x() == continued.x());
+    CHECK(direct.y() == continued.y());
+    CHECK(direct.z() == continued.z());
+  }
 }

@@ -262,6 +262,105 @@ Eigen::Vector3d EnvironmentModel::central_ssb(double tdb_s) const {
   throw std::logic_error("environment: unreachable central-body enum");
 }
 
+// Central body's SSB velocity, assembled from exactly the segment chain
+// central_ssb() uses for position, so the two are consistent by construction.
+Eigen::Vector3d EnvironmentModel::central_ssb_velocity(double tdb_s) const {
+  static const std::string kEmb = "emb";
+  static const std::string kEarthSeg = "earth";
+  static const std::string kMoonSeg = "moon";
+  static const std::string kMarsBary = "mars_bary";
+  static const std::string kSunSeg = "sun";
+  switch (central_) {
+    case CentralBody::kEarth:
+      return eph_->state(kEmb, tdb_s).v_mps +
+             eph_->state(kEarthSeg, tdb_s).v_mps;
+    case CentralBody::kMoon:
+      return eph_->state(kEmb, tdb_s).v_mps +
+             eph_->state(kMoonSeg, tdb_s).v_mps;
+    case CentralBody::kMars:
+      return eph_->state(kMarsBary, tdb_s).v_mps;
+    case CentralBody::kSun:
+      return eph_->state(kSunSeg, tdb_s).v_mps;
+  }
+  throw std::logic_error("environment: unreachable central-body enum");
+}
+
+// Reference ellipsoid of the central body. The Moon is treated as a sphere
+// (f = 0), for which the Bowring conversion degenerates exactly to
+// norm(r) - a (ch:sensors-radio assumption 4).
+void EnvironmentModel::central_ellipsoid(double& a_m, double& inv_f) const {
+  switch (central_) {
+    case CentralBody::kEarth:
+      a_m = constants::WGS84_A_M;
+      inv_f = constants::WGS84_INV_F;
+      return;
+    case CentralBody::kMars:
+      a_m = constants::MARS_ELLIPSOID_A_M;
+      inv_f = constants::MARS_ELLIPSOID_INV_F;
+      return;
+    case CentralBody::kMoon:
+      a_m = constants::R_MOON_M;
+      inv_f = 0.0;
+      return;
+    case CentralBody::kSun:
+      a_m = constants::R_SUN_M;
+      inv_f = 0.0;
+      return;
+  }
+  throw std::logic_error("environment: unreachable central-body enum");
+}
+
+SensorGeometry EnvironmentModel::sensor_geometry(double t_s,
+                                                 const Eigen::Vector3d& r_m) {
+  SensorGeometry g;
+  central_ellipsoid(g.ellipsoid_a_m, g.ellipsoid_inv_f);
+  // The Sun central body has no body-fixed frame (ch:frames); every other
+  // central body does, so the flag is a property of the configuration.
+  g.bodyfixed_valid = central_ != CentralBody::kSun;
+  const double tdb_s = eph_.has_value() ? tdb_s_at(t_s) : 0.0;
+  if (g.bodyfixed_valid) {
+    g.c_gcrf_to_bodyfixed = c_gcrf_to_bodyfixed(t_s, tdb_s);
+  }
+  if (!eph_.has_value()) {
+    return g;  // no ephemeris: neutral values, flag false
+  }
+  g.ephemeris_valid = true;
+  const Eigen::Vector3d r_central_ssb = central_ssb(tdb_s);
+  g.v_central_ssb_mps = central_ssb_velocity(tdb_s);
+  g.r_sun_m = body_rel_central(Body::kSun, tdb_s, r_central_ssb);
+  // Same product-over-occulters composition as the SRP term, so the sun
+  // sensor's eclipse gate and the SRP force see one shadow model.
+  for (const Occulter& occ : occulters_) {
+    const Eigen::Vector3d r_occ =
+        occ.is_central ? Eigen::Vector3d::Zero()
+                       : body_rel_central(occ.body, tdb_s, r_central_ssb);
+    g.illumination_nu *= shadow_fraction(r_m, g.r_sun_m, constants::R_SUN_M,
+                                         r_occ, occ.radius_m);
+  }
+  return g;
+}
+
+double EnvironmentModel::geodetic_altitude_m(double t_s,
+                                             const Eigen::Vector3d& r_m) {
+  double a_m = 0.0;
+  double inv_f = 0.0;
+  central_ellipsoid(a_m, inv_f);
+  if (central_ == CentralBody::kSun) {
+    // No body-fixed frame exists; the spherical form is the only defined
+    // altitude and needs no rotation.
+    return r_m.norm() - a_m;
+  }
+  if (!(inv_f > 1.0)) {
+    // Spherical body: the Bowring conversion degenerates to this in the
+    // limit but rejects zero flattening outright, so the closed form is
+    // taken directly (and needs no body-fixed rotation).
+    return r_m.norm() - a_m;
+  }
+  const double tdb_s = eph_.has_value() ? tdb_s_at(t_s) : 0.0;
+  const Eigen::Vector3d r_bf = c_gcrf_to_bodyfixed(t_s, tdb_s) * r_m;
+  return geodetic_altitude(r_bf, a_m, inv_f);
+}
+
 Eigen::Vector3d EnvironmentModel::body_rel_central(
     Body body, double tdb_s, const Eigen::Vector3d& r_central_ssb) const {
   static const std::string kSun = "sun";
@@ -324,6 +423,38 @@ Eigen::Matrix3d EnvironmentModel::c_gcrf_to_bodyfixed(double t_s,
           "environment: no body-fixed frame is defined for the Sun");
   }
   throw std::logic_error("environment: unreachable central-body enum");
+}
+
+Eigen::Vector3d EnvironmentModel::gravitational_acceleration(
+    double t_s, const Eigen::Vector3d& r_m) {
+  // Terms (a) and (b) of acceleration(), verbatim and in the same order, so
+  // acceleration() - gravitational_acceleration() cancels them exactly and
+  // isolates the non-gravitational (sensed) terms; see the header contract
+  // and eq:imu:specificforce.
+  const double tdb_s = eph_.has_value() ? tdb_s_at(t_s) : 0.0;
+  Eigen::Matrix3d c_bf = Eigen::Matrix3d::Identity();
+  if (use_field_) {
+    c_bf = c_gcrf_to_bodyfixed(t_s, tdb_s);
+  }
+  Eigen::Vector3d r_central_ssb = Eigen::Vector3d::Zero();
+  if (eph_.has_value()) {
+    r_central_ssb = central_ssb(tdb_s);
+  }
+
+  Eigen::Vector3d a = Eigen::Vector3d::Zero();
+  if (use_field_) {
+    const Eigen::Vector3d r_bf = c_bf * r_m;
+    a += c_bf.transpose() *
+         gravity_->acceleration(r_bf, tier_, degree_, order_);
+  } else {
+    a += twobody_accel(gm_central_, r_m);
+  }
+  for (const Perturber& p : perturbers_) {
+    const Eigen::Vector3d r_third = body_rel_central(p.body, tdb_s,
+                                                     r_central_ssb);
+    a += thirdbody_accel(p.gm_m3ps2, r_m, r_third);
+  }
+  return a;
 }
 
 Eigen::Vector3d EnvironmentModel::acceleration(double t_s,

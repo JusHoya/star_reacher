@@ -85,6 +85,70 @@ Actions:
 Every action except ``terminate`` requires a vehicle reference. The resolved
 config carries the sequence entries in file order.
 
+Phase 6 additions (FR-23/FR-25): the [gnc] and [sensors] tables
+===============================================================
+
+A ``[gnc]`` table closes the attitude loop: the chain nav -> guidance ->
+control runs once per control cycle, commands are applied through a
+``latency_cycles``-deep FIFO (zero-order hold at application, D-5), and the
+vehicle attitude is integrated dynamically from the applied command torque.
+It requires a ``vehicle`` reference, the rk4 integrator with
+``control_rate_hz == 1/dt_s`` exactly (one control cycle per step), a
+``[sensors.imu]`` table, and a ``[[sequence]]`` free of the open-loop
+attitude actions (``pitch_program``, ``attitude_hold``, ``prograde_hold``,
+``rate_command`` -- propulsion, staging, and terminate keep their sequence
+authority)::
+
+    [gnc]
+    control_rate_hz = 10        # must equal 1/dt_s
+    latency_cycles = 0          # optional FR-25 application delay (default 0)
+    oracle = false              # optional; true injects truth into GncInput
+                                # and is stamped into the log header
+
+    [gnc.nav]
+    component = "dead_reckoning"
+    q0 = [1.0, 0.0, 0.0, 0.0]       # initial attitude estimate, stated
+                                    # explicitly (no implicit truth access)
+
+    [gnc.guidance]
+    component = "attitude_hold"     # or "pitch_program" (geodetic only)
+    q_cmd = [1.0, 0.0, 0.0, 0.0]    # optional; Hamilton scalar-first (D-7)
+
+    [gnc.control]
+    component = "pd_attitude"
+    kp_nm_per_rad = [0.4, 0.4, 0.4]     # per-axis proportional gains
+    kd_nm_per_radps = [3.6, 3.6, 3.6]   # per-axis rate gains
+    tau_max_nm = [0.05, 0.05, 0.05]     # symmetric per-axis saturation
+
+    [sensors.imu]
+    sample_rate_hz = 10         # must equal control_rate_hz (one increment
+                                # pair per control cycle, D-5)
+
+Component vocabularies are the FR-25 built-ins mirrored in
+``_GNC_NAV_COMPONENTS`` / ``_GNC_GUIDANCE_COMPONENTS`` /
+``_GNC_CONTROL_COMPONENTS`` (the core re-checks against its registry);
+``pitch_program`` takes the same ``azimuth_deg``/``pitch_t_s``/``pitch_deg``
+surface as the Phase 4 sequence action and commands identical attitudes.
+The applied defaults (``latency_cycles``, ``oracle``) are recorded in the
+resolved config, and the ``[gnc]``/``[sensors]`` keys enter it only when
+present, so pre-Phase-6 missions resolve byte-identically.
+
+Any of the three slots may instead name a Python-authored component in the
+reserved ``python:`` namespace (FR-25)::
+
+    [gnc.control]
+    component = "python:my_pd"      # loaded with star run --gnc-plugin my.py
+    kp_nm_per_rad = 40.0
+
+Because validation must work core-less and without the plugin file, the name
+after the prefix is checked here only against a grammar; that it names a
+component the plugin really declares is checked by ``star_reacher.plugin``
+once the file is loaded. The prefix is what makes the split safe rather than
+a loophole: an unprefixed name is still measured against the built-in
+vocabularies, so ``dead_reckonning`` stays an error. A plugin slot's
+parameter keys are the plugin's contract and are not whitelisted, but their
+values are still held to the numbers-only rule ``GncComponentCfg`` imposes.
+
 Phase 5 additions (FR-32 example missions): the heliocentric regime
 ===================================================================
 
@@ -110,6 +174,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import tomllib
 import warnings
 from datetime import datetime, timezone
@@ -185,6 +250,381 @@ _THIRD_BODY_ORDER = ("sun", "earth", "moon", "venus", "mars", "jupiter")
 _OCCULTER_BODIES = ("earth", "moon", "mars")
 _EARTH_ATMOSPHERES = ("ussa76", "harris_priester")
 _MARS_ATMOSPHERES = ("mars_exponential",)
+
+# Phase 6 [gnc] chain vocabulary (FR-25 built-ins): per chain slot, the
+# accepted component names mapped to their parameter keys. Validation must
+# work core-less, so this is a static mirror of the core registry
+# (cpp/src/gnc/builtin.cpp); test_gnc_validation.py asserts the two never
+# drift, and the core re-checks selections against the live registry.
+_GNC_NAV_COMPONENTS = {
+    "dead_reckoning": ("q0",),
+    # The reference error-state EKF (ch:ekf). Every parameter is the filter's
+    # INITIAL BELIEF - the nominal state it starts from and the diagonal of
+    # P0 - stated explicitly so the filter never infers its start from truth.
+    # The measurement and process noise models are deliberately absent: the
+    # core takes them from the run's configured sensors, so they cannot drift
+    # out of sync with the instruments they describe.
+    "error_state_ekf": (
+        "q0",
+        "v0_mps",
+        "p0_m",
+        "bg0_radps",
+        "ba0_mps2",
+        "p0_sigma_att_rad",
+        "p0_sigma_vel_mps",
+        "p0_sigma_pos_m",
+        "p0_sigma_bg_radps",
+        "p0_sigma_ba_mps2",
+    ),
+}
+# The EKF's 3-vector parameters: key -> (units, typical range, strictly
+# positive). The sigmas are strictly positive because a zero initial variance
+# makes P0 singular and NEES undefined rather than merely large.
+_EKF_VEC3_PARAMS = (
+    ("v0_mps", "m/s", "-1e4 to 1e4", False),
+    ("p0_m", "m", "-1e9 to 1e9", False),
+    ("bg0_radps", "rad/s", "-1e-3 to 1e-3", False),
+    ("ba0_mps2", "m/s^2", "-1e-2 to 1e-2", False),
+    ("p0_sigma_att_rad", "rad", "1e-6 to 1e-1", True),
+    ("p0_sigma_vel_mps", "m/s", "1e-3 to 1e2", True),
+    ("p0_sigma_pos_m", "m", "1e-1 to 1e4", True),
+    ("p0_sigma_bg_radps", "rad/s", "1e-9 to 1e-4", True),
+    ("p0_sigma_ba_mps2", "m/s^2", "1e-6 to 1e-2", True),
+)
+_GNC_GUIDANCE_COMPONENTS = {
+    "pitch_program": ("azimuth_deg", "pitch_t_s", "pitch_deg"),
+    "attitude_hold": ("q_cmd",),
+    # The FR-24 stepping-API command seam. It takes no parameters because its
+    # numbers come from the driver's Sim.step(commands) call, not the mission
+    # file; a batch `star run` of such a mission therefore flies the initial
+    # hold, which is the honest reading of "nobody is commanding".
+    "external": (),
+}
+_GNC_CONTROL_COMPONENTS = {
+    "pd_attitude": ("kp_nm_per_rad", "kd_nm_per_radps", "tau_max_nm"),
+    "external": (),
+}
+# FR-25 plugin namespace: a mission selects a Python-authored component
+# (loaded with `star run --gnc-plugin`) as "python:<name>" in any of the three
+# chain slots. Reserving a prefix rather than accepting bare names keeps this
+# validator strict core-less -- an unprefixed name is still measured against
+# the vocabularies above, so a typo'd built-in remains a hard error instead of
+# being waved through as a possible plugin -- and it makes a plugin unable to
+# shadow a built-in, since the two live in disjoint registry namespaces. The
+# name is proved real against the loaded plugin by star_reacher.plugin, which
+# owns the matching constant.
+_GNC_PLUGIN_PREFIX = "python:"
+_GNC_PLUGIN_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Open-loop attitude sequence actions conflict with GNC attitude authority
+# and are rejected when [gnc] is present.
+_GNC_ATTITUDE_ACTIONS = (
+    "pitch_program",
+    "attitude_hold",
+    "prograde_hold",
+    "rate_command",
+)
+# The canonical FR-23 sensor-kind vocabulary, matching kSensorKinds in
+# srlog_writer.hpp and the `sensors.<kind>` log group names.
+_SENSOR_KINDS = (
+    "imu",
+    "startracker",
+    "sunsensor",
+    "navfix",
+    "altimeter",
+    "camera",
+)
+
+
+def canonical_sensor_items(sensors: dict) -> list[tuple[str, dict]]:
+    """Order a resolved ``sensors`` table by the canonical FR-23 vocabulary.
+
+    The single source of the sensor order the core is configured in, and the
+    reason it is a function rather than a convention: the core is
+    order-sensitive in three places -- the log header's declared sensor
+    array, the ``sensor_id`` each sensor is labelled with (assigned by list
+    index), and the order the EKF folds its aiding updates in, which
+    ``cpp/src/gnc/ekf.cpp`` documents as normative. A caller that iterated
+    the dict instead would inherit whatever order that dict happened to
+    carry, and the two entry points into ``build_run_config`` carry
+    different ones: the validator emits canonical order, while a resolved
+    config round-tripped through ``canonical_bytes`` (as the stepping API's
+    does) comes back in the ``sort_keys=True`` alphabetical order. Ordering
+    here rather than at either call site is what makes the two agree.
+
+    Raises ``ValueError`` on a kind outside the vocabulary. The validator
+    already rejects one, so this is unreachable from a validated mission;
+    dropping it silently would configure a run without a sensor the mission
+    asked for, which is the one outcome worse than failing.
+    """
+    unknown = [k for k in sensors if k not in _SENSOR_KINDS]
+    if unknown:
+        raise ValueError(
+            f"unknown sensor kind(s) {sorted(unknown)}; the canonical FR-23 "
+            f"vocabulary is: {', '.join(_SENSOR_KINDS)}"
+        )
+    return [(kind, sensors[kind]) for kind in _SENSOR_KINDS if kind in sensors]
+
+# Per-kind model-parameter schema. Each entry maps a TOML key to
+# (units, typical, kind), where kind is "scalar" for a number, an integer for
+# a fixed-length float array, or "flat3" for a flat list whose length must be
+# a multiple of three. Every parameter is optional and defaults, core-side,
+# to the ideal (error-free) instrument; the key names are unit-suffixed per
+# DX-3 and must match the vocabularies the sensor modules parse.
+_SENSOR_PARAMS: dict[str, dict[str, tuple[str, str, object]]] = {
+    "imu": {
+        "gyro_turnon_bias_sigma_radps": ("rad/s", "1e-7 to 1e-5", "scalar"),
+        "gyro_bias_instability_radps": ("rad/s", "5e-9 to 5e-6", "scalar"),
+        "gyro_bias_tau_s": ("s", "10 to 300", "scalar"),
+        "gyro_arw_rad_per_sqrt_s": (
+            "rad/sqrt(s)", "3e-6 to 3e-4 (0.01 to 1 deg/sqrt(h))", "scalar",
+        ),
+        "gyro_quantum_rad": ("rad", "1e-7 to 1e-5", "scalar"),
+        "gyro_scale_factor_ppm": ("ppm", "1 to 1000, per axis", 3),
+        "gyro_misalignment_rad": (
+            "rad", "1e-5 to 1e-3, order xy xz yx yz zx zy", 6,
+        ),
+        "accel_turnon_bias_sigma_mps2": ("m/s^2", "1e-4 to 1e-2", "scalar"),
+        "accel_bias_instability_mps2": ("m/s^2", "1e-6 to 1e-4", "scalar"),
+        "accel_bias_tau_s": ("s", "10 to 300", "scalar"),
+        "accel_vrw_mps_per_sqrt_s": (
+            "(m/s)/sqrt(s)", "1e-5 to 1e-3", "scalar",
+        ),
+        "accel_quantum_mps": ("m/s", "1e-6 to 1e-4", "scalar"),
+        "accel_scale_factor_ppm": ("ppm", "1 to 1000, per axis", 3),
+        "accel_misalignment_rad": (
+            "rad", "1e-5 to 1e-3, order xy xz yx yz zx zy", 6,
+        ),
+    },
+    "startracker": {
+        "sun_exclusion_rad": ("rad", "0.35 to 0.9 (20 to 50 deg)", "scalar"),
+        "central_body_exclusion_rad": (
+            "rad", "0.35 to 0.9 (20 to 50 deg)", "scalar",
+        ),
+        "slew_limit_radps": ("rad/s", "0.005 to 0.05", "scalar"),
+        "boresight_b": ("1", "unit vector in body axes", 3),
+        "sigma_rad": (
+            "rad", "5e-6 to 1e-4, about-boresight typically largest", 3,
+        ),
+    },
+    "sunsensor": {
+        "fov_half_angle_rad": ("rad", "0.5 to 1.2 (30 to 70 deg)", "scalar"),
+        "sigma_rad": ("rad", "1e-3 to 1e-2", "scalar"),
+        "boresight_b": ("1", "unit vector in body axes", 3),
+    },
+    "navfix": {
+        "gm_position_sigma_m": ("m", "0 (off) to 10", "scalar"),
+        "gm_position_tau_s": ("s", "100 to 3600", "scalar"),
+        "gm_velocity_sigma_mps": ("m/s", "0 (off) to 0.1", "scalar"),
+        "gm_velocity_tau_s": ("s", "100 to 3600", "scalar"),
+        "sigma_r_m": ("m", "1 to 20, per GCRF axis", 3),
+        "sigma_v_mps": ("m/s", "0.01 to 0.5, per GCRF axis", 3),
+    },
+    "altimeter": {
+        "sigma_bias_m": ("m", "0 to 10", "scalar"),
+        "sigma_noise_m": ("m", "0.1 to 5", "scalar"),
+        "h_min_m": ("m", "0 to 1e5", "scalar"),
+        "h_max_m": ("m", "1e4 to 1e6; <= h_min_m disables the gate", "scalar"),
+    },
+    "camera": {
+        "fx_px": ("px", "200 to 5000", "scalar"),
+        "fy_px": ("px", "200 to 5000", "scalar"),
+        "cx_px": ("px", "(width - 1)/2 for a centred model", "scalar"),
+        "cy_px": ("px", "(height - 1)/2 for a centred model", "scalar"),
+        "width_px": ("px", "256 to 4096", "scalar"),
+        "height_px": ("px", "256 to 4096", "scalar"),
+        "r_cam_b_m": ("m", "mount offset from the composite CG", 3),
+        "q_b2c": ("1", "Hamilton scalar-first body-to-camera rotation", 4),
+        "landmarks_fixed_m": (
+            "m", "flat list of central-body-fixed x y z triples", "flat3",
+        ),
+    },
+}
+
+# Parameters that must be positive when present (a zero would leave the
+# projection undefined rather than merely disabling a term).
+_SENSOR_POSITIVE = {
+    "camera": ("fx_px", "fy_px", "width_px", "height_px"),
+}
+
+# Parameters with no honest default, whatever the mission navigates with.
+_SENSOR_REQUIRED = {
+    "camera": ("fx_px", "fy_px", "width_px", "height_px"),
+}
+
+# The [gnc.nav] component that builds a measurement-noise matrix R out of the
+# aiding sensors' sigmas. The two tables below apply only when a mission
+# selects it, because only then do those sigmas leave the sensor model and
+# become the diagonal of a matrix that has to be invertible.
+_R_BUILDING_NAV_COMPONENT = "error_state_ekf"
+
+# Sigmas the EKF puts on R's diagonal, which must therefore be strictly
+# positive for the reason _EKF_VEC3_PARAMS gives for P0's sigmas: a zero entry
+# makes the matrix singular rather than merely small. R and P0 lose rank for
+# the same reason, so they are refused by the same rule.
+#
+# Scoped to the EKF rather than applied to every mission because a sigma has
+# two distinct jobs. It is always the sensor model's noise draw, where zero is
+# the documented ideal (error-free) instrument and a legitimate thing to ask
+# for; it is additionally R's diagonal only under a filter that forms R. A
+# dead-reckoning or plugin-navigated mission never builds R from these values,
+# so refusing its noise-free star tracker would enforce a conditioning
+# requirement that nothing in the run has.
+_EKF_R_POSITIVE = {
+    "startracker": ("sigma_rad",),
+    "navfix": ("sigma_r_m", "sigma_v_mps"),
+}
+
+# The same keys, additionally required under the EKF: the core-side
+# NavSensorModel members default to zero, so omitting one is a silent route to
+# exactly the singular R that writing the zero explicitly is rejected for. The
+# altimeter lists both of its sigmas because its rule is the quadrature sum
+# below, which cannot be evaluated when either term is absent.
+_EKF_R_REQUIRED = {
+    "startracker": ("sigma_rad",),
+    "navfix": ("sigma_r_m", "sigma_v_mps"),
+    "altimeter": ("sigma_noise_m", "sigma_bias_m"),
+}
+
+# Parameters that are magnitudes: negative values are refused rather than
+# silently inverting a noise term. Keys not listed here are unconstrained in
+# sign (principal points, band edges, mount offsets, landmark coordinates).
+_SENSOR_SIGNED_OK = {
+    "camera": ("cx_px", "cy_px", "r_cam_b_m", "q_b2c", "landmarks_fixed_m"),
+    "altimeter": ("h_min_m", "h_max_m"),
+    "imu": ("gyro_scale_factor_ppm", "gyro_misalignment_rad",
+            "accel_scale_factor_ppm", "accel_misalignment_rad"),
+    "startracker": ("boresight_b",),
+    "sunsensor": ("boresight_b",),
+}
+
+
+def _validate_sensor_params(
+    kind: str, table: dict, errs: "_Errors", *, builds_r: bool = False
+) -> tuple[bool, dict]:
+    """Validate one [sensors.<kind>] table's model parameters.
+
+    Returns (ok, resolved) with resolved carrying only the keys the mission
+    actually set, so an unset parameter takes the core-side default rather
+    than being pinned to a value the user never wrote.
+
+    ``builds_r`` says the mission navigates with the component that forms a
+    measurement-noise matrix out of these sigmas, which turns on the
+    conditioning rules that only that matrix needs.
+    """
+    schema = _SENSOR_PARAMS[kind]
+    path = f"sensors.{kind}"
+    ok = True
+    resolved: dict = {}
+    signed_ok = _SENSOR_SIGNED_OK.get(kind, ())
+    positive = _SENSOR_POSITIVE.get(kind, ())
+    if builds_r:
+        positive = positive + _EKF_R_POSITIVE.get(kind, ())
+
+    _reject_unknown(table, path, {"sample_rate_hz"} | set(schema), errs)
+    for key, value in table.items():
+        if key == "sample_rate_hz" or key not in schema:
+            continue  # unknown keys already reported above
+        units, typical, shape = schema[key]
+        if shape == "scalar":
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                errs.add(path, key, f"expected a number, got {value!r}",
+                         units=units, typical=typical)
+                ok = False
+                continue
+            if key in positive and not value > 0:
+                errs.add(path, key, f"must be > 0, got {value!r}",
+                         units=units, typical=typical)
+                ok = False
+                continue
+            if key not in signed_ok and value < 0:
+                errs.add(path, key, f"must be >= 0, got {value!r}",
+                         units=units, typical=typical)
+                ok = False
+                continue
+            resolved[key] = float(value)
+            continue
+
+        # Array-valued parameter.
+        if not isinstance(value, list) or not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool)
+            for v in value
+        ):
+            errs.add(path, key, f"expected a list of numbers, got {value!r}",
+                     units=units, typical=typical)
+            ok = False
+            continue
+        if shape == "flat3":
+            if len(value) % 3 != 0:
+                errs.add(path, key,
+                         f"length must be a multiple of 3, got {len(value)}",
+                         units=units, typical=typical)
+                ok = False
+                continue
+        elif len(value) != shape:
+            errs.add(path, key,
+                     f"expected exactly {shape} entries, got {len(value)}",
+                     units=units, typical=typical)
+            ok = False
+            continue
+        if key in positive and any(v <= 0 for v in value):
+            errs.add(path, key,
+                     f"entries must be > 0 (a zero measurement-noise sigma "
+                     f"makes R singular and the aiding update inert), got "
+                     f"{[float(v) for v in value]!r}",
+                     units=units, typical=typical)
+            ok = False
+            continue
+        if key not in signed_ok and any(v < 0 for v in value):
+            errs.add(path, key, "entries must be >= 0",
+                     units=units, typical=typical)
+            ok = False
+            continue
+        resolved[key] = [float(v) for v in value]
+
+    # Cross-key checks that a per-key rule cannot express.
+    if kind in ("startracker", "sunsensor"):
+        b = resolved.get("boresight_b")
+        if b is not None and not any(v != 0.0 for v in b):
+            errs.add(path, "boresight_b", "must be a nonzero direction",
+                     units="1", typical="unit vector in body axes")
+            ok = False
+    if kind == "camera":
+        q = resolved.get("q_b2c")
+        if q is not None and not any(v != 0.0 for v in q):
+            errs.add(path, "q_b2c", "must be a nonzero quaternion",
+                     units="1",
+                     typical="Hamilton scalar-first, e.g. [1, 0, 0, 0]")
+            ok = False
+    if builds_r and kind == "altimeter":
+        # The altimeter's R entry is r = sn*sn + sb*sb (cpp/src/gnc/ekf.cpp),
+        # so neither sigma is individually required to be positive: a
+        # noise-free instrument carrying a turn-on bias is a legitimate
+        # configuration, and so is the converse. What R cannot survive is both
+        # being zero, which is what this measures. Checking sigma_noise_m
+        # alone would refuse the bias-only altimeter the core supports.
+        sn = resolved.get("sigma_noise_m")
+        sb = resolved.get("sigma_bias_m")
+        if sn is not None and sb is not None and sn * sn + sb * sb <= 0.0:
+            errs.add(path, "sigma_noise_m",
+                     f"sigma_noise_m**2 + sigma_bias_m**2 must be > 0 (both "
+                     f"zero makes R singular and the aiding update inert), "
+                     f"got sigma_noise_m={sn!r}, sigma_bias_m={sb!r}",
+                     units=schema["sigma_noise_m"][0],
+                     typical=schema["sigma_noise_m"][1])
+            ok = False
+    required = _SENSOR_REQUIRED.get(kind, ())
+    if builds_r:
+        required = required + _EKF_R_REQUIRED.get(kind, ())
+    # Measured against the raw table rather than `resolved`, so a key that is
+    # present but rejected above reports only why its value is wrong instead
+    # of also being called absent.
+    for req in required:
+        if req not in table:
+            errs.add(path, req, "missing required key",
+                     units=schema[req][0], typical=schema[req][1])
+            ok = False
+    return ok, resolved
+_GNC_MAX_LATENCY_CYCLES = 10_000
 
 
 class MissionValidationError(Exception):
@@ -1274,17 +1714,638 @@ def _validate_environment(
     return resolved
 
 
+def _validate_gnc_plugin_component(
+    table: dict, path: str, component: str, errs: _Errors
+) -> dict | None:
+    """One ``[gnc.*]`` slot naming a plugin component (FR-25 ``--gnc-plugin``).
+
+    Validation must work core-less and without the plugin file, so the name
+    after the ``python:`` prefix cannot be checked against a registry here.
+    It is checked against a grammar instead, and against the plugin's declared
+    components at run time by ``star_reacher.plugin``. The prefix is what
+    keeps that two-stage split honest: an unprefixed typo is still measured
+    against the built-in vocabulary and still fails here.
+
+    Parameter KEYS are the plugin's own contract and are therefore not
+    whitelisted -- this validator cannot know them. Their VALUES are still
+    held to the plain-data rule of ``star/gnc/config.hpp``: a finite number,
+    or an array of finite numbers, because that is all the bound
+    ``GncComponentCfg`` can carry. A parameter the plugin does not recognize
+    is the plugin's to reject.
+    """
+    name = component[len(_GNC_PLUGIN_PREFIX) :]
+    if not _GNC_PLUGIN_NAME_RE.fullmatch(name):
+        errs.add(
+            path,
+            "component",
+            f"malformed plugin component name {component!r}",
+            hint=(
+                f'the name after "{_GNC_PLUGIN_PREFIX}" must match '
+                f"{_GNC_PLUGIN_NAME_RE.pattern} (a letter or underscore "
+                f"followed by letters, digits, or underscores)"
+            ),
+        )
+        return None
+
+    resolved: dict = {"component": component}
+    ok = True
+    for key, value in table.items():
+        if key == "component":
+            continue
+        if _is_number(value):
+            if not math.isfinite(float(value)):
+                errs.add(
+                    path,
+                    key,
+                    f"expected a finite number, got {value!r}",
+                    hint="plugin component parameters are finite scalars",
+                )
+                ok = False
+                continue
+            resolved[key] = value
+        elif isinstance(value, list):
+            if not value or not all(_is_number(v) for v in value):
+                errs.add(
+                    path,
+                    key,
+                    "expected a non-empty array of numbers",
+                    hint="plugin component parameters are numbers or arrays of numbers",
+                )
+                ok = False
+                continue
+            if not all(math.isfinite(float(v)) for v in value):
+                errs.add(
+                    path,
+                    key,
+                    "all components must be finite",
+                    hint="plugin component parameters are finite",
+                )
+                ok = False
+                continue
+            resolved[key] = [float(v) for v in value]
+        else:
+            errs.add(
+                path,
+                key,
+                f"expected a number or an array of numbers, got "
+                f"{type(value).__name__}",
+                hint=(
+                    "a plugin component's parameters ride in the scalar and "
+                    "vector maps of GncComponentCfg, which carry numbers only"
+                ),
+            )
+            ok = False
+    return resolved if ok else None
+
+
+def _validate_gnc_component(
+    table: object, path: str, vocab: dict, errs: _Errors
+) -> dict | None:
+    """One [gnc.nav|guidance|control] slot: component name plus parameters.
+
+    ``vocab`` maps accepted component names to their parameter-key tuples
+    (the FR-25 built-in vocabulary; the core re-checks against its live
+    registry). Returns the resolved slot dict or None after errors.
+    """
+    if not isinstance(table, dict):
+        errs.add(
+            path.rsplit(".", 1)[0],
+            path.rsplit(".", 1)[1],
+            "expected a table",
+            hint=f'e.g. [{path}] with component = "{next(iter(vocab))}"',
+        )
+        return None
+    accepted = ", ".join(sorted(vocab))
+    offered = (
+        f'accepted components: {accepted}, or "{_GNC_PLUGIN_PREFIX}<name>" for '
+        f"a component loaded with star run --gnc-plugin"
+    )
+    component = _req_str(table, path, "component", errs, hint=offered)
+    if component is None:
+        return None
+    if component.startswith(_GNC_PLUGIN_PREFIX):
+        return _validate_gnc_plugin_component(table, path, component, errs)
+    if component not in vocab:
+        errs.add(
+            path,
+            "component",
+            f"unknown component {component!r}",
+            hint=offered,
+        )
+        return None
+    _reject_unknown(table, path, {"component", *vocab[component]}, errs)
+    resolved: dict = {"component": component}
+    ok = True
+
+    if component == "dead_reckoning":
+        # The initial attitude estimate is configuration, stated explicitly
+        # in the mission file - no implicit truth access (the GNC chapter's
+        # dead-reckoning contract). Required, unlike attitude_hold's q_cmd.
+        if "q0" not in table:
+            errs.add(
+                path, "q0",
+                "missing required key (the initial attitude estimate, "
+                "Hamilton scalar-first [w, x, y, z], D-7)",
+                units="1", typical="unit quaternion",
+            )
+            ok = False
+        else:
+            q = table["q0"]
+            valid = (
+                isinstance(q, list)
+                and len(q) == 4
+                and all(_is_number(x) and math.isfinite(x) for x in q)
+                and math.hypot(*[float(x) for x in q]) > 0.0
+            )
+            if not valid:
+                errs.add(
+                    path, "q0",
+                    f"expected 4 finite numbers with a non-zero norm "
+                    f"(Hamilton scalar-first [w, x, y, z], D-7), got {q!r}",
+                    units="1", typical="unit quaternion",
+                )
+                ok = False
+            else:
+                resolved["q0"] = [float(x) for x in q]
+    elif component == "error_state_ekf":
+        # The initial attitude estimate, same contract as dead reckoning.
+        if "q0" not in table:
+            errs.add(
+                path, "q0",
+                "missing required key (the initial attitude estimate, "
+                "Hamilton scalar-first [w, x, y, z], D-7)",
+                units="1", typical="unit quaternion",
+            )
+            ok = False
+        else:
+            q = table["q0"]
+            valid = (
+                isinstance(q, list)
+                and len(q) == 4
+                and all(_is_number(x) and math.isfinite(x) for x in q)
+                and math.hypot(*[float(x) for x in q]) > 0.0
+            )
+            if not valid:
+                errs.add(
+                    path, "q0",
+                    f"expected 4 finite numbers with a non-zero norm "
+                    f"(Hamilton scalar-first [w, x, y, z], D-7), got {q!r}",
+                    units="1", typical="unit quaternion",
+                )
+                ok = False
+            else:
+                resolved["q0"] = [float(x) for x in q]
+        for key, units, typical, positive in _EKF_VEC3_PARAMS:
+            if key not in table:
+                errs.add(
+                    path, key, "missing required key", units=units,
+                    typical=typical,
+                )
+                ok = False
+                continue
+            v = table[key]
+            if not (
+                isinstance(v, list)
+                and len(v) == 3
+                and all(_is_number(x) and math.isfinite(x) for x in v)
+            ):
+                errs.add(
+                    path, key,
+                    f"expected 3 finite numbers, got {v!r}",
+                    units=units, typical=typical,
+                )
+                ok = False
+                continue
+            values = [float(x) for x in v]
+            if positive and any(x <= 0.0 for x in values):
+                errs.add(
+                    path, key,
+                    f"entries must be > 0 (a zero initial variance makes P0 "
+                    f"singular and NEES undefined), got {values!r}",
+                    units=units, typical=typical,
+                )
+                ok = False
+                continue
+            resolved[key] = values
+    elif component == "pitch_program":
+        azimuth = _req_num(
+            table, path, "azimuth_deg", errs, units="deg",
+            typical="0 to 360 (flight azimuth east of north)",
+        )
+        pitch_t = _validate_number_array(
+            table, path, "pitch_t_s", errs, units="s", typical="0 to 600"
+        )
+        pitch_deg = _validate_number_array(
+            table, path, "pitch_deg", errs, units="deg",
+            typical="-30 to 90 (elevation above local horizontal)",
+        )
+        if pitch_t is not None and any(
+            not (a < b) for a, b in zip(pitch_t, pitch_t[1:])
+        ):
+            errs.add(
+                path, "pitch_t_s",
+                f"must be strictly increasing, got {pitch_t!r}",
+                units="s", typical="0 to 600",
+            )
+            pitch_t = None
+        if (
+            pitch_t is not None
+            and pitch_deg is not None
+            and len(pitch_t) != len(pitch_deg)
+        ):
+            errs.add(
+                path, "pitch_deg",
+                f"must have the same length as pitch_t_s "
+                f"({len(pitch_t)}), got {len(pitch_deg)}",
+                units="deg", typical="-30 to 90",
+            )
+            pitch_deg = None
+        if azimuth is None or pitch_t is None or pitch_deg is None:
+            ok = False
+        else:
+            resolved.update(
+                azimuth_deg=azimuth, pitch_t_s=pitch_t, pitch_deg=pitch_deg
+            )
+    elif component == "attitude_hold":
+        if "q_cmd" in table:
+            q = table["q_cmd"]
+            valid = (
+                isinstance(q, list)
+                and len(q) == 4
+                and all(_is_number(x) and math.isfinite(x) for x in q)
+                and math.hypot(*[float(x) for x in q]) > 0.0
+            )
+            if not valid:
+                errs.add(
+                    path, "q_cmd",
+                    f"expected 4 finite numbers with a non-zero norm "
+                    f"(Hamilton scalar-first [w, x, y, z], D-7), got {q!r}",
+                    units="1", typical="unit quaternion",
+                )
+                ok = False
+            else:
+                resolved["q_cmd"] = [float(x) for x in q]
+    elif component == "pd_attitude":
+        specs = (
+            ("kp_nm_per_rad", "N*m/rad", "0.01 to 100", 0.0),
+            ("kd_nm_per_radps", "N*m/(rad/s)", "0.1 to 1000", 0.0),
+            ("tau_max_nm", "N*m", "0.001 to 1000", None),
+        )
+        for key, units, typical, floor in specs:
+            if key not in table:
+                errs.add(path, key, "missing required key", units=units, typical=typical)
+                ok = False
+                continue
+            v = table[key]
+            if not (
+                isinstance(v, list)
+                and len(v) == 3
+                and all(_is_number(x) and math.isfinite(x) for x in v)
+            ):
+                errs.add(
+                    path, key,
+                    f"expected 3 finite numbers (per body axis), got {v!r}",
+                    units=units, typical=typical,
+                )
+                ok = False
+                continue
+            values = [float(x) for x in v]
+            if floor is None and any(x <= 0.0 for x in values):
+                errs.add(
+                    path, key,
+                    f"entries must be > 0 (symmetric per-axis saturation "
+                    f"limit), got {values!r}",
+                    units=units, typical=typical,
+                )
+                ok = False
+                continue
+            if floor is not None and any(x < floor for x in values):
+                errs.add(
+                    path, key,
+                    f"entries must be >= 0, got {values!r}",
+                    units=units, typical=typical,
+                )
+                ok = False
+                continue
+            resolved[key] = values
+
+    return resolved if ok else None
+
+
+def _validate_gnc(
+    doc: dict,
+    errs: _Errors,
+    *,
+    dt_s,
+    integrator_type,
+    vehicle_present: bool,
+    initial_form,
+) -> tuple[dict | None, dict | None]:
+    """The Phase 6 [gnc] + [sensors.*] surface (FR-23/FR-25, D-2).
+
+    Returns ``(gnc_resolved, sensors_resolved)``; both None when the tables
+    are absent or invalid. Cross rules: [gnc] needs a vehicle, the rk4
+    integrator with control_rate_hz == 1/dt_s (one control cycle per step,
+    D-5), an [sensors.imu] entry, and no open-loop attitude actions in the
+    [[sequence]]; [sensors] is meaningless without [gnc] (sensors sample on
+    the control-cycle grid).
+    """
+    gnc_present = "gnc" in doc
+    sensors_present = "sensors" in doc
+    if not gnc_present:
+        if sensors_present:
+            errs.add(
+                "root",
+                "sensors",
+                "a [sensors] table requires a [gnc] table",
+                hint="sensors are sampled on the GNC control-cycle grid; add "
+                "[gnc] or remove [sensors]",
+            )
+        return None, None
+
+    gnc = _get_table(
+        doc, "gnc", errs, required=False,
+        hint="must define control_rate_hz and the nav/guidance/control chain",
+    )
+    if gnc is None:
+        return None, None
+    _reject_unknown(
+        gnc,
+        "gnc",
+        {"control_rate_hz", "latency_cycles", "oracle", "nav", "guidance", "control"},
+        errs,
+    )
+
+    ok = True
+    rate = None
+    if "control_rate_hz" not in gnc:
+        errs.add("gnc", "control_rate_hz", "missing required key", units="Hz", typical="1 to 1000")
+        ok = False
+    elif not _is_int(gnc["control_rate_hz"]) or gnc["control_rate_hz"] < 1:
+        errs.add(
+            "gnc",
+            "control_rate_hz",
+            f"expected an integer >= 1, got {gnc['control_rate_hz']!r}",
+            units="Hz",
+            typical="1 to 1000",
+        )
+        ok = False
+    else:
+        rate = gnc["control_rate_hz"]
+
+    latency = 0
+    if "latency_cycles" in gnc:
+        v = gnc["latency_cycles"]
+        if not _is_int(v) or not (0 <= v <= _GNC_MAX_LATENCY_CYCLES):
+            errs.add(
+                "gnc",
+                "latency_cycles",
+                f"expected an integer in [0, {_GNC_MAX_LATENCY_CYCLES}], got {v!r}",
+                units="control cycles",
+                typical="0 to 10 (FR-25 command-application delay)",
+            )
+            ok = False
+        else:
+            latency = v
+
+    oracle = False
+    if "oracle" in gnc:
+        v = gnc["oracle"]
+        if not isinstance(v, bool):
+            errs.add(
+                "gnc",
+                "oracle",
+                f"expected a boolean, got {v!r}",
+                hint="oracle = true injects truth into GncInput for debug "
+                "runs and is stamped into the log header (FR-25)",
+            )
+            ok = False
+        else:
+            oracle = v
+
+    # The control cycle IS the integrator step (D-5): rk4 only, and the
+    # configured rate must equal 1/dt_s.
+    if integrator_type is not None and integrator_type != "rk4":
+        errs.add(
+            "gnc",
+            "control_rate_hz",
+            'the [gnc] chain requires [integrator] type = "rk4"',
+            hint="the control cycle is the fixed integrator step (D-5); "
+            "rkf78 has no fixed cycle grid",
+        )
+        ok = False
+    elif rate is not None and dt_s is not None:
+        cycles = dt_s * rate
+        if abs(cycles - 1.0) > _REL_TOL:
+            errs.add(
+                "gnc",
+                "control_rate_hz",
+                f"must equal 1/dt_s (one control cycle per integrator step, "
+                f"D-5); got control_rate_hz = {rate!r} with dt_s = {dt_s!r}",
+                units="Hz",
+                typical="1 to 1000",
+            )
+            ok = False
+
+    if not vehicle_present:
+        errs.add(
+            "root",
+            "gnc",
+            "a [gnc] table requires a vehicle reference",
+            hint='the GNC chain commands the 6DOF vehicle path; set '
+            'vehicle = "vehicles/<file>.toml"',
+        )
+        ok = False
+
+    if "sequence" in doc and isinstance(doc["sequence"], list):
+        for entry in doc["sequence"]:
+            if isinstance(entry, dict) and entry.get("action") in _GNC_ATTITUDE_ACTIONS:
+                errs.add(
+                    "sequence",
+                    str(entry.get("name", entry.get("action"))),
+                    f"open-loop attitude action {entry['action']!r} cannot be "
+                    f"combined with [gnc]",
+                    hint="the GNC chain holds attitude authority; move the "
+                    "attitude command into [gnc.guidance] (propulsion and "
+                    "staging actions keep their sequence authority)",
+                )
+                ok = False
+
+    nav = _validate_gnc_component(gnc.get("nav"), "gnc.nav", _GNC_NAV_COMPONENTS, errs) if "nav" in gnc else None
+    if "nav" not in gnc:
+        errs.add("gnc", "nav", "missing required table", hint='e.g. [gnc.nav] component = "dead_reckoning"')
+    guidance = (
+        _validate_gnc_component(gnc.get("guidance"), "gnc.guidance", _GNC_GUIDANCE_COMPONENTS, errs)
+        if "guidance" in gnc
+        else None
+    )
+    if "guidance" not in gnc:
+        errs.add(
+            "gnc", "guidance", "missing required table",
+            hint='e.g. [gnc.guidance] component = "attitude_hold" or "pitch_program"',
+        )
+    control = (
+        _validate_gnc_component(gnc.get("control"), "gnc.control", _GNC_CONTROL_COMPONENTS, errs)
+        if "control" in gnc
+        else None
+    )
+    if "control" not in gnc:
+        errs.add(
+            "gnc", "control", "missing required table",
+            hint='e.g. [gnc.control] component = "pd_attitude" with '
+            "kp_nm_per_rad, kd_nm_per_radps, tau_max_nm",
+        )
+
+    if (
+        guidance is not None
+        and guidance["component"] == "pitch_program"
+        and initial_form is not None
+        and initial_form != "geodetic"
+    ):
+        errs.add(
+            "gnc.guidance",
+            "component",
+            'component "pitch_program" requires the geodetic (launch-site) '
+            "initial-state form",
+            hint="the commanded axis is resolved in the launch-site ENU "
+            "basis (FR-14); free-flying missions use attitude_hold",
+        )
+        ok = False
+
+    # --- [sensors] ----------------------------------------------------------
+    sensors_resolved = None
+    if not sensors_present:
+        errs.add(
+            "root",
+            "sensors",
+            "a [gnc] table requires a [sensors] table with at least "
+            "[sensors.imu]",
+            hint="the navigation chain consumes IMU increments; e.g. "
+            "[sensors.imu] sample_rate_hz = <control_rate_hz>",
+        )
+        ok = False
+    else:
+        sensors = _get_table(
+            doc, "sensors", errs, required=False,
+            hint="sub-tables per sensor instance, e.g. [sensors.imu]",
+        )
+        if sensors is None:
+            ok = False
+        else:
+            for key in sensors:
+                if key not in _SENSOR_KINDS:
+                    errs.add(
+                        "sensors",
+                        key,
+                        f"unknown sensor {key!r}",
+                        hint="supported kinds: " + ", ".join(_SENSOR_KINDS),
+                    )
+                    ok = False
+            if "imu" not in sensors:
+                errs.add(
+                    "sensors",
+                    "imu",
+                    "missing required table",
+                    hint="the [gnc] navigation chain consumes IMU increments; "
+                    "e.g. [sensors.imu] sample_rate_hz = <control_rate_hz>",
+                )
+                ok = False
+            elif not isinstance(sensors["imu"], dict):
+                errs.add("sensors", "imu", "expected a table", hint="e.g. [sensors.imu] sample_rate_hz = 100")
+                ok = False
+            else:
+                # Resolve every configured kind in the canonical order, so
+                # the log's declared sensor array and the resolved config are
+                # ordered identically regardless of TOML key order.
+                resolved_kinds: dict = {}
+                kinds_ok = True
+                # Only the built-in EKF turns these sigmas into R's diagonal.
+                # A plugin navigator may form its own R, but the shape of that
+                # matrix is the plugin's to define, so its conditioning is
+                # checked by the plugin rather than assumed here.
+                builds_r = (
+                    isinstance(nav, dict)
+                    and nav.get("component") == _R_BUILDING_NAV_COMPONENT
+                )
+                for kind in _SENSOR_KINDS:
+                    if kind not in sensors:
+                        continue
+                    table = sensors[kind]
+                    path = f"sensors.{kind}"
+                    if not isinstance(table, dict):
+                        errs.add("sensors", kind, "expected a table",
+                                 hint=f"e.g. [{path}] sample_rate_hz = {rate}")
+                        kinds_ok = False
+                        continue
+                    srate = table.get("sample_rate_hz")
+                    if srate is None:
+                        errs.add(path, "sample_rate_hz", "missing required key",
+                                 units="Hz",
+                                 typical="= control_rate_hz, or an integer "
+                                 "divisor of it")
+                        kinds_ok = False
+                    elif not _is_int(srate) or srate < 1:
+                        errs.add(path, "sample_rate_hz",
+                                 f"expected an integer >= 1, got {srate!r}",
+                                 units="Hz", typical="= control_rate_hz")
+                        kinds_ok = False
+                    elif kind == "imu" and rate is not None and srate != rate:
+                        # The v1 IMU emits one increment pair per control
+                        # cycle (ch:sensors-imu assumption 1, D-5).
+                        errs.add(path, "sample_rate_hz",
+                                 f"must equal [gnc] control_rate_hz ({rate}), "
+                                 f"got {srate!r}; the v1 IMU emits one "
+                                 f"increment pair per control cycle (D-5)",
+                                 units="Hz", typical="= control_rate_hz")
+                        kinds_ok = False
+                    elif rate is not None and rate % srate != 0:
+                        # Sensors sample on the control-cycle grid: records
+                        # are decimated from it, never interpolated.
+                        errs.add(path, "sample_rate_hz",
+                                 f"must be an integer divisor of [gnc] "
+                                 f"control_rate_hz ({rate}), got {srate!r}",
+                                 units="Hz",
+                                 typical=f"a divisor of {rate}")
+                        kinds_ok = False
+                    params_ok, params = _validate_sensor_params(
+                        kind, table, errs, builds_r=builds_r)
+                    kinds_ok = kinds_ok and params_ok
+                    if kinds_ok and srate is not None:
+                        params["sample_rate_hz"] = srate
+                        resolved_kinds[kind] = params
+                if kinds_ok:
+                    sensors_resolved = resolved_kinds
+                else:
+                    ok = False
+
+    if not ok or None in (rate, nav, guidance, control) or sensors_resolved is None:
+        return None, None
+    gnc_resolved = {
+        "control_rate_hz": rate,
+        "latency_cycles": latency,
+        "oracle": oracle,
+        "nav": nav,
+        "guidance": guidance,
+        "control": control,
+    }
+    return gnc_resolved, sensors_resolved
+
+
 def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dict | None:
     # Pass 2: schema shape and unknown-key rejection (typos are errors, DX-2).
     for key in doc:
-        if key not in ("schema_version", "vehicle", "sequence") and key not in _TOP_TABLES:
+        if (
+            key not in ("schema_version", "vehicle", "sequence", "gnc", "sensors")
+            and key not in _TOP_TABLES
+        ):
             errs.add(
                 "root",
                 key,
                 "unknown key",
                 hint=(
                     "remove it or fix the spelling; allowed top-level entries are "
-                    "schema_version, vehicle, [[sequence]], and the tables "
+                    "schema_version, vehicle, [[sequence]], [gnc], [sensors], "
+                    "and the tables "
                     + ", ".join(f"[{t}]" for t in _TOP_TABLES)
                 ),
             )
@@ -1615,6 +2676,16 @@ def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dic
             initial_form=initial_form,
         )
 
+    # --- GNC chain and sensors (FR-23/FR-25, Phase 6) -----------------------
+    gnc_resolved, sensors_resolved = _validate_gnc(
+        doc,
+        errs,
+        dt_s=dt_s,
+        integrator_type=integrator_resolved["type"] if integrator_resolved else None,
+        vehicle_present=vehicle_present,
+        initial_form=initial_form,
+    )
+
     # Heliocentric cross rules (Phase 5): the sun-central regime is served by
     # the point-mass composed-environment path only. The 6DOF vehicle path's
     # altitude events, pad geometry, and aerodynamics all assume a planetary
@@ -1814,6 +2885,12 @@ def _validate_document(doc: dict, errs: _Errors, *, strict: bool = False) -> dic
         resolved["vehicle"] = vehicle_entry
     if sequence_resolved is not None:
         resolved["sequence"] = sequence_resolved
+    # Phase 6 keys likewise enter only for GNC missions; the recorded
+    # defaults (latency_cycles, oracle) keep the resolved config the sole
+    # source of truth for what actually ran.
+    if gnc_resolved is not None:
+        resolved["gnc"] = gnc_resolved
+        resolved["sensors"] = sensors_resolved
     return resolved
 
 

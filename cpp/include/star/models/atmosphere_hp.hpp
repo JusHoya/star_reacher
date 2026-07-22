@@ -52,6 +52,15 @@ Eigen::Vector3d hp_bulge_apex(const Eigen::Vector3d& sun_dir_unit);
 double geodetic_altitude(const Eigen::Vector3d& r_ecef_m, double a_m,
                          double inv_f);
 
+// The same Bowring conversion, also returning the geodetic latitude and east
+// longitude [rad]. geodetic_altitude() is a thin wrapper over this, so the
+// two can never drift apart: a consumer that needs the ellipsoidal normal
+// (the reference EKF's altimeter measurement Jacobian, eq:ekf:altH) gets the
+// angles from the identical arithmetic that produced the height.
+void geodetic_lat_lon_alt(const Eigen::Vector3d& r_ecef_m, double a_m,
+                          double inv_f, double& lat_rad, double& lon_rad,
+                          double& alt_m);
+
 // Read-only access to the compiled-in 50-row coefficient table, exposed
 // so the doctest suite can hold the compiled table and the committed
 // golden transcription (tests/golden/atmosphere/

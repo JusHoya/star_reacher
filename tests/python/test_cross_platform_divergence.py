@@ -9,9 +9,11 @@ it is imported from its file path.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import math
+import struct
 from pathlib import Path
 
 import pytest
@@ -347,3 +349,423 @@ def test_extract_writes_final_truth_record_at_full_precision(tmp_path, capsys):
     parsed = cpd.load_finalstate(out)
     assert parsed["r_m"] == list(r_final)
     assert parsed["v_mps"] == list(v_final)
+
+
+# ---------------------------------------------------------------------------
+# Channel-level widening: the derived tolerance
+# ---------------------------------------------------------------------------
+
+
+def test_channel_tolerance_is_the_derived_geometric_mean():
+    """The tolerance is derived, not chosen, and its inputs are pinned here.
+
+    A round number would be a judgement call; this one is a function of two
+    quantities - one measured, one specified by D-10 - so moving it requires
+    moving one of them.
+    """
+    assert cpd.MEASURED_WORST_REL == 1.06e-10
+    assert cpd.D10_BOUND_REL == 1e-9
+    assert cpd.CHANNEL_TOLERANCE_REL == math.sqrt(1.06e-10 * 1e-9)
+    assert cpd.CHANNEL_TOLERANCE_REL == pytest.approx(3.2558e-10, rel=1e-4)
+
+
+def test_channel_tolerance_has_equal_margin_either_way():
+    """Equal multiplicative headroom against a false red and against masking.
+
+    Below the measured worst case the gate would red on divergence the
+    project has already measured and accepted; at or above the D-10 bound it
+    could never fail before D-10 already had, which is the defect this
+    widening exists to correct.
+    """
+    above = cpd.CHANNEL_TOLERANCE_REL / cpd.MEASURED_WORST_REL
+    below = cpd.D10_BOUND_REL / cpd.CHANNEL_TOLERANCE_REL
+    assert above == pytest.approx(below, rel=1e-12)
+    assert above == pytest.approx(3.0715, rel=1e-3)
+    assert cpd.MEASURED_WORST_REL < cpd.CHANNEL_TOLERANCE_REL < cpd.D10_BOUND_REL
+
+
+def test_every_declared_gate_mission_exists():
+    """A mission named in the gate table but absent from the tree gates nothing."""
+    missing = [
+        m["path"] for m in cpd.CHANNEL_MISSIONS.values()
+        if not (REPO_ROOT / m["path"]).is_file()
+    ]
+    assert not missing, f"the gate table names missions that do not exist: {missing}"
+
+
+def test_the_camera_mission_is_in_the_gate_table():
+    """The one shipped camera mission must be compared, not merely committed."""
+    assert "leo_optical_nav" in cpd.CHANNEL_MISSIONS
+    required = cpd.CHANNEL_MISSIONS["leo_optical_nav"]["require_active"]
+    assert "sensors.camera.px_uv" in required
+
+
+# ---------------------------------------------------------------------------
+# Channel-level widening: synthetic two-mission fixture
+# ---------------------------------------------------------------------------
+
+# Two synthetic missions exercising both arithmetic declarations. They are
+# monkeypatched over the real table so the tests below pin the comparison
+# logic rather than any shipped mission's current numbers.
+_SYNTH_MISSIONS = {
+    "synth_basic": {
+        "path": "missions/twobody_leo.toml",
+        "arithmetic": "basic-ops-only",
+        "require_active": [],
+        "min_active": 0,
+    },
+    "synth_libm": {
+        "path": "missions/leo_attitude_gnc.toml",
+        "arithmetic": "libm",
+        "exact_float_channels": ["truth.r_m"],
+        "require_active": ["truth.q_i2b"],
+        "min_active": 1,
+    },
+}
+
+
+@pytest.fixture
+def synth(monkeypatch):
+    monkeypatch.setattr(cpd, "CHANNEL_MISSIONS", _SYNTH_MISSIONS)
+    return _SYNTH_MISSIONS
+
+
+def _synth_srlog(path: Path, *, r_x: float = 6778137.0) -> Path:
+    """A small SRLOG with a varying attitude and a fixed translational state."""
+    header = _fixtures.contract_header()
+    records = []
+    for i in range(16):
+        # q_i2b varies so the channel carries a nonzero RMS and can be
+        # perturbed; r_m is constant so a one-ULP change to it is isolated.
+        q = (0.5, 0.5, 0.5, 0.5 + 1e-3 * i)
+        records.append(
+            _fixtures.truth_record(
+                0.1 * i, r_m=(r_x, -12.25, 3.0), v_mps=(0.0, 7668.6, 0.0), q_i2b=q
+            )
+        )
+    records.append(_fixtures.event_record(0.0, 1, "start"))
+    path.write_bytes(_fixtures.build_srlog(header, records))
+    return path
+
+
+def _extract_channels(tmp_path: Path, mission: str, leg: str, srlog: Path) -> dict:
+    out = tmp_path / f"art-{leg}" / f"channels-{mission}.json"
+    rc = cpd.main(["extract-channels", "--srlog", str(srlog), "--mission", mission,
+                   "--leg", leg, "--out", str(out)])
+    assert rc == 0
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def _legs_dir(tmp_path: Path, per_leg: dict, mission: str, root: Path | None = None) -> Path:
+    """Materialize one artifact per leg from a {leg: srlog} map."""
+    root = root if root is not None else tmp_path / "artifacts"
+    for leg, srlog in per_leg.items():
+        out = root / f"xplat-{leg}" / f"channels-{mission}.json"
+        rc = cpd.main(["extract-channels", "--srlog", str(srlog), "--mission", mission,
+                       "--leg", leg, "--out", str(out)])
+        assert rc == 0
+    return root
+
+
+def _all_missions_dir(tmp_path: Path, per_leg: dict) -> Path:
+    """Artifacts for every synthetic mission, so measure-channels is satisfied."""
+    root = tmp_path / "artifacts"
+    for mission in _SYNTH_MISSIONS:
+        _legs_dir(tmp_path, per_leg, mission, root=root)
+    return root
+
+
+def _measure_channels(tmp_path: Path, root: Path, legs: int = 4) -> tuple[int, dict]:
+    out = tmp_path / "channel-measurement.json"
+    rc = cpd.main(["measure-channels", "--dir", str(root), "--expect-legs", str(legs),
+                   "--out", str(out)])
+    return rc, json.loads(out.read_text(encoding="utf-8"))
+
+
+def test_extract_channels_splits_the_two_classes(synth, tmp_path):
+    """Structural classification: integers and t_s exact, floats to tolerance."""
+    srlog = _synth_srlog(tmp_path / "run.srlog")
+    art = _extract_channels(tmp_path, "synth_libm", "windows-2022", srlog)
+    # t_s in both groups, the u32 code and the str16 detail are exact by
+    # dtype or by name; truth.r_m is exact by the mission's declaration.
+    assert set(art["exact"]) == {
+        "truth.t_s", "events.t_s", "events.code", "events.detail", "truth.r_m",
+    }
+    assert "truth.q_i2b" in art["tolerance"]
+    assert "truth.v_mps" in art["tolerance"]
+    values = cpd._decode_f64(base64.b64decode(art["tolerance"]["truth.q_i2b"]["b64"]))
+    assert len(values) == 16 * 4
+
+
+def test_extract_channels_makes_a_basic_ops_mission_wholly_exact(synth, tmp_path):
+    srlog = _synth_srlog(tmp_path / "run.srlog")
+    art = _extract_channels(tmp_path, "synth_basic", "windows-2022", srlog)
+    assert art["tolerance"] == {}
+    assert "truth.q_i2b" in art["exact"]
+
+
+def test_channel_gate_is_green_on_identical_legs(synth, tmp_path):
+    srlog = _synth_srlog(tmp_path / "run.srlog")
+    root = _all_missions_dir(tmp_path, {leg: srlog for leg in LEGS})
+    rc, m = _measure_channels(tmp_path, root)
+    assert rc == 0
+    assert m["max_rel"] == 0.0
+    assert m["violations"] == []
+
+
+# ---------------------------------------------------------------------------
+# Mutation battery: the widened gate must be able to fail
+# ---------------------------------------------------------------------------
+
+
+def _perturb_tolerance_channel(art_path: Path, key: str, factor: float) -> None:
+    """Add ``factor * tolerance * rms`` to one element of a tolerance channel."""
+    art = json.loads(art_path.read_text(encoding="utf-8"))
+    entry = art["tolerance"][key]
+    values = list(cpd._decode_f64(base64.b64decode(entry["b64"])))
+    values[len(values) // 2] += cpd._rms(values) * cpd.CHANNEL_TOLERANCE_REL * factor
+    entry["b64"] = base64.b64encode(
+        struct.pack(f"<{len(values)}d", *values)
+    ).decode("ascii")
+    art_path.write_text(json.dumps(art), encoding="utf-8")
+
+
+def test_gate_fails_when_a_libm_channel_exceeds_the_tolerance(synth, tmp_path):
+    """The mutation the old gate could not see: a perturbed libm channel."""
+    srlog = _synth_srlog(tmp_path / "run.srlog")
+    root = _all_missions_dir(tmp_path, {leg: srlog for leg in LEGS})
+    _perturb_tolerance_channel(
+        root / f"xplat-{LEGS[0]}" / "channels-synth_libm.json", "truth.q_i2b", 1.5
+    )
+    rc, m = _measure_channels(tmp_path, root)
+    assert rc == 0  # measure records honestly; the gate enforces
+    assert m["max_rel"] > cpd.CHANNEL_TOLERANCE_REL
+    assert m["worst_channel"] == "truth.q_i2b"
+    assert cpd.main([
+        "gate-channels",
+        "--measurement", str(tmp_path / "channel-measurement.json"),
+        "--record", str(_channel_record(tmp_path)),
+    ]) != 0
+
+
+def test_gate_stays_green_just_inside_the_tolerance(synth, tmp_path, capsys):
+    """Calibration: the gate fails on a real breach, not on any perturbation.
+
+    Without this, the test above would pass just as well for a gate hard-wired
+    to fail, which would be the same defect in the opposite direction.
+    """
+    srlog = _synth_srlog(tmp_path / "run.srlog")
+    root = _all_missions_dir(tmp_path, {leg: srlog for leg in LEGS})
+    _perturb_tolerance_channel(
+        root / f"xplat-{LEGS[0]}" / "channels-synth_libm.json", "truth.q_i2b", 0.5
+    )
+    rc, m = _measure_channels(tmp_path, root)
+    assert rc == 0
+    assert 0.0 < m["max_rel"] < cpd.CHANNEL_TOLERANCE_REL
+    assert m["violations"] == []
+    assert cpd.main([
+        "gate-channels",
+        "--measurement", str(tmp_path / "channel-measurement.json"),
+        "--record", str(_channel_record(tmp_path)),
+    ]) == 0
+    assert "channel gate passed" in capsys.readouterr().out
+
+
+def test_gate_fails_on_a_one_ulp_change_in_an_exact_channel(synth, tmp_path):
+    """The exact-class assertion fires on the smallest possible change.
+
+    The perturbation is one unit in the last place of ``truth.r_m`` - the
+    channel the unwidened gate sampled - injected into the log itself rather
+    than into the artifact, so the whole extract-and-compare path is under
+    test.
+    """
+    clean = _synth_srlog(tmp_path / "clean.srlog")
+    one_ulp = math.nextafter(6778137.0, math.inf)
+    assert one_ulp != 6778137.0
+    mutated = _synth_srlog(tmp_path / "mutated.srlog", r_x=one_ulp)
+
+    per_leg = {leg: clean for leg in LEGS}
+    per_leg[LEGS[0]] = mutated
+    root = _all_missions_dir(tmp_path, per_leg)
+    rc, m = _measure_channels(tmp_path, root)
+    assert rc == 0
+    # The change is 1 ULP, far below the tolerance: it is caught because the
+    # channel is gated for bit-identity, not against a threshold.
+    assert m["max_rel"] <= cpd.CHANNEL_TOLERANCE_REL
+    assert any("truth.r_m" in v and "not bit-identical" in v for v in m["violations"]), (
+        f"a one-ULP change in an exact-class channel went unreported: {m['violations']}"
+    )
+    assert cpd.main([
+        "gate-channels",
+        "--measurement", str(tmp_path / "channel-measurement.json"),
+        "--record", str(_channel_record(tmp_path)),
+    ]) != 0
+
+
+def test_gate_fails_when_a_required_channel_is_identically_zero(synth, tmp_path):
+    """Anti-degeneracy: an all-zero channel compares equal for free."""
+    srlog = _synth_srlog(tmp_path / "run.srlog")
+    root = _all_missions_dir(tmp_path, {leg: srlog for leg in LEGS})
+    for leg in LEGS:
+        p = root / f"xplat-{leg}" / "channels-synth_libm.json"
+        art = json.loads(p.read_text(encoding="utf-8"))
+        entry = art["tolerance"]["truth.q_i2b"]
+        n = len(cpd._decode_f64(base64.b64decode(entry["b64"])))
+        entry["b64"] = base64.b64encode(
+            struct.pack(f"<{n}d", *([0.0] * n))
+        ).decode("ascii")
+        p.write_text(json.dumps(art), encoding="utf-8")
+    rc, m = _measure_channels(tmp_path, root)
+    assert rc == 0
+    assert any("identically zero" in v for v in m["violations"]), m["violations"]
+
+
+def test_gate_fails_when_the_header_differs_across_legs(synth, tmp_path):
+    srlog = _synth_srlog(tmp_path / "run.srlog")
+    root = _all_missions_dir(tmp_path, {leg: srlog for leg in LEGS})
+    p = root / f"xplat-{LEGS[0]}" / "channels-synth_libm.json"
+    art = json.loads(p.read_text(encoding="utf-8"))
+    art["header_sha256"] = "0" * 64
+    p.write_text(json.dumps(art), encoding="utf-8")
+    _, m = _measure_channels(tmp_path, root)
+    assert any("headers are not byte-identical" in v for v in m["violations"])
+
+
+def test_measure_channels_fails_when_a_declared_mission_is_absent(synth, tmp_path):
+    """A mission that silently stops being compared is the target failure mode."""
+    srlog = _synth_srlog(tmp_path / "run.srlog")
+    root = _legs_dir(tmp_path, {leg: srlog for leg in LEGS}, "synth_libm")
+    assert cpd.main(["measure-channels", "--dir", str(root), "--expect-legs", "4",
+                     "--out", str(tmp_path / "m.json")]) != 0
+
+
+def test_measure_channels_fails_on_a_missing_leg(synth, tmp_path):
+    srlog = _synth_srlog(tmp_path / "run.srlog")
+    root = _all_missions_dir(tmp_path, {leg: srlog for leg in LEGS[:3]})
+    assert cpd.main(["measure-channels", "--dir", str(root), "--expect-legs", "4",
+                     "--out", str(tmp_path / "m.json")]) != 0
+
+
+# ---------------------------------------------------------------------------
+# gate-channels record rules
+# ---------------------------------------------------------------------------
+
+CHANNEL_RECORD = """\
+schema_version = 2
+
+[record]
+status = "measured"
+mission = "missions/twobody_leo.toml"
+legs = ["a", "b", "c", "d"]
+bound_rel = 1e-9
+measured_max_rel = 0.0
+ci_run_url = "https://example.invalid/run/1"
+date = "2026-07-02"
+
+[channels]
+status = "measured"
+tolerance_rel = {tolerance}
+missions = {missions}
+measured_max_rel = {value}
+ci_run_url = "https://example.invalid/run/1"
+date = "2026-07-19"
+"""
+
+
+def _channel_record(tmp_path: Path, **kwargs) -> Path:
+    body = CHANNEL_RECORD.format(
+        tolerance=kwargs.get("tolerance", repr(cpd.CHANNEL_TOLERANCE_REL)),
+        missions=kwargs.get("missions", json.dumps(sorted(cpd.CHANNEL_MISSIONS))),
+        value=kwargs.get("value", "1.0e-10"),
+    )
+    return _write_record(tmp_path / "rec.toml", body)
+
+
+def _clean_channel_measurement(tmp_path: Path, max_rel: float = 1.0e-10) -> Path:
+    path = tmp_path / "cm.json"
+    path.write_text(
+        json.dumps({
+            "schema": 1, "max_rel": max_rel, "violations": [],
+            "worst_mission": "m", "worst_channel": "c", "worst_pair": "p",
+        }),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_gate_channels_passes_on_a_measured_record(synth, tmp_path, capsys):
+    rc = cpd.main([
+        "gate-channels",
+        "--measurement", str(_clean_channel_measurement(tmp_path)),
+        "--record", str(_channel_record(tmp_path)),
+    ])
+    assert rc == 0
+    assert "channel gate passed" in capsys.readouterr().out
+
+
+def test_gate_channels_fails_on_a_pending_record(synth, tmp_path, capsys):
+    body = CHANNEL_RECORD.format(
+        tolerance=repr(cpd.CHANNEL_TOLERANCE_REL),
+        missions=json.dumps(sorted(cpd.CHANNEL_MISSIONS)),
+        value="1.0e-10",
+    ).replace(
+        '[channels]\nstatus = "measured"',
+        '[channels]\nstatus = "pending-first-measurement"',
+    )
+    rec = _write_record(tmp_path / "rec.toml", body)
+    rc = cpd.main([
+        "gate-channels",
+        "--measurement", str(_clean_channel_measurement(tmp_path)),
+        "--record", str(rec),
+    ])
+    assert rc != 0
+    assert "pending-first-measurement" in capsys.readouterr().err
+
+
+def test_gate_channels_fails_when_the_record_tolerance_disagrees(synth, tmp_path, capsys):
+    """The derivation and the committed record move together or not at all."""
+    rc = cpd.main([
+        "gate-channels",
+        "--measurement", str(_clean_channel_measurement(tmp_path)),
+        "--record", str(_channel_record(tmp_path, tolerance="5.0e-10")),
+    ])
+    assert rc != 0
+    assert "disagrees with the enforced tolerance" in capsys.readouterr().err
+
+
+def test_gate_channels_fails_when_the_record_mission_list_drifts(synth, tmp_path, capsys):
+    """Dropping a mission from the gate must not be possible silently."""
+    rc = cpd.main([
+        "gate-channels",
+        "--measurement", str(_clean_channel_measurement(tmp_path)),
+        "--record", str(_channel_record(tmp_path, missions=json.dumps(["synth_libm"]))),
+    ])
+    assert rc != 0
+    assert "must update both homes" in capsys.readouterr().err
+
+
+def test_gate_channels_fails_above_the_tolerance(synth, tmp_path, capsys):
+    rc = cpd.main([
+        "gate-channels",
+        "--measurement", str(_clean_channel_measurement(tmp_path, max_rel=5.0e-10)),
+        "--record", str(_channel_record(tmp_path)),
+    ])
+    assert rc != 0
+    assert "exceeds the derived tolerance" in capsys.readouterr().err
+
+
+def test_gate_channels_propagates_measurement_violations(synth, tmp_path, capsys):
+    path = tmp_path / "cm.json"
+    path.write_text(
+        json.dumps({
+            "schema": 1, "max_rel": 0.0,
+            "violations": ["synth_libm: exact-class channel truth.r_m is not bit-identical"],
+        }),
+        encoding="utf-8",
+    )
+    rc = cpd.main([
+        "gate-channels", "--measurement", str(path),
+        "--record", str(_channel_record(tmp_path)),
+    ])
+    assert rc != 0
+    assert "not bit-identical" in capsys.readouterr().err

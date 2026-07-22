@@ -54,6 +54,69 @@ class SrlogCorruptError(SrlogError):
     """Structurally invalid file: bad magic, truncated data, or an unknown dtype."""
 
 
+def decode_f64_hex(value):
+    """Decode the header's ``ieee754-binary64-hex`` float encoding.
+
+    Header JSON carries integers, booleans, and strings only (format doc
+    section 3, "floats never appear in the header"), so the v1.3 camera
+    intrinsics echo rides as each double's IEEE-754 binary64 bit pattern in
+    16 lowercase hex digits, most significant nibble first. The decode is
+    exact and needs no float parser.
+
+    Accepts a single string or a list of them; returns a float or a NumPy
+    array correspondingly, so a caller can hand it a scalar key or a vector
+    key without branching.
+    """
+    if isinstance(value, (list, tuple)):
+        return np.array([decode_f64_hex(v) for v in value], dtype=np.float64)
+    if not isinstance(value, str) or len(value) != 16:
+        raise SrlogCorruptError(
+            f"ieee754-binary64-hex value must be a 16-character string, got {value!r}"
+        )
+    try:
+        bits = int(value, 16)
+    except ValueError as exc:
+        raise SrlogCorruptError(
+            f"ieee754-binary64-hex value is not hexadecimal: {value!r}"
+        ) from exc
+    return float(np.frombuffer(bits.to_bytes(8, "big"), dtype=">f8")[0])
+
+
+def camera_echo(header: dict) -> dict:
+    """The v1.3 camera intrinsics/extrinsics echo, floats already decoded.
+
+    Returns a dict with ``fx_px``, ``fy_px``, ``cx_px``, ``cy_px`` as floats,
+    ``width_px``/``height_px`` as ints, and ``q_b2c`` (Hamilton scalar-first)
+    and ``r_cam_b_m`` as float arrays -- everything a consumer needs to
+    compose ``eq:camera:pose`` and ``eq:camera:K`` from the log alone.
+
+    Raises ``SrlogCorruptError`` if the header has no camera echo, so a
+    caller never silently proceeds on a log that lacks one.
+    """
+    echo = header.get("gnc", {}).get("camera")
+    if echo is None:
+        raise SrlogCorruptError(
+            "header carries no camera echo; the run declared no camera sensor "
+            "or the file predates SRLOG v1.3"
+        )
+    encoding = echo.get("float_encoding")
+    if encoding != "ieee754-binary64-hex":
+        raise SrlogCorruptError(
+            f"unknown camera-echo float_encoding {encoding!r}; this reader "
+            f"implements 'ieee754-binary64-hex'"
+        )
+    return {
+        "fx_px": decode_f64_hex(echo["fx_px"]),
+        "fy_px": decode_f64_hex(echo["fy_px"]),
+        "cx_px": decode_f64_hex(echo["cx_px"]),
+        "cy_px": decode_f64_hex(echo["cy_px"]),
+        "width_px": int(echo["width_px"]),
+        "height_px": int(echo["height_px"]),
+        "q_b2c": decode_f64_hex(echo["q_b2c"]),
+        "r_cam_b_m": decode_f64_hex(echo["r_cam_b_m"]),
+    }
+
+
 def _flat_columns(arr: np.ndarray) -> list[tuple[str, str, int | None]]:
     """Flattened column plan for a structured group array.
 

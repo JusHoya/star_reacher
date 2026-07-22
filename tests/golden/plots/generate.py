@@ -27,6 +27,7 @@ the consuming test compares within tolerances instead of bitwise
 
 from __future__ import annotations
 
+import importlib.util
 import pathlib
 import sys
 import tempfile
@@ -35,13 +36,34 @@ import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
-sys.path.insert(0, str(REPO_ROOT / "python"))
+# Same rule as tests/python/conftest.py: an installed wheel carries the
+# compiled _core and must not be shadowed by the pure-Python source tree,
+# because a stale core in python/star_reacher would silently refreeze the
+# goldens against the wrong binary. Regeneration needs the core either way.
+if importlib.util.find_spec("star_reacher") is None:
+    sys.path.insert(0, str(REPO_ROOT / "python"))
 
 MISSIONS = ["missions/twobody_leo.toml", "missions/ascent_leo.toml"]
 
 # Probes per array: enough spread to catch a shape or content change
 # anywhere along the run while keeping the committed files small.
 N_PROBES = 9
+
+# Uniform probes alone resolve nothing shorter than the gap between them --
+# over the 400 s ascent that is 50 s, which left the whole t <= 10 s vertical
+# hold, and the pitch-over that follows it, between two probes and therefore
+# unfrozen. A guidance discontinuity does not appear at an arbitrary time: it
+# appears where the commanded attitude changes definition. So each mission may
+# name the times whose neighbourhoods must be probed regardless of the uniform
+# grid -- here every breakpoint of the ascent pitch table, bracketed by one
+# control cycle either side, plus the pad-release cycle where attitude
+# authority passes to the pitch program. Probing t and t +/- dt across a
+# breakpoint is what makes a single-cycle step in the frozen truth visible.
+_PITCH_TABLE_BREAKS_S = [0.0, 10.0, 25.0, 60.0, 121.0, 200.0, 290.0, 370.0]
+_ASCENT_PROBE_TIMES_S = sorted(
+    {2.0, 2.1}
+    | {round(b + k * 0.1, 1) for b in _PITCH_TABLE_BREAKS_S for k in (-1, 0, 1)}
+)
 
 # Comparison rules per mission tier (recorded per array entry; derivations
 # in manifest.toml):
@@ -57,7 +79,11 @@ N_PROBES = 9
 #   any >= 1 ppm model or pipeline change.
 _RULES = {
     "missions/twobody_leo.toml": {"rtol": 1e-9, "angle_tol_deg": 1e-6},
-    "missions/ascent_leo.toml": {"rtol": 1e-6, "angle_tol_deg": 1e-3},
+    "missions/ascent_leo.toml": {
+        "rtol": 1e-6,
+        "angle_tol_deg": 1e-3,
+        "probe_times_s": _ASCENT_PROBE_TIMES_S,
+    },
 }
 
 # Angle-valued feeding arrays, compared by circular difference (mod 360) so
@@ -67,10 +93,20 @@ _CIRCULAR_KEYS = {"raan_deg", "argp_deg", "nu_deg", "lon_deg", "ev_lon_deg"}
 _ABS_DEG_KEYS = {"i_deg", "lat_deg", "ev_lat_deg"}
 
 
-def _probe_indices(n: int) -> list[int]:
+def _probe_indices(n: int, rule: dict, t_s: np.ndarray | None) -> list[int]:
     if n <= N_PROBES:
         return list(range(n))
-    return sorted(set(np.linspace(0, n - 1, N_PROBES).round().astype(int).tolist()))
+    idx = set(np.linspace(0, n - 1, N_PROBES).round().astype(int).tolist())
+    # Anchor the named times to the array's own time base. Arrays logged at a
+    # lower rate than the control cycle collapse several requested times onto
+    # one sample; the set absorbs that.
+    times = rule.get("probe_times_s")
+    if times is not None and t_s is not None and len(t_s) == n:
+        base = np.asarray(t_s, dtype=np.float64)
+        for want in times:
+            if base[0] <= want <= base[-1]:
+                idx.add(int(np.argmin(np.abs(base - want))))
+    return sorted(idx)
 
 
 def _toml_str(s: str) -> str:
@@ -78,9 +114,9 @@ def _toml_str(s: str) -> str:
 
 
 def _emit_array(out: list[str], plot: str, name: str, values: np.ndarray,
-                rule: dict) -> None:
+                rule: dict, t_s: np.ndarray | None = None) -> None:
     n = len(values)
-    idx = _probe_indices(n)
+    idx = _probe_indices(n, rule, t_s)
     probes = np.asarray(values, dtype=np.float64)[idx]
     if not np.all(np.isfinite(probes)):
         raise SystemExit(
@@ -159,11 +195,19 @@ def main() -> None:
             for plot_name, prep in prepared.items():
                 if prep.arrays is None:
                     continue
+                # A plot may carry several series at different log rates; each
+                # is anchored to the time array of its own length.
+                bases = {
+                    len(v): v
+                    for k, v in prep.arrays.items()
+                    if k.endswith("t_s")
+                }
                 for array_name in sorted(prep.arrays):
                     values = prep.arrays[array_name]
                     if len(values) == 0:
                         continue
-                    _emit_array(out, plot_name, array_name, values, rule)
+                    _emit_array(out, plot_name, array_name, values, rule,
+                                bases.get(len(values)))
             _emit_events(out, run)
             target = HERE / (pathlib.Path(mission).stem + ".toml")
             target.write_text("\n".join(out) + "\n", encoding="utf-8", newline="\n")

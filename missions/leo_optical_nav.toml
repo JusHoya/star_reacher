@@ -1,0 +1,158 @@
+# Nadir-pointing landmark imaging from LEO (Phase 6, FR-23): the reference
+# camera mission. The 150 kg smallsat flies the same free-flight LEO state and
+# the same closed-loop attitude chain as missions/leo_attitude_gnc.toml -
+# ideal IMU, dead-reckoning navigation, attitude-hold guidance, PD control -
+# and additionally carries a nadir-pointing framing camera that projects five
+# surface landmarks into pixel coordinates every half second.
+#
+# This is the only shipped mission that configures a camera, so it is the one
+# that exercises the SRLOG v1.3 `gnc.camera` header echo, the `sensors.camera`
+# record group, and the eq:camera:proj projection chain end to end. Everything
+# not named below is the reference attitude mission's value and carries its
+# rationale there.
+#
+# No ephemeris is configured and none is needed: the camera's landmark
+# projection reads the central-body-fixed rotation and the vehicle state
+# only, and the mission validator rejects an `ephemeris` key that no force
+# model consumes.
+#
+# provenance "representative": the orbit, the optics, and the landmark siting
+# are round, class-plausible values chosen so every intrinsic and extrinsic
+# constant is independently observable in the log (documented below), not a
+# published spacecraft or a surveyed control network.
+
+schema_version = 1
+vehicle = "vehicles/smallsat.toml"
+
+[mission]
+name = "leo-optical-nav"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 60.0
+
+[run]
+seed = 20260601
+
+[integrator]
+type = "rk4"
+# One control cycle per step (D-5): dt_s = 1 / control_rate_hz exactly.
+dt_s = 0.1
+
+[environment]
+central_body = "earth"
+
+[logging]
+truth_rate_hz = 10
+
+[initial_state.cartesian]
+# The reference attitude mission's clean-axis LEO state: r along +X, v along
+# +Y, speed near circular at 7000 km radius, so the orbit is equatorial and
+# the ground track runs along the body-fixed equator. Altitude above the
+# WGS84 equatorial radius is 7.0e6 - 6378137 = 621,863 m.
+r_m = [7.0e6, 0.0, 0.0]
+v_mps = [0.0, 7546.0, 0.0]
+frame = "GCRF"
+
+[gnc]
+control_rate_hz = 10
+latency_cycles = 0
+
+[gnc.nav]
+component = "dead_reckoning"
+# The true initial attitude: the Phase 4 initial-attitude rule points body +X
+# prograde (+Y inertial) with body +Y toward +X inertial, giving exactly
+# q0 = [0, sqrt(1/2), sqrt(1/2), 0] (Hamilton scalar-first, D-7). Body +Y
+# therefore points to zenith and body -Y to nadir at t = 0, which is what the
+# camera mount rotation below is built against.
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+
+[gnc.guidance]
+component = "attitude_hold"
+# The initial attitude rotated 10 degrees about body +Z, as in the reference
+# attitude mission: q_cmd = q0 (x) [cos 5 deg, 0, 0, sin 5 deg]
+#                        = [0, a(c + s), a(c - s), 0],  a = sqrt(1/2),
+#                          c = cos 5 deg, s = sin 5 deg.
+# The slew is deliberately small. It is large enough that the camera images
+# through a genuine closed-loop attitude transient rather than from a frozen
+# attitude, and small enough that the boresight stays within 10 degrees of
+# nadir, so the landmarks sited below stay on the sensor.
+q_cmd = [0.0, 0.7660444431189781, 0.6427876096865393, 0.0]
+
+[gnc.control]
+component = "pd_attitude"
+# The reference mission's gains against the smallsat inertia diag(9, 10, 11)
+# kg*m^2: omega_n = sqrt(kp/I) ~ 0.2 rad/s, zeta ~ 0.9, settled well inside
+# the 60 s window.
+kp_nm_per_rad = [0.4, 0.4, 0.4]
+kd_nm_per_radps = [3.6, 3.6, 3.6]
+tau_max_nm = [0.05, 0.05, 0.05]
+
+[sensors.imu]
+# Ideal IMU at the control rate, as in the reference attitude mission.
+sample_rate_hz = 10
+
+[sensors.camera]
+# 2 Hz framing, an exact integer divisor of the 10 Hz control rate, giving
+# 121 camera samples over the 60 s run.
+sample_rate_hz = 2
+
+# --- intrinsics --------------------------------------------------------------
+# A 1280 x 1024 detector. fx and fy are deliberately unequal: with fx == fy a
+# consumer that conflated the two focal lengths would reproduce every logged
+# pixel exactly, so neither would be resolvable from the log. The 5 percent
+# split keeps both independently observable while leaving a plausible field of
+# view - 2 atan(640/1400) = 0.853 rad (48.9 deg) across the rows,
+# 2 atan(512/1330) = 0.732 rad (41.9 deg) down the columns.
+fx_px = 1400.0
+fy_px = 1330.0
+# The principal point is NOT the image centre. Under the pixel-centre
+# convention of ch:camera the centre is ((W-1)/2, (H-1)/2) = (639.5, 511.5),
+# and a principal point sitting there is unresolvable: a consumer that
+# ignored cx_px and cy_px and substituted the array centre would reproduce
+# every logged pixel exactly. The offsets below are the centre displaced by
+# +12.0 px and -9.5 px, a boresight-to-array decentre of about two
+# thousandths of the array diagonal - an ordinary alignment tolerance, and
+# enough that dropping either constant moves every pixel.
+cx_px = 651.5
+cy_px = 502.0
+width_px = 1280.0
+height_px = 1024.0
+
+# --- extrinsics --------------------------------------------------------------
+# The camera sits on the nadir-facing (-Y body) panel, offset from the
+# composite CG in all three axes so that no component of the CG-relative
+# station of eq:camera:pose drops out of the projection.
+r_cam_b_m = [0.12, -0.40, 0.05]
+# A 90 degree rotation about body +X, which carries the camera boresight
+# (+Z_c, CV convention) onto body -Y - nadir at the initial attitude derived
+# above. Hamilton scalar-first (D-7): [cos 45 deg, sin 45 deg, 0, 0].
+q_b2c = [0.7071067811865476, 0.7071067811865476, 0.0, 0.0]
+
+# Five surface landmarks in central-body-fixed (ITRF) axes, metres, as the
+# flat x y z triples eq:camera:landmark consumes. Each is the sub-satellite
+# point at one of t = 0, 15, 30, 45, 60 s - computed as
+# C_GCRF->ITRF(epoch + t) applied to the circular-orbit position at t, then
+# renormalized to the WGS84 equatorial radius 6378137.0 m - and then pushed
+# off the ground track by a cross-track angle of 0, +0.028, -0.028, +0.014
+# and -0.014 rad about the body-fixed Z axis respectively.
+#
+# The siting is what makes the projections non-trivial, and both halves of it
+# matter. Spreading the five along the ground track means landmarks enter and
+# leave the field of view as the vehicle overflies them, so the run exercises
+# the eq:camera:nearside and sensor-bounds visibility tests over a moving
+# scene rather than holding one static frame. The cross-track pushes are what
+# keep the five from projecting onto a single image column: 0.028 rad of
+# central angle is 179 km on the ground and about 380 px at this altitude and
+# focal length. Together the two spread the logged pixels over u = 2 to 1275
+# of 1280 and v = 95 to 911 of 1024, so every intrinsic is exercised well off
+# its own zero point and no landmark sits at the principal point.
+#
+# The values are frozen here rather than computed at load time so the mission
+# does not depend on the frames path, exactly as the optical-gate fixture in
+# tests/python/test_p6_optical_gates.py freezes its own.
+landmarks_fixed_m = [
+  -1143456.890211218, -6274780.963931714, 16179.792263229092,
+  -1048318.6615098324, -6288840.328385313, 194739.0988087279,
+  -953390.3659572405, -6303929.853812184, -162392.98602341302,
+  -858497.7765109676, -6319444.504098994, 105459.9599785464,
+  -763129.6751100739, -6331668.875160547, -73133.58229604045,
+]

@@ -1,0 +1,194 @@
+# Closed-loop pad-to-LEO ascent of the electron-class two-stage launch
+# vehicle (Phase 6, FR-23/FR-25): the GNC-in-the-loop counterpart of
+# missions/ascent_leo.toml, and the mission the Phase 6 exit criterion 10
+# performance re-gate measures.
+#
+# The two missions fly the same vehicle, the same pad, the same pitch table
+# and the same propulsion/staging sequence. They differ in exactly one
+# respect: who holds attitude authority. In ascent_leo.toml a pitch_program
+# [[sequence]] action sets attitude kinematically, open loop. Here that
+# action is gone and the built-in C++ GNC chain flies the vehicle - an ideal
+# IMU feeding dead-reckoning navigation, pitch_program guidance reading the
+# same table, and a pd_attitude controller whose torque is integrated by the
+# rigid-body dynamics. Propulsion, staging, fairing jettison and the
+# terminate condition keep their sequence authority, which is what the
+# [gnc] validation rule permits (open-loop ATTITUDE actions are what it
+# rejects).
+#
+# One consequence is worth stating up front, because it is visible in every
+# plot of this run. The shared pitch table holds pitch = 90 degrees (exactly
+# vertical) through t = 10 s. The commanded body axis is then local up, and
+# the guidance law resolves the roll about it from the commanded azimuth
+# (eq:vehicle6dof:rollref), so the COMMANDED attitude is continuous through
+# that hold: the largest single-cycle change anywhere in this run is 0.100
+# degrees, the same as every other cycle. What remains is an initial attitude
+# error at loop closure. The vehicle sits on the pad clocked to local north,
+# while the pitch program at the vertical clocks into the pitch plane, and for
+# this mission's 90 degree azimuth those differ by 90 degrees. The controller
+# therefore slews 90.005 degrees starting at t = 2.0 s, saturating briefly;
+# tracking error settles under 0.033 degrees after t = 140 s. That is a real
+# roll maneuver a real vehicle would also have to fly, not a numerical
+# artifact - see docs/KNOWN_ISSUES.md, KNOWN-ISSUE-P6-3, which records the
+# unclosed decision about where that roll belongs. The pitch table is
+# deliberately NOT smoothed: it is held bit-identical to ascent_leo.toml so
+# the commanded-attitude equality test between the two missions stays
+# meaningful.
+#
+# provenance "representative": inherited unchanged from ascent_leo.toml -
+# a round southern-hemisphere coastal pad and the class-representative pitch
+# program recorded in vehicles/electron_class.toml. The controller gains
+# below are the only values original to this file.
+
+schema_version = 1
+vehicle = "vehicles/electron_class.toml"
+
+[mission]
+name = "ascent-leo-gnc"
+epoch_utc = "2026-03-01T00:00:00Z"
+duration_s = 760.0
+target_apoapsis_alt_m = 3400000.0
+
+[run]
+seed = 20260301
+
+[integrator]
+type = "rk4"
+# The control cycle IS the integrator step (D-5): dt_s = 1 / control_rate_hz.
+dt_s = 0.1
+
+[environment]
+central_body = "earth"
+
+[logging]
+truth_rate_hz = 10
+
+[initial_state.geodetic]
+lat_deg = -39.0
+lon_deg = 177.9
+alt_m = 10.0
+
+# --- event sequence: ignite, release, stage, insert -------------------------
+# Identical to ascent_leo.toml except that the "pitch" entry is absent:
+# attitude authority belongs to [gnc.guidance] below.
+
+[[sequence]]
+name = "ignite_s1"
+trigger = "elapsed"
+t_s = 0.0
+action = "ignite_engine"
+stage = "stage1"
+engine = "s1_cluster"
+
+[[sequence]]
+name = "release"
+trigger = "elapsed"
+t_s = 2.0
+action = "pad_release"
+
+[[sequence]]
+name = "meco"
+trigger = "elapsed"
+t_s = 121.0
+action = "cutoff_engine"
+stage = "stage1"
+engine = "s1_cluster"
+
+[[sequence]]
+name = "sep1"
+trigger = "after_event"
+event = "meco"
+offset_s = 2.0
+action = "separate_stage"
+stage = "stage1"
+
+[[sequence]]
+name = "ignite_s2"
+trigger = "after_event"
+event = "sep1"
+offset_s = 2.0
+action = "ignite_engine"
+stage = "stage2"
+engine = "s2_vacuum"
+
+[[sequence]]
+name = "drop_fairing"
+trigger = "condition"
+condition = "altitude_above"
+altitude_m = 110000.0
+action = "jettison"
+stage = "stage2"
+item = "fairing"
+
+[[sequence]]
+name = "insertion"
+trigger = "condition"
+condition = "perigee_above"
+perigee_alt_m = 180000.0
+action = "terminate"
+
+# --- the closed-loop GNC chain ---------------------------------------------
+
+[gnc]
+control_rate_hz = 10
+latency_cycles = 0
+
+[gnc.nav]
+component = "dead_reckoning"
+# The initial attitude estimate, stated explicitly per the dead-reckoning
+# contract (the component never reads truth to initialize itself). This is
+# the pad attitude the Phase 4 initial-attitude rule assigns at the mission
+# epoch for the geodetic launch site above - body +X along the local
+# vertical of a pad co-rotating with the Earth - and is therefore not a
+# round quaternion. It is set equal to the true initial attitude, exactly
+# as missions/leo_attitude_gnc.toml sets its own q0: dead reckoning
+# integrates gyro increments from wherever it is told to start, so any
+# initial offset here is a constant attitude error the controller cannot
+# see and cannot remove. Seeding it wrong by ~105 degrees flies the vehicle
+# into a suborbital trajectory with the loop reporting itself converged.
+q0 = [
+    0.6040169286289623,
+    0.7002673792572135,
+    0.09537859216185492,
+    -0.3683640476961501,
+]
+
+[gnc.guidance]
+component = "pitch_program"
+# The same table ascent_leo.toml flies open loop. Guidance reads it against
+# absolute mission time and the frozen pad basis, so the COMMANDED attitude
+# is identical in both missions at every shared cycle time - the equality
+# tests/python/test_gnc_missions.py::test_pitch_program_guidance_equals_openloop_command
+# asserts bit-for-bit.
+azimuth_deg = 90.0
+pitch_t_s = [0.0, 10.0, 25.0, 60.0, 121.0, 200.0, 290.0, 370.0, 430.0]
+pitch_deg = [90.0, 90.0, 75.0, 40.0, 32.0, 18.0, 7.0, -11.0, -22.0]
+
+[gnc.control]
+component = "pd_attitude"
+# One fixed gain set has to serve the whole ascent, because the built-in
+# pd_attitude component has no gain scheduling. The stack inertia measured
+# from this run's mass channel swings by a factor of 287 between liftoff and
+# insertion - I_yy from 218,027 kg*m^2 at t = 0 to 761 kg*m^2 at t = 399 s,
+# I_xx from 2,098 to 76.5 - so the gains are a compromise, not a tuned
+# design, and they are chosen against the LIGHT end because that is where
+# the discrete loop goes unstable.
+#
+# The binding constraint is the explicit rate-feedback term, kd*dt/I < ~0.3
+# at the SMALLEST inertia on each axis: kd_x <= 0.3*76.5/0.1 = 229 and
+# kd_y,z <= 0.3*761/0.1 = 2283. The values below sit just inside both
+# (0.261 and 0.263 respectively). Proportional gain is then set as high as
+# that damping allows, which is what buys pitch-over tracking on the heavy
+# stage-1 stack; the resulting insertion apoapsis is 3,356 km against the
+# open-loop mission's 3,444 km (-2.6 %).
+#
+# Saturation is a launch-vehicle-class thrust-vector-control authority, well
+# above the demand of the nominal profile, so the loop does not run against
+# the limiter except during the t = 10 s slew described below.
+kp_nm_per_rad = [150.0, 8000.0, 8000.0]
+kd_nm_per_radps = [200.0, 2000.0, 2000.0]
+tau_max_nm = [2000.0, 20000.0, 20000.0]
+
+[sensors.imu]
+# Ideal IMU sampled at the control rate: exactly one accumulation interval
+# per cycle, matching the reference GNC mission's sensor cadence.
+sample_rate_hz = 10

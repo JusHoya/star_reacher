@@ -1,0 +1,154 @@
+# The reference consistency scenario for the built-in error-state EKF
+# (Phase 6, FR-25/FR-26, ch:ekf): the mission the exit-criterion-3 ensemble
+# driver executes 100 times with independent seeds, and the single-run
+# scenario `star consistency` is demonstrated on.
+#
+# The scenario exists to test the ESTIMATOR, not a model-error budget, so it
+# is deliberately built so the filter's models are exact:
+#
+#   * the truth environment is the central-body POINT MASS - no third
+#     bodies, no SRP, no atmosphere - which is the same gravity model the
+#     navigator carries internally (ch:ekf assumption 2), so the process
+#     model has zero mismatch;
+#   * the IMU carries only the error terms the filter models, namely
+#     random walk and a first-order Gauss-Markov in-run bias. Turn-on
+#     biases, quantization, scale factor, and misalignment are all
+#     DISABLED (ch:ekf assumption 3): the filter estimates none of them, so
+#     enabling any of them would widen NEES by design and the gate would be
+#     measuring model error rather than filter implementation;
+#   * the altimeter turn-on bias and the nav fix's optional Gauss-Markov
+#     components are likewise disabled, for the same reason.
+#
+# Running against a richer truth environment is a legitimate diagnostic but
+# is NOT this gate; nobody should inflate Q to make such a run pass.
+#
+# provenance "representative": the orbit, the instrument grades, and the
+# control gains are round, class-plausible values chosen for a
+# well-conditioned scenario, not a published spacecraft configuration.
+
+schema_version = 1
+vehicle = "vehicles/smallsat.toml"
+
+[mission]
+name = "leo-ekf-consistency"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 60.0
+
+[run]
+# The ensemble driver overrides this per run; the committed value is run 0.
+seed = 20260701
+
+[integrator]
+type = "rk4"
+# One control cycle per step (D-5): dt_s = 1 / control_rate_hz exactly.
+dt_s = 0.1
+
+[environment]
+# Point-mass central body: no [environment.gravity] degree, no third
+# bodies, no SRP, no atmosphere. This is the assumption-2 configuration.
+central_body = "earth"
+
+[logging]
+# Truth every control cycle, so the consistency evaluator has a truth epoch
+# for every nav.est epoch.
+truth_rate_hz = 10
+
+[initial_state.cartesian]
+# Clean-axis LEO state: r along +X, v along +Y (near-circular at 7000 km
+# radius, geodetic altitude ~ 620 km). The Phase 4 initial-attitude rule
+# points body +X prograde (+Y inertial) with body +Y toward +X inertial,
+# giving the exact true initial attitude q = [0, sqrt(1/2), sqrt(1/2), 0]
+# (Hamilton scalar-first, D-7).
+r_m = [7.0e6, 0.0, 0.0]
+v_mps = [0.0, 7546.0, 0.0]
+frame = "GCRF"
+
+[gnc]
+control_rate_hz = 10
+latency_cycles = 0
+
+[gnc.nav]
+component = "error_state_ekf"
+# The filter's INITIAL BELIEF. These are exactly run 0 of the
+# exit-criterion-3 ensemble: the true initial state perturbed by a seeded
+# draw from N(0, P0), so the initial error is distributed exactly as the
+# filter believes - the precondition for NEES consistency from the first
+# cycle (ch:ekf, sec:ekf:consistency). The committed mission is therefore a
+# genuine member of the ensemble rather than a separate hand-tuned case, and
+# tests/python/test_ekf_consistency.py regenerates these three values from
+# its draw seed and asserts they match what is committed here, so the file
+# and the driver cannot drift apart.
+q0 = [-0.00044626342559570399, 0.70688223269726402, 0.70733106309014382, -0.00027772946007248347]
+v0_mps = [0.060921416592906778, 7545.8006329551154, -0.41793559576109252]
+p0_m = [6999986.8998344773, -13.811525573585669, -86.675748333963583]
+# The bias estimates start at zero, and P0's bias blocks are set to the
+# instruments' stationary Gauss-Markov sigmas below. The IMU initializes its
+# in-run bias from exactly that stationary distribution (ch:sensors-imu,
+# eq:imu:gm), so the initial bias error is distributed exactly as the filter
+# believes WITHOUT the driver needing to know the sensor's private draw.
+bg0_radps = [0.0, 0.0, 0.0]
+ba0_mps2 = [0.0, 0.0, 0.0]
+# P0 diagonal, as 1-sigma values in the eq:ekf:staterr block ordering.
+p0_sigma_att_rad = [1.0e-3, 1.0e-3, 1.0e-3]
+p0_sigma_vel_mps = [0.5, 0.5, 0.5]
+p0_sigma_pos_m = [50.0, 50.0, 50.0]
+# sigma_GM = (0.664282 / 0.617364) B (eq:imu:presetmap) at the configured
+# bias instabilities below: 1.0759973046695306e-7 rad/s and
+# 1.0759973046695306e-5 m/s^2.
+p0_sigma_bg_radps = [1.0759973046695306e-7, 1.0759973046695306e-7, 1.0759973046695306e-7]
+p0_sigma_ba_mps2 = [1.0759973046695306e-5, 1.0759973046695306e-5, 1.0759973046695306e-5]
+
+[gnc.guidance]
+# Hold the initial attitude. The vehicle still slews slightly under the PD
+# response to the filter's attitude error, which keeps the gyro exercised
+# rather than sitting at identically zero rate.
+component = "attitude_hold"
+q_cmd = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+
+[gnc.control]
+component = "pd_attitude"
+# Same near-critically-damped design as the reference attitude mission,
+# against the smallsat inertia diag(9, 10, 11) kg*m^2.
+kp_nm_per_rad = [0.4, 0.4, 0.4]
+kd_nm_per_radps = [3.6, 3.6, 3.6]
+tau_max_nm = [0.05, 0.05, 0.05]
+
+[sensors.imu]
+# Sampled at the control rate (ch:sensors-imu assumption 1). Only the two
+# error terms the filter models are enabled; every other coefficient is
+# absent and therefore exactly zero.
+sample_rate_hz = 10
+gyro_arw_rad_per_sqrt_s = 1.0e-5
+gyro_bias_instability_radps = 1.0e-7
+gyro_bias_tau_s = 100.0
+accel_vrw_mps_per_sqrt_s = 1.0e-4
+accel_bias_instability_mps2 = 1.0e-5
+accel_bias_tau_s = 100.0
+
+[sensors.navfix]
+# The external nav fix at 1 Hz: white errors only, the optional
+# Gauss-Markov components left off (the reference filter does not model
+# them, ch:ekf navfix paragraph).
+sample_rate_hz = 1
+sigma_r_m = [10.0, 10.0, 10.0]
+sigma_v_mps = [0.1, 0.1, 0.1]
+
+[sensors.startracker]
+# Boresight along body +Z with the about-boresight axis the loosest, the
+# conventional star-tracker error shape. Both exclusion angles and the slew
+# gate are left disabled so every sample is valid: a gated-out sample would
+# make the number of innovation records differ between runs and the
+# ensemble would no longer share a common epoch grid.
+sample_rate_hz = 1
+boresight_b = [0.0, 0.0, 1.0]
+sigma_rad = [1.0e-5, 1.0e-5, 5.0e-5]
+
+[sensors.altimeter]
+# Geodetic altitude at 1 Hz. The turn-on bias is disabled (assumption 3);
+# the band gate is disabled by h_max <= h_min, which is how a scenario says
+# "always in band" and keeps every sample valid.
+sample_rate_hz = 1
+sigma_noise_m = 20.0
+sigma_bias_m = 0.0
+h_min_m = 0.0
+h_max_m = 0.0

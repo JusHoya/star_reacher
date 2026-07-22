@@ -1,0 +1,764 @@
+% Chapter — Built-in reference GNC components (FR-25). Follows the
+% mandatory FR-29 six-section template: purpose; assumptions and domain of
+% validity; derivation; discretization and implementation; validation
+% evidence; references. Written ahead of the implementation (Phase 6):
+% this chapter is the binding specification for the built-in
+% IGncComponent implementations and the plugin-boundary semantics they
+% share. The implementing change adds the chapter-manifest entry and the
+% \testid{} evidence table. The equation labels eq:gnc:deltaq, eq:gnc:pd,
+% eq:gnc:sat, eq:gnc:werr, eq:gnc:exactrot, eq:gnc:drprop, and
+% eq:gnc:cmdrate are intended to be echoed verbatim in the module source
+% (FR-29 traceability).
+\chapter{Built-in Reference GNC Components}
+\label{ch:gnc-builtin}
+
+\section{Purpose}
+\label{sec:gnc:purpose}
+
+This chapter specifies the built-in C++ reference components behind the
+FR-25 plugin interface: (a) a quaternion-error PD attitude controller,
+(b) a dead-reckoning attitude navigator driven by the
+Chapter~\ref{ch:sensors-imu} gyro increments, and (c) the ascent
+pitch-program guidance --- the Phase~4 open-loop pitch program of
+Chapter~\ref{ch:vehicle6dof} re-expressed as an \texttt{IGncComponent}
+so the same ascent flies under the GNC stack (Phase~6 exit
+criterion~10). It also pins the plugin-boundary semantics every
+component, built-in or user-supplied, shares: zero-order-hold commands
+over the major cycle (D-5), the \texttt{latency\_cycles} shift (exit
+criterion~8), and the \texttt{oracle} truth-injection flag (exit
+criterion~5). These components are \emph{reference} implementations:
+deliberately simple, exactly specified, and reproducible in a few lines
+of Python --- exit criterion~2 requires a Python reimplementation of the
+PD controller to match the C++ torques to
+$< \qty{e-9}{\newton\metre}$, so every branch and operation order in
+Section~\ref{sec:gnc:pd} is normative.
+
+\section{Assumptions and domain of validity}
+\label{sec:gnc:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Cycle-synchronous execution.} Components run once per
+    major cycle on the D-5 schedule; all inputs are the sensor samples
+    of that cycle and all outputs are held (zero-order hold) across the
+    next application interval. No component sees intra-cycle states.
+  \item \textbf{No truth in \texttt{GncInput}.} Components consume only
+    sensor outputs, their own state, and configuration. The
+    scenario-level \texttt{oracle: true} debug flag injects truth into
+    \texttt{GncInput} \emph{and} stamps the log header, so an oracle
+    run is identifiable from its header alone (exit criterion~5); the
+    reference components themselves never read the oracle fields.
+  \item \textbf{Diagonal gains, per-axis saturation.} The PD controller
+    uses positive per-axis gain vectors and clamps each torque axis
+    independently (equation~\eqref{eq:gnc:sat}); a saturated command is
+    direction-distorted, which is the standard, simplest behavior and
+    is stated rather than hidden.
+  \item \textbf{Dead reckoning is uncompensated.} The dead-reckoning
+    navigator applies no bias compensation and no coning correction;
+    its drift is exactly the integrated gyro error plus the bounded
+    single-sample non-commutativity residual of
+    equation~\eqref{eq:gnc:coningbound}. It exists as the minimal
+    reference navigator and as the mechanization core the
+    Chapter~\ref{ch:ekf} filter shares.
+  \item \textbf{Guidance restates Phase 4 math.} The ascent guidance
+    reuses the pitch-program geometry of Chapter~\ref{ch:vehicle6dof}
+    (equations~\eqref{eq:vehicle6dof:pitchaxis}
+    and~\eqref{eq:vehicle6dof:attitude}) unchanged; this chapter adds
+    only its packaging as a component and the commanded-rate
+    convention.
+\end{enumerate}
+
+Domain of validity: attitude-regulation regimes with per-cycle error
+rotations far from the $\pm\pi$ antipode (the sign branch of
+equation~\eqref{eq:gnc:pd} handles the double cover; exactly at
+$\delta q_w = 0$, $180^{\circ}$ error, the branch picks $s = +1$
+deterministically and the controller still converges, though the
+commanded direction at that single point is convention, not physics).
+Gains are the user's stability responsibility: the PD law is globally
+stabilizing for a rigid body with pure torque actuation and positive
+gains (Wie~\cite{wie2008}), but actuator saturation, latency, and
+flexible dynamics can destabilize aggressive tunings --- the simulator
+reports what the configuration does, per the project's
+no-silent-correction rule (DX-2).
+
+\section{Derivation}
+\label{sec:gnc:derivation}
+
+\subsection{Plugin-boundary semantics}
+\label{sec:gnc:interface}
+
+Let $T_c$ be the control period and $t_k = k\,T_c$ the cycle
+boundaries. At cycle $k$ the scheduler samples sensors, calls each
+configured component's \texttt{update}, composes the stack's final
+actuator command vector $\vv{u}_k$ (torque and/or gimbal/throttle
+commands, per the actuator suite of Chapter~\ref{ch:actuators}), and
+applies it as a zero-order hold. With the configured latency $L =
+\texttt{latency\_cycles} \ge 0$, the command \emph{applied} over
+$[t_k, t_{k+1})$ is
+\begin{equation}
+  \vv{u}^{\mathrm{applied}}_k =
+  \begin{cases}
+    \vv{u}_{k-L}, & k \ge L,\\[2pt]
+    \vv{u}_{\mathrm{neutral}}, & k < L,
+  \end{cases}
+  \label{eq:gnc:latency}
+\end{equation}
+where the neutral command is zero torque, zero gimbal deflection, and
+throttle hold at the sequence-commanded value. The shift applies once, at
+the GNC-to-plant boundary, not per component. What holds by construction is
+a statement about the FIFO alone: fed one command sequence, its output is
+that sequence delayed by exactly $\ell$ cycles with $\ell$ neutral cycles
+prepended. That is what \testid{gnc_latency_fifo_semantics} gates, in open
+loop, where the input sequence is fixed.
+
+It does \emph{not} extend to the logged history of a run, and the
+distinction is easy to lose. The loop is closed, so delaying the applied
+torque changes the plant trajectory; from cycle~1 onward an $L = \ell$ run
+and an $L = 0$ run see different states and therefore \emph{compute}
+different commands. Only cycle~0 is comparable between the two runs, which
+is precisely the comparison
+\testid{test_latency_two_cycles_shifts_application} makes. Read as a claim
+about \texttt{gnc.cmd}, ``the $L = \ell$ history is the $L = 0$ history
+delayed by $\ell$'' is false; the criterion is verified at one cycle pair
+end to end, and generally only at the FIFO. Closing the general case needs
+an open-loop assertion driving the cycle with a recorded command sequence
+against a fixed plant and asserting
+$\vv{u}_{\mathrm{applied}}[i + \ell] = \vv{u}_{\mathrm{computed}}[i]$ for
+every $i$, including the drain at run end, where the last $\ell$ computed
+commands are never applied and no committed test looks. Both the computed
+and the applied commands are logged, which is what makes the criterion
+checkable from the log at all.
+
+\subsection{Declared error-state layout}
+\label{sec:gnc:errlayout}
+
+The \texttt{nav.err} channel records truth minus estimate in the
+estimator's own state convention. Forming it needs two things: the true
+state, and a reading of what each slot of the estimator's state vector
+means. Only the component knows the second, and the natural arrangement
+--- hand the component the truth state and let it subtract --- is the one
+this interface deliberately avoids. It would place the true state in the
+hands of every estimator on every cycle whether or not the scenario
+enabled the oracle, contradicting the FR-24 requirement that truth is
+privileged and never visible to GNC plugins, and no signature can prevent
+an implementation from retaining what it is passed.
+
+The dependency is therefore inverted. A component \emph{declares} the
+layout of its state vector; the loop reads the state vector the component
+publishes and performs the differencing itself. What crosses the plugin
+boundary is a description of the state vector, which carries no
+information about the world.
+
+A layout is an ordered set of blocks $\{(q_j, f_j, o_j)\}$, where $q_j$
+names the true quantity the block is compared against, $f_j$ the form of
+the comparison, and $o_j$ the block's first index. The blocks must tile
+$[0, n)$ exactly for a state of dimension $n$: a gap would be logged as
+zero, and zero in an error channel reads as ``no error'' rather than
+``not known''. A component that declares no layout is written no
+\texttt{nav.err} channel at all, for the same reason.
+
+For every quantity other than attitude the comparison is elementwise,
+with $\vv{x}$ the published state vector and $\vv{z}$ the corresponding
+true quantity:
+\begin{equation}
+  e_{o+i} = z_i - x_{o+i}.
+  \label{eq:gnc:errdiff}
+\end{equation}
+
+Attitude is why the form is declared rather than assumed. An attitude
+error is a rotation difference, not a subtraction of quaternion
+components, and both the side on which it is composed and its
+parameterization are conventions the estimator owns. Writing
+$\quat{q}_{\mathrm{est}}$ for the estimate read out of slots
+$o \ldots o+3$ (scalar-first, D-7) and $\quat{q}_{\mathrm{true}}$ for the
+true attitude, the two multiplicative forms are
+\begin{align}
+  \delta\quat{q}^{\mathrm{local}}
+    &= \quat{q}_{\mathrm{est}}^{*} \quatmul \quat{q}_{\mathrm{true}},
+  \label{eq:gnc:errlocal} \\
+  \delta\quat{q}^{\mathrm{global}}
+    &= \quat{q}_{\mathrm{true}} \quatmul \quat{q}_{\mathrm{est}}^{*},
+  \label{eq:gnc:errglobal}
+\end{align}
+the first resolved in the estimated body frame and the second in the
+inertial frame. Both are canonicalized to the $+w$ hemisphere, since
+$\quat{q}$ and $-\quat{q}$ are the same rotation and without the
+convention the four logged components could flip sign between
+neighbouring epochs for no physical reason.
+Equation~\eqref{eq:gnc:errlocal} is exactly the multiplicative error the
+reference filter of Chapter~\ref{ch:ekf} defines
+in~\eqref{eq:ekf:qerr}, which is how that filter's declared layout
+reproduces its previous output unchanged.
+
+The same $\delta\quat{q}$ admits a three-component reduction by the
+small-angle relation
+\begin{equation}
+  \delta\vv{\theta} = 2\,\mathrm{sgn}(\delta q_w)\,\delta\vv{q}_v,
+  \label{eq:gnc:errrotvec}
+\end{equation}
+which is the reduction the consistency evaluator applies to compare an
+attitude error against the covariance it describes. It is applied
+\emph{downstream}, by the evaluator, and is not a form a layout may declare.
+
+A pair of declarable rotation-vector forms once existed and was removed,
+which is recorded here rather than passed over silently because the reason
+constrains what may be added later. The descriptor's load-bearing invariant
+is that a block's error width equals its state width: one quantity,
+\texttt{error\_block\_size}, both tiles the state vector during validation
+and sizes the write into \texttt{nav.err}. That holds for every form except
+the rotation-vector pair, which declared three slots while the differencing
+routine read four quaternion slots at the block's offset --- so a layout
+placing its attitude block last could pass validation and then read one
+\texttt{double} past the end of the state buffer. The consequence was
+reproduced through the shipped plugin path, where the out-of-bounds value
+returned as exactly zero across byte-identical reruns and was therefore
+indistinguishable from correct operation.
+
+Removal was chosen over repair because the reduction is not a lost
+capability: equation~\eqref{eq:gnc:errrotvec} is already implemented and
+applied by the consistency evaluator, to exactly the $n = 16$, $m = 15$ case
+the reference filter of Chapter~\ref{ch:ekf} presents. What removal does not
+do --- and this is the honest consequence --- is serve an estimator whose
+state carries a three-parameter attitude directly, as an MRP or Gibbs
+vector. That case was never served: every attitude form reads
+$\quat{q}_{\mathrm{est}}$ as four consecutive state slots, and a
+three-parameter state publishes no such quaternion. Serving it requires a
+route for a component to supply its estimated quaternion independently of
+its state layout, which is a change to the descriptor rather than an added
+enumerator. See \texttt{docs/gnc\_plugins.md} and
+\texttt{docs/review/phase6\_coverage\_closure.md}.
+
+A fourth form serves an estimator that treats the four quaternion
+components as ordinary state entries, as the dead-reckoning navigator of
+Section~\ref{sec:gnc:deadreckoning} does. Its error is additive, with the
+true quaternion first sign-aligned to the estimate's hemisphere:
+\begin{equation}
+  e_{o+i} =
+  \mathrm{sgn}\!\left(\quat{q}_{\mathrm{true}} \cdot
+    \quat{q}_{\mathrm{est}}\right) q_{\mathrm{true},i}
+  - q_{\mathrm{est},i},
+  \qquad i = 0,\ldots,3,
+  \label{eq:gnc:erradd}
+\end{equation}
+where the sign convention takes $\mathrm{sgn}(0) = +1$ so that an exactly
+orthogonal pair is not flipped. Alignment is what keeps the additive
+difference continuous across the double cover.
+
+The loop differences against the same published state vector it writes to
+\texttt{nav.est} on that cycle, which makes the logged error provably the
+error of the logged estimate rather than of a second, separately read
+state.
+
+\subsection{Quaternion-error PD attitude controller}
+\label{sec:gnc:pd}
+
+Inputs per cycle: the commanded attitude and rate
+$(\quat{q}_{i2\mathrm{cmd}},\, \vv{\omega}_{\mathrm{cmd}}^{\mathrm{CMD}})$
+from the guidance component, and the estimated attitude and rate
+$(\hat{\quat{q}}_{i2b},\, \hat{\vv{\omega}}^{B})$ from the navigation
+component. The error quaternion is the attitude of the actual body
+frame relative to the commanded frame, obtained from the composition
+rule~\eqref{eq:notation:quatcomp}:
+\begin{equation}
+  \boxed{\;
+  \delta\quat{q} = \quat{q}_{\mathrm{cmd2b}}
+    = \quat{q}_{i2\mathrm{cmd}}^{*} \quatmul \hat{\quat{q}}_{i2b} ,
+  \;}
+  \label{eq:gnc:deltaq}
+\end{equation}
+so $\delta\quat{q} = [1, \vv{0}]$ at zero error, and for small errors
+$\delta\vv{q}_v \approx \vv{\epsilon}/2$ with $\vv{\epsilon}$ the
+rotation vector from commanded to actual body frame. The rate error
+resolves the commanded rate into body axes through the error DCM,
+\begin{equation}
+  \vv{\omega}_{\mathrm{err}} = \hat{\vv{\omega}}^{B}
+    - \dcm{\mathrm{CMD}}{B}(\delta\quat{q})\,
+      \vv{\omega}_{\mathrm{cmd}}^{\mathrm{CMD}} ,
+  \label{eq:gnc:werr}
+\end{equation}
+with the DCM from equation~\eqref{eq:notation:quat2dcm}. The commanded
+torque, componentwise for $i \in \{x, y, z\}$ and with the shortest-path
+sign
+\begin{equation}
+  s = \begin{cases} +1, & \delta q_w \ge 0,\\ -1, & \delta q_w < 0,
+      \end{cases}
+  \label{eq:gnc:sign}
+\end{equation}
+is
+\begin{equation}
+  \boxed{\;
+  \tau_i = -\,K_{p,i}\; s\,\delta q_{v,i}
+           \;-\; K_{d,i}\; \omega_{\mathrm{err},i} ,
+  \;}
+  \label{eq:gnc:pd}
+\end{equation}
+followed by the per-axis clamp
+\begin{equation}
+  \tau_i \leftarrow \min\bigl(\max(\tau_i,\, -\tau_{\max,i}),\,
+    \tau_{\max,i}\bigr).
+  \label{eq:gnc:sat}
+\end{equation}
+Normative arithmetic, for the exit-criterion-2 reproduction: the inputs
+are used as received (no renormalization of $\delta\quat{q}$); the
+Hamilton product~\eqref{eq:notation:hamiltonproduct} and conjugate are
+evaluated in the project's scalar-first component order; the sign
+branch is exactly $\delta q_w \ge 0$ (zero maps to $+1$); products and
+clamps are elementwise with the gains $K_{p,i} > 0$
+(\unit{\newton\metre}, per unit quaternion-vector component) and
+$K_{d,i} > 0$ (\unit{\newton\metre\second\per\radian}). Because
+$\delta\vv{q}_v \approx \vv{\epsilon}/2$, the small-error proportional
+stiffness is $K_{p,i}/2$ per radian --- the factor of two lives in the
+gain interpretation, not in the code. The $s$ factor selects the
+shorter of the two rotations representing the same error (quaternion
+double cover), which removes the classical unwinding behavior; global
+asymptotic stability of the law for a rigid body with positive-definite
+gains is the standard quaternion-feedback result
+(Wie~\cite{wie2008}; Markley and Crassidis~\cite{markley2014}).
+
+\subsection{Dead-reckoning attitude navigation}
+\label{sec:gnc:deadreckoning}
+
+The navigator holds a unit quaternion estimate
+$\hat{\quat{q}}_{i2b}$, initialized from configuration
+($\hat{\quat{q}}_0$; the reference scenarios initialize it to the true
+initial attitude, which the mission file states explicitly --- there is
+no implicit truth access). Each cycle it composes the measured gyro
+increment $\Delta\tilde{\vv{\theta}}_k$
+(equation~\eqref{eq:imu:gyro}) as an exact rotation. With the exact
+exponential map
+\begin{equation}
+  \delta\quat{q}(\vv{\phi}) =
+    \Bigl[\cos\tfrac{\phi}{2},\;
+      \sin\tfrac{\phi}{2}\,\frac{\vv{\phi}}{\phi}\Bigr],
+  \qquad \phi = \norm{\vv{\phi}},
+  \qquad
+  \delta\quat{q}(\vv{0}) = [1, \vv{0}],
+  \label{eq:gnc:exactrot}
+\end{equation}
+the propagation and rate estimate are
+\begin{equation}
+  \boxed{\;
+  \hat{\quat{q}}_{k} = \frac{\hat{\quat{q}}_{k-1} \quatmul
+      \delta\quat{q}\bigl(\Delta\tilde{\vv{\theta}}_k\bigr)}
+    {\bigl\lVert \hat{\quat{q}}_{k-1} \quatmul
+      \delta\quat{q}\bigl(\Delta\tilde{\vv{\theta}}_k\bigr)
+      \bigr\rVert},
+  \qquad
+  \hat{\vv{\omega}}_k^{B} =
+    \frac{\Delta\tilde{\vv{\theta}}_k}{\Delta t_s} ,
+  \;}
+  \label{eq:gnc:drprop}
+\end{equation}
+body-side composition per equation~\eqref{eq:notation:quatcomp},
+normalized every cycle. The exact-rotation choice (rather than a
+small-angle quaternion) is pinned because it is branch-free above the
+$\phi = 0$ special case, exactly norm-preserving before rounding, and
+identical to the map the error-state filter of Chapter~\ref{ch:ekf}
+uses --- one shared function. Treating the increment as a rotation
+vector is exact for rotation about a fixed axis within the interval;
+for axis motion within the interval the per-cycle residual is the
+classical single-sample coning term, bounded by
+\begin{equation}
+  \norm{\vv{e}_{\mathrm{coning},k}}
+    \le \tfrac{1}{12}\,
+      \bigl\lVert \Delta\vv{\theta}_{k-1} \times \Delta\vv{\theta}_k
+      \bigr\rVert
+      + O\bigl(\norm{\Delta\vv{\theta}}^4\bigr),
+  \label{eq:gnc:coningbound}
+\end{equation}
+the leading term of the two-sample coning correction this navigator
+deliberately omits (Savage~\cite{savage1998a}; Titterton and
+Weston~\cite{titterton2004}). At $\qty{100}{\hertz}$ cycling and
+$\norm{\vv{\omega}} \le \qty{0.1}{\radian\per\second}$ the bound is
+$\lesssim \qty{8e-8}{\radian}$ per second of flight --- far below the
+gyro error budget, which is the point: the reference navigator's error
+is dominated by the sensor, not the algorithm.
+
+\subsection{Ascent pitch-program guidance component}
+\label{sec:gnc:ascent}
+
+The component is configured with the same data as the Phase~4 open-loop
+sequence action: flight azimuth $A$, node tables $(t_j, \theta_j)$,
+$j = 1 \dots P$, and it captures the frozen launch-site tangent basis
+$(\hat{\vv{u}}_0, \hat{\vv{e}}_0, \hat{\vv{n}}_0)$ at initialization
+(Chapter~\ref{ch:vehicle6dof}). Per cycle at time $t$:
+\begin{enumerate}
+  \item \textbf{Pitch interpolation, clamped:}
+    \begin{equation}
+      \theta(t) =
+      \begin{cases}
+        \theta_1, & t \le t_1,\\
+        \theta_P, & t \ge t_P,\\
+        \theta_j + \dfrac{t - t_j}{t_{j+1} - t_j}
+          \bigl(\theta_{j+1} - \theta_j\bigr),
+          & t_j < t \le t_{j+1} \text{ (first such } j\text{)},
+      \end{cases}
+      \label{eq:gnc:interp}
+    \end{equation}
+    the exact rule of the Phase~4 implementation, restated here so both
+    paths interpolate identically.
+  \item \textbf{Commanded attitude:} thrust axis
+    $\hat{\vv{d}}^{I}(\theta(t), A)$ from
+    equation~\eqref{eq:vehicle6dof:pitchaxis} in the frozen basis, and
+    $\quat{q}_{i2\mathrm{cmd}}(t)$ from the Gram--Schmidt triad of
+    equation~\eqref{eq:vehicle6dof:attitude} with up-reference
+    $\hat{\vv{u}}_0$, continued through the vertical by
+    equation~\eqref{eq:vehicle6dof:rollref} where that reference is
+    ill conditioned. The generic degeneracy fallback of
+    \texttt{attitude\_from\_body\_x} is therefore unreachable from this
+    path: the continuation switches two decades above the fallback's
+    own guard, so the commanded roll is always resolved from the
+    commanded azimuth rather than from an inertial axis. The open-loop
+    mode applies the identical continuation --- the roll convention must
+    match Phase~4 exactly for exit criterion~10's re-gate to compare
+    like with like, and both paths moved together when it changed.
+  \item \textbf{Commanded rate}, the finite-difference rotation between
+    this cycle's and the next cycle's commanded attitude, resolved in
+    the commanded frame at $t$:
+    \begin{equation}
+      \boxed{\;
+      \delta\quat{q}_c = \quat{q}_{i2\mathrm{cmd}}(t)^{*} \quatmul
+        \quat{q}_{i2\mathrm{cmd}}(t + T_c),
+      \qquad
+      \vv{\omega}_{\mathrm{cmd}}^{\mathrm{CMD}} =
+        \frac{2\,\operatorname{sgn}(\delta q_{c,w})}{T_c}\,
+        \delta\vv{q}_{c,v} ,
+      \;}
+      \label{eq:gnc:cmdrate}
+    \end{equation}
+    with $\operatorname{sgn}(0) = +1$: the small-angle rate extraction
+    on the short branch of the double cover, exactly the Phase~4
+    convention. Its $O(\norm{\delta\vv{q}_{c,v}}^3)$ small-angle error
+    is negligible at per-cycle command increments
+    ($\lesssim 10^{-2}$ rad).
+\end{enumerate}
+The component emits
+$(\quat{q}_{i2\mathrm{cmd}}, \vv{\omega}_{\mathrm{cmd}}^{\mathrm{CMD}})$
+for the PD controller of Section~\ref{sec:gnc:pd}; closing the loop
+through the Chapter~\ref{ch:actuators} actuators is what exit
+criterion~10 re-times against the FR-32 ascent performance target.
+
+\section{Discretization and implementation}
+\label{sec:gnc:implementation}
+
+Binding implementation notes for the Phase~6 modules:
+\begin{enumerate}
+  \item \textbf{Modules and traceability.} Each component is a
+    C++ \texttt{IGncComponent} registered in the FR-25 static registry
+    and selected by configuration string; Python subclasses enter
+    through the pybind11 trampoline with identical semantics. Source
+    comments echo \texttt{eq:gnc:deltaq}, \texttt{eq:gnc:pd},
+    \texttt{eq:gnc:sat}, \texttt{eq:gnc:werr},
+    \texttt{eq:gnc:exactrot}, \texttt{eq:gnc:drprop}, and
+    \texttt{eq:gnc:cmdrate} verbatim.
+  \item \textbf{Statelessness inventory.} The PD controller is
+    stateless; the dead reckoner's state is $\hat{\quat{q}}$; the
+    guidance's state is the frozen basis and tables. All state is
+    reset by \texttt{Sim.reset} (FR-24), which is what makes stepping
+    and batch runs bit-identical (exit criterion~4).
+  \item \textbf{No draws, no clock, no allocation.} Components consume
+    no PRNG streams and never read wall-clock time; the update path
+    allocates nothing (D-10).
+  \item \textbf{Logged channels.} Computed and applied commands land in
+    the reserved \texttt{nav.*} group; the dead reckoner logs
+    $\hat{\quat{q}}$ (scalar-first) as its estimate channel. The EKF's
+    richer \texttt{nav.est.*} layout is defined in
+    Chapter~\ref{ch:ekf}.
+  \item \textbf{Sensor-validity handling.} Components receive each
+    sensor sample with its validity flag
+    (Chapter~\ref{ch:sensors-optical} semantics) and must skip work
+    keyed to invalid samples; the dead reckoner consumes only the IMU,
+    which is always valid.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:gnc:validation}
+
+Tables~\ref{tab:gnc:validation}, \ref{tab:gnc:validation-crit2},
+\ref{tab:gnc:validation-crit2-guards},
+and~\ref{tab:gnc:validation-py} list the
+tests that constitute this chapter's validation evidence. Each test
+identifier is machine-checked to exist in the test tree by
+\texttt{scripts/lint\_chapters.py}. The one planned gate not yet
+discharged --- the exit-criterion-10 performance re-gate --- is stated
+after the tables.
+
+\begin{longtable}{lp{8.4cm}}
+  \caption{Validation evidence for the built-in GNC components: core
+    (doctest, \texttt{cpp/tests/test\_gnc.cpp}).}
+  \label{tab:gnc:validation} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
+    \testid{gnc_pd_attitude_golden} &
+      Six committed golden cases drive
+      equations~\eqref{eq:gnc:deltaq}--\eqref{eq:gnc:sat} against
+      \texttt{tests/golden/gnc/pd\_attitude.toml}, whose expected torques
+      are a 60-digit \texttt{mpmath} evaluation of the normative law on
+      bit-identical inputs rather than a hand computation by either
+      implementation. The set covers both signs of $\delta q_w$, the
+      $\delta q_w = 0$ case that pins $\mathrm{sgn}(0) = +1$, and---for
+      equation~\eqref{eq:gnc:sat}, which is per-axis and two-sided---cases
+      that between them clamp on the upper rail, on the lower rail, and on
+      all three axes, each beside an axis left strictly inside its limit.
+      The doctest asserts that coverage rather than assuming it: a set
+      railing one axis on one side would leave a law clamping only that axis,
+      or only that sign, reproducing every expected torque. \\
+    \testid{gnc_dead_reckoning_golden} &
+      The dead reckoner propagates a committed increment sequence through
+      equation~\eqref{eq:gnc:drprop} to its golden state; the initial
+      estimate arrives as configuration, confirming the component takes no
+      implicit truth access. Declared state, covariance, and innovation
+      dimensions match the plugin contract. \\
+    \testid{gnc_registry_resolution_and_rejection} &
+      The registry exposes exactly the four built-in names; an unknown
+      component raises \texttt{std::invalid\_argument} with the registered
+      set in the message, and duplicate registration --- a determinism
+      hazard --- raises \texttt{std::logic\_error}. \\
+    \testid{gnc_attitude_hold_guidance} &
+      A non-unit configured target is normalized at construction and echoed
+      each update with exactly zero commanded rate; with no configured
+      target the component holds the scenario initial attitude from the
+      init context. \\
+    \testid{gnc_pitch_program_guidance_matches_openloop_machinery} &
+      The commanded attitude is computed by the same functions in the same
+      call sequence as the Phase~4 open-loop pitch-program mode, against a
+      reference reproducing that arithmetic verbatim on a mid-latitude pad
+      basis (equation~\eqref{eq:gnc:interp}). \\
+    \testid{gnc_latency_fifo_semantics} &
+      Exit criterion~8 at the FIFO level: $L = 0$ is passthrough; $L = 2$
+      shifts application by exactly two cycles, the pre-fill holds applying
+      the neutral command with \texttt{valid == false} and zero torque
+      (equation~\eqref{eq:gnc:latency}). \\
+    \testid{gnc_attitude_error_width_equals_state_width_for_every_form} &
+      The descriptor invariant, enumerated over every admissible attitude
+      form rather than sampled: each reports four slots, which is the width
+      the differencing routine reads at a block's offset. A form added with
+      any other width fails here. The attitude quantity's refusal of the
+      additive difference form is asserted alongside, which is what bounds
+      the enumeration to the three quaternion forms. \\
+    \testid{gnc_attitude_block_last_layout_cannot_outrun_the_state_buffer} &
+      The construction that formerly read out of bounds, re-attempted
+      through the shipped validator: a three-slot velocity block followed by
+      an attitude block over a six-slot state --- the tiling a three-slot
+      attitude form once satisfied --- is now rejected, and the message
+      names the arithmetic (seven slots declared against six). The same
+      layout at seven slots is accepted and read back, with a guard element
+      past the declared width shown untouched, so the rejection is about the
+      width and not a blanket refusal of an attitude-last layout. \\
+    \testid{gnc_base_component_accessors_refuse_an_undeclared_state} &
+      The base-class contract for a component that declares
+      \texttt{state\_dim() > 0} without overriding the state or covariance
+      accessor: both raise rather than let the loop log a buffer nothing
+      wrote. The remaining default introspection is asserted to be well
+      defined and empty, which is what makes the two throws a contract
+      rather than a gap. \\
+\end{longtable}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the built-in GNC components: exit
+    criterion~2, both halves and their non-vacuity guards (pytest,
+    \texttt{tests/python/test\_gnc\_missions.py} and
+    \texttt{test\_gnc\_pd\_golden.py}).}
+  \label{tab:gnc:validation-crit2}
+  \begin{tabular}{lp{7.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{test_pd_law_python_reimplementation_contract} &
+      Exit criterion~2, mission half: an independent Python transcription of
+      the PD law --- importing only \texttt{numpy} and \texttt{tomllib}, and
+      re-deriving the Hamilton product, the sign branch, the error DCM, and
+      the clamp by hand --- reproduces the compiled built-in's logged
+      applied torques across all 601 cycles of the criterion-2 scenario.
+      Measured worst residual \qty{1.3878e-17}{\newton\metre} against the
+      criterion's \qty{e-9}{\newton\metre}. \\
+    \testid{test_python_pd_law_matches_the_mpmath_golden} &
+      Exit criterion~2, golden half: the same Python transcription
+      evaluated against the committed \texttt{mpmath} goldens, one
+      parametrization per case, to the golden manifest's
+      $\max(5\times10^{-15}\lvert\tau\rvert, 10^{-18})$ bound, with the
+      criterion's own \qty{e-9}{\newton\metre} asserted alongside. Requires
+      no compiled core, so this half is gated even on a core-less
+      checkout. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% longtable, not table: this grew past a single page when the
+% test_golden_expectations_record_the_branches row was added, and a float
+% that overfills its page silently drops the rows that do not fit.
+\begin{longtable}{lp{7.2cm}}
+  \caption{Validation evidence for the built-in GNC components: the
+    non-vacuity guards on exit criterion~2, which assert that the two gates
+    above are sensitive to every equation they claim to cover (pytest).}
+  \label{tab:gnc:validation-crit2-guards} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
+    \testid{test_golden_cases_cover_every_branch} &
+      Non-vacuity of the golden half, asserted by re-evaluating the
+      reference law on the committed inputs: the
+      committed set contains a case with $\delta q_w < 0$, one with
+      $\delta q_w$ exactly zero, one with $\delta q_w > 0$, one clamping
+      some axes but not all (without which equation~\eqref{eq:gnc:sat}
+      would be indistinguishable from an unsaturated law), and one
+      combining a non-zero commanded rate with a non-identity error DCM
+      (without which equation~\eqref{eq:gnc:werr}'s rotation would be
+      untested), so a regenerated golden set that quietly lost a branch
+      fails here rather than silently weakening the gate. \\
+    \testid{test_golden_expectations_record_the_branches} &
+      The same non-vacuity asked of the committed expectations rather
+      than of the inputs, so a regeneration that kept the saturating
+      inputs while recording an unclamped answer is caught too: some
+      \texttt{expected\_tau\_nm} component equals its $\tau_{\max}$
+      exactly while another axis of that case sits strictly inside it
+      (equation~\eqref{eq:gnc:sat} assigns the limit, which is what makes
+      exact binary64 equality its fingerprint and not a coincidence),
+      each of the three $\delta q_w$ branches carries a non-zero recorded
+      torque so none is present but inert, and every recorded quaternion
+      is unit --- the premise under which $\delta q_w$ alone fixes the
+      error rotation's magnitude. This file is the suite's only evidence
+      for equation~\eqref{eq:gnc:sign} at $\delta q_w = 0$, a point no
+      closed-loop scenario reaches. \\
+    \testid{test_pd_scenario_exercises_every_equation} &
+      Non-vacuity of the mission half, asserted on the measured log rather
+      than assumed from the fixture's construction: commanded rate up to
+      \qty{0.0133}{\radian\per\second}; error DCM reaching \num{0.71} from
+      the identity and \num{1.24} from its own transpose, so neither the
+      rotation nor a transposition of it is invisible; 300 of 601 cycles on
+      the $\delta q_w < 0$ branch and 301 on the other; the clamp catching
+      on 92 cycles; and every body axis carrying torque, so no per-axis
+      gain path is multiplied by zero. \\
+\end{longtable}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the built-in GNC components: remaining
+    in-loop behavior (pytest, \texttt{tests/python/}).}
+  \label{tab:gnc:validation-py}
+  \begin{tabular}{lp{7.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{test_dead_reckoning_tracks_torque_driven_truth} &
+      Against torque-driven truth the logged estimate error stays below
+      $5\times10^{-3}$ in both the quaternion and rate components --- the
+      accumulated first-order-hold bound --- and the commanded slew settles
+      to the target to sub-milliradian alignment. \\
+    \testid{test_pitch_program_guidance_equals_openloop_command} &
+      The closed-loop ascent's commanded attitude equals the open-loop
+      pitch-program attitude bit-for-bit at every shared cycle time,
+      the commanded history being trajectory-independent (frozen pad basis,
+      absolute-time table). \\
+    \testid{test_latency_two_cycles_shifts_application} &
+      Exit criterion~8 end to end: with $L = 2$ the first valid applied
+      command moves from $t = 0$ to $t = 2$ cycles, the two pre-fill cycles
+      apply zero torque, and the shifted command is bit-identical to the
+      $L = 0$ cycle-0 command. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Scope of the criterion-2 rows, and the degeneracy they were
+built to escape.} The committed reference mission --- an attitude hold ---
+is degenerate against three of the five equations of the PD law, and the
+degeneracy is a property of the fixture rather than of the tolerance. On
+that mission the commanded rate $\vv{\omega}_{\mathrm{cmd}}$ is identically
+zero, so equation~\eqref{eq:gnc:werr} has nothing to rotate; the tracking
+error stays well inside a half turn, so the short-path branch of
+equation~\eqref{eq:gnc:sign} is never taken; and the \qty{10}{\degree}
+transient never reaches $\vv{\tau}_{\max}$, so equation~\eqref{eq:gnc:sat}
+never clamps. That is exact rather than merely weak: a Python reference
+that dropped any of the three reproduced the logged torques identically,
+so no tolerance could have separated it.
+
+Criterion~2 therefore runs on a scenario built to escape each of those
+three, driving the FR-24 external-guidance seam so the commanded attitude
+and rate are the driver's to choose while the compiled built-in still
+computes every torque. It carries a constant non-zero commanded rate about
+one axis; an initial commanded attitude offset of \qty{60}{\degree} about a
+\emph{different} axis, since parallel axes would leave
+$\mat{C}(\delta\quat{q})\,\vv{\omega}_{\mathrm{cmd}} =
+\vv{\omega}_{\mathrm{cmd}}$ and make both the rotation and its transpose
+invisible; the commanded quaternion expressed antipodally for the first
+half of the run, so that a controller honouring
+equation~\eqref{eq:gnc:sign} produces the same torque from both physically
+identical representations while one omitting the branch reverses it; and a
+\qty{60}{\degree} offset against \qty{0.4}{\newton\metre\per\radian} gains
+with \qty{0.05}{\newton\metre} of authority, so the opening transient
+saturates every axis. \testid{test_pd_scenario_exercises_every_equation}
+asserts each property on the measured log, so the gate cannot quietly
+return to being degenerate.
+
+The criterion's conjunction --- an independent Python controller, the
+compiled controller, a golden scenario, and \qty{e-9}{\newton\metre} --- is
+met by the pair of rows above rather than by either alone.
+\testid{test_python_pd_law_matches_the_mpmath_golden} evaluates the Python
+transcription against \texttt{tests/golden/gnc/pd\_attitude.toml}, the same
+file \testid{gnc_pd_attitude_golden} drives the C++ component with and
+whose expected torques come from a 60-digit \texttt{mpmath} evaluation of
+the specification rather than from either implementation;
+\testid{test_pd_law_python_reimplementation_contract} evaluates that same
+function against the torques the compiled component logs in the loop. The
+four mutations the earlier fixture could not separate are each rejected by
+both rows: dropping the sign branch moves the mission-side worst residual
+to \qty{0.1}{\newton\metre}, dropping the error-DCM rotation of
+$\vv{\omega}_{\mathrm{cmd}}$ to \qty{4.7340e-2}{\newton\metre}, transposing
+that DCM to \qty{5.1548e-2}{\newton\metre}, and dropping the clamp to
+\qty{0.1526}{\newton\metre} --- each at least seven orders above the
+criterion's \qty{e-9}{\newton\metre}, against an unmutated
+\qty{1.3878e-17}{\newton\metre}. On the golden side the same four exceed
+the manifest bound by factors between $2.3\times10^{13}$ and
+$4.0\times10^{14}$.
+
+One clause of exit criterion~10 is deferred rather than outstanding, and
+the distinction matters:
+\begin{itemize}
+  \item \textbf{Performance re-gate (exit criterion 10), Pi~5 hardware
+    clause.} The FR-32 ascent target ($\ge 100\times$ real time, single
+    core) with the full built-in GNC stack in the loop is measured as the
+    \texttt{ascent\_gnc\_rt\_factor} metric of
+    \texttt{scripts/perf\_gate.py}, on the committed closed-loop ascent
+    \texttt{missions/ascent\_leo\_gnc.toml}, and is gated on every nightly
+    run because it sits in that harness's default metric set. What is
+    deferred is only the requirement that the measurement be taken on real
+    Pi~5 silicon, no such hardware being available. That deferral runs
+    through the PRD section~9 valve to \texttt{docs/release\_checklist.md}
+    item~1, procedure \texttt{docs/perf/pi5\_checklist.md} step~4, which
+    measures this metric alongside the three Phase~5 absolutes in the same
+    invocation. The nightly \texttt{ubuntu-24.04-arm} leg is the interim
+    aarch64 proxy and is recorded as a proxy, never as a Pi~5 measurement.
+    The item is registered and fully prepared --- mission, metric, and gate
+    all committed and exercised in CI --- so qualifying a release against
+    the clause is one scripted command once the hardware exists.
+\end{itemize}
+
+\section{References}
+\label{sec:gnc:references}
+
+The quaternion-feedback PD law and its stability properties follow
+Wie~\cite{wie2008} and Markley and Crassidis~\cite{markley2014},
+transcribed to the project's D-7 conventions; the strapdown increment
+composition and the coning-residual bound follow
+Savage~\cite{savage1998a} and Titterton and
+Weston~\cite{titterton2004}; the ascent geometry is derived in
+Chapter~\ref{ch:vehicle6dof}. Full bibliographic details appear in the
+bibliography.

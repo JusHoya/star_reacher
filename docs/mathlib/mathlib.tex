@@ -10,6 +10,11 @@
 \usepackage{amssymb}
 \usepackage{bm}
 \usepackage{booktabs}
+% The validation-evidence tables are longer than a page. As ordinary floats
+% they overflowed silently ("Float too large for page"), which drops rows off
+% the bottom of the PDF while the source still lists them - an evidence table
+% that cannot be read is not evidence.
+\usepackage{longtable}
 \usepackage{array}
 \usepackage{siunitx}
 % Milliarcsecond: standard astrometric unit used by the frames chapter,
@@ -85,6 +90,12 @@
 \input{chapters/actuators}
 \input{chapters/aero}
 \input{chapters/vehicle6dof}
+\input{chapters/sensors_imu}
+\input{chapters/sensors_optical}
+\input{chapters/sensors_radio}
+\input{chapters/camera}
+\input{chapters/gnc_builtin}
+\input{chapters/ekf}
 
 \printbibliography[heading=bibintoc,title={Bibliography}]
 

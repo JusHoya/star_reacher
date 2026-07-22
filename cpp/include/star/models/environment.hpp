@@ -83,6 +83,35 @@ struct EnvironmentSpec {
   std::string ephemeris_path;  // SREPH file; "" only if no model needs it
 };
 
+// Ephemeris- and shadow-derived geometry the FR-23 optical, radio, and
+// camera sensors consume (ch:sensors-optical equation eq:optical:beta,
+// ch:sensors-radio, ch:camera). It is served by the environment model rather
+// than recomposed sensor-side so a sensor can never see a differently
+// assembled Sun direction, barycentric velocity, body-fixed rotation, or
+// shadow fraction than the force model itself used.
+struct SensorGeometry {
+  // False when the run loads no ephemeris (point-mass, no third bodies, no
+  // SRP): the fields below then carry their neutral values and the sensors
+  // that need them report invalid rather than inventing geometry.
+  bool ephemeris_valid = false;
+  // Central body's velocity relative to the solar-system barycenter, GCRF
+  // axes - the barycentric term of eq:optical:beta.
+  Eigen::Vector3d v_central_ssb_mps = Eigen::Vector3d::Zero();
+  // Sun position relative to the central body, GCRF axes.
+  Eigen::Vector3d r_sun_m = Eigen::Vector3d::Zero();
+  // Conical-shadow illumination fraction at the queried position
+  // (eq:srp:nu), composed over the configured occulters exactly as the SRP
+  // term composes it; 1.0 when SRP is disabled.
+  double illumination_nu = 1.0;
+  // GCRF -> central-body-fixed rotation, and the central body's reference
+  // ellipsoid. Invalid for the Sun central body, which has no body-fixed
+  // frame defined (ch:frames).
+  bool bodyfixed_valid = false;
+  Eigen::Matrix3d c_gcrf_to_bodyfixed = Eigen::Matrix3d::Identity();
+  double ellipsoid_a_m = 0.0;
+  double ellipsoid_inv_f = 0.0;
+};
+
 // One composed force model instance: loads the gravity field and ephemeris
 // at construction (file I/O happens once, before the time loop), precomputes
 // the perturber table in canonical order, and evaluates the right-hand side
@@ -103,11 +132,35 @@ class EnvironmentModel {
   Eigen::Vector3d acceleration(double t_s, const Eigen::Vector3d& r_m,
                                const Eigen::Vector3d& v_mps);
 
+  // Gravitational subset of acceleration(): central-body gravity plus the
+  // configured third bodies - no SRP, no drag. Exists for the FR-23 IMU
+  // truth model (eq:imu:specificforce): an accelerometer senses the total
+  // acceleration minus gravitation, so the loop isolates the sensed part as
+  // acceleration() - gravitational_acceleration(). Same term order and
+  // arithmetic as the corresponding terms of acceleration(), so the
+  // difference cancels the gravitational terms exactly (not merely to
+  // rounding).
+  Eigen::Vector3d gravitational_acceleration(double t_s,
+                                             const Eigen::Vector3d& r_m);
+
   // First-order ODE right-hand side for the shared integrators:
   // y = [r, v], ydot = [v, acceleration(t, r, v)].
   void rhs(double t_s, const double* y, double* ydot);
 
   bool uses_ephemeris() const { return eph_.has_value(); }
+
+  // FR-23 sensor geometry at mission-elapsed time t_s for the GCRF position
+  // r_m. Non-const for the same reason acceleration() is: it shares the
+  // evaluator workspace. Never throws inside the loop - an unavailable
+  // quantity is reported by its validity flag.
+  SensorGeometry sensor_geometry(double t_s, const Eigen::Vector3d& r_m);
+
+  // Geodetic altitude [m] over the central body's reference ellipsoid, via
+  // the same Bowring conversion and the same body-fixed rotation the
+  // atmosphere and environment models use (ch:sensors-radio implementation
+  // note 3: no second conversion path). Returns the spherical fallback
+  // norm(r) - a_m when the central body has no body-fixed frame.
+  double geodetic_altitude_m(double t_s, const Eigen::Vector3d& r_m);
 
  private:
   // TDB seconds since J2000 TDB for the epoch shifted by t_s.
@@ -119,6 +172,10 @@ class EnvironmentModel {
   Eigen::Vector3d body_rel_central(Body body, double tdb_s,
                                    const Eigen::Vector3d& r_central_ssb) const;
   Eigen::Vector3d central_ssb(double tdb_s) const;
+  Eigen::Vector3d central_ssb_velocity(double tdb_s) const;
+  // Central body's reference-ellipsoid semi-major axis and inverse
+  // flattening (inv_f == 0 marks a sphere).
+  void central_ellipsoid(double& a_m, double& inv_f) const;
 
   // GCRF -> central-body-fixed rotation at the epoch shifted by t_s.
   Eigen::Matrix3d c_gcrf_to_bodyfixed(double t_s, double tdb_s) const;

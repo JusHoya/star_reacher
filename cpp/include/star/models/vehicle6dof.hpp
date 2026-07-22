@@ -27,12 +27,24 @@
 #define STAR_MODELS_VEHICLE6DOF_HPP
 
 #include <cstddef>
+#include <vector>
 
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
 namespace star {
 namespace models {
+
+// Piecewise-linear table interpolation with endpoint clamping over a
+// strictly increasing grid (xs, ys parallel, size >= 2 - the caller's
+// invariant, validated at config time). This is the single home of the
+// pitch-table arithmetic: the Phase 4 open-loop pitch-program mode and the
+// Phase 6 pitch-program guidance component both call it, so their commanded
+// attitudes agree bit-for-bit by construction (the Phase 6 closed-loop
+// contract), and the byte-frozen Phase 4 missions see the exact arithmetic
+// the original in-loop lambda performed.
+double pwl_interp_clamped(const std::vector<double>& xs,
+                          const std::vector<double>& ys, double x);
 
 // Dimension of the continuous translational state [r(3), v(3)].
 inline constexpr std::size_t kVehicleTransStateDim = 6;
@@ -68,6 +80,24 @@ Eigen::Vector3d pitch_program_axis(double az_rad, double pitch_rad,
                                    const Eigen::Vector3d& up_i,
                                    const Eigen::Vector3d& east_i,
                                    const Eigen::Vector3d& north_i);
+
+// Roll reference to hand to attitude_from_body_x for a pitch-program command
+// (eq:vehicle6dof:rollref). At pitch = 90 deg the commanded axis is local up,
+// so up_i itself is parallel to body +X and the Gram-Schmidt of
+// eq:vehicle6dof:attitude is degenerate: the generic fallback would clock the
+// triad to an azimuth-independent inertial axis, stepping the command by tens
+// of degrees in roll on the first cycle that leaves vertical. The pitch program
+// does not need the fallback, because its azimuth is commanded rather than
+// inferred: the Gram-Schmidt result has the closed form
+// cos(pitch) up - sin(pitch) (sin(az) east + cos(az) north), which stays unit
+// and azimuth-resolved as pitch -> 90 deg. This returns up_i where the
+// Gram-Schmidt is well conditioned (bit-identical to the direct construction)
+// and that closed form where it is not, so the command is continuous through a
+// true vertical hold.
+Eigen::Vector3d pitch_program_roll_ref(double az_rad, double pitch_rad,
+                                       const Eigen::Vector3d& up_i,
+                                       const Eigen::Vector3d& east_i,
+                                       const Eigen::Vector3d& north_i);
 
 // Attitude q_i2b whose body +X maps to the unit GCRF direction xb_i
 // (eq:vehicle6dof:attitude), completing the triad by Gram-Schmidt of ref_i

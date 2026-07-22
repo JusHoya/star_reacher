@@ -28,7 +28,7 @@
 # If any measurement exceeds 1e-9, exit criterion 8 requires D-10's bound to
 # be formally revised in the same change that updates this record.
 
-schema_version = 1
+schema_version = 2
 
 [record]
 status = "measured"
@@ -46,3 +46,55 @@ bound_rel = 1e-9
 measured_max_rel = 0.0
 ci_run_url = "https://github.com/JusHoya/star_reacher/actions/runs/28632023620"
 date = "2026-07-02"
+
+# ---------------------------------------------------------------------------
+# Channel-level record (Phase 6 widening of exit criterion 8).
+#
+# The [record] table above measures two channels of one mission. The
+# byte-determinism pass in docs/ci/phase6_crossplatform.md established that
+# truth.r_m and truth.v_mps are exactly the channels that stay bit-identical
+# across MSVC and GCC in every point-mass mission, so that record cannot see
+# the divergence the same pass measured in the sensor, nav, env and guidance
+# channels: four of its five missions read a final-state divergence of 0
+# while their files differed in thousands of bytes.
+#
+# This table is the committed home of the channel-level measurement, taken
+# over every channel of the five missions listed below. Channels split into
+# an exact class compared for bit-identity and a tolerance class gated
+# against tolerance_rel; the split, the divergence definition and the
+# anti-degeneracy rules are in scripts/cross_platform_divergence.py.
+#
+# tolerance_rel is DERIVED, not chosen. It is the geometric mean of
+#   - 1.06e-10, the worst scale-relative divergence measured anywhere in the
+#     five-mission pass (gnc.cmd.w_cmd_b_radps, 760 s powered ascent,
+#     Windows/MSVC against Linux/GCC, both x86-64), and
+#   - 1e-9, the D-10 ceiling,
+# giving sqrt(1.06e-10 * 1e-9) = 3.2557642...e-10, which sits a factor of
+# 3.07 above the worst measurement and the same factor 3.07 below the D-10
+# bound. The upper margin is headroom for the two CI legs whose libm has
+# never been measured here (macos-15 and ubuntu-24.04-arm; aarch64 changes
+# the instruction set, not merely the library). The lower margin is what
+# keeps this gate capable of failing before D-10 already has.
+#
+# Update procedure: identical to the [record] table's, against the commit
+# status context "determinism/cross-platform-channels". The FIRST run fails
+# this half by design - status below is pending - because no CI measurement
+# of these channels exists yet. The 1.06e-10 figure is the derivation input
+# for the bound; it is a maintainer-host measurement across two of the four
+# legs and is deliberately NOT transcribed here as though CI had produced it.
+#
+# If a measurement exceeds tolerance_rel, attribute the channel before
+# widening the bound. A divergence larger than the derivation input on a
+# channel nobody has looked at is a finding, not a calibration error.
+# ---------------------------------------------------------------------------
+
+[channels]
+status = "pending-first-measurement"
+tolerance_rel = 3.2557641192199413e-10
+missions = [
+  "ascent_leo_gnc",
+  "leo_attitude_gnc",
+  "leo_ekf_consistency",
+  "leo_optical_nav",
+  "twobody_leo",
+]

@@ -24,9 +24,11 @@ from star_reacher._corelink import import_core
 from star_reacher.mission import (
     MissionValidationError,
     canonical_bytes,
+    canonical_sensor_items,
     keplerian_to_cartesian,
     validate_mission_file,
 )
+from star_reacher.plugin import check_plugin_selections, load_plugins
 
 
 class RunnerError(Exception):
@@ -196,46 +198,60 @@ def _build_sequence(core, seq: list):
     return out
 
 
-def run_mission(mission_path, outdir=None, force=False, command_line=None, strict=False) -> RunResult:
-    """Validate, resolve, hash, propagate, and write the run artifacts.
+def _build_gnc_component(core, spec: dict):
+    """Translate one resolved [gnc.*] slot into the bound GncComponentCfg.
 
-    Raises ``MissionValidationError`` (exit 2 at the CLI) for config errors,
-    ``CoreMissingError`` or ``RunnerError`` (exit 1) for runtime failures.
-    ``strict`` promotes validation warnings (the vehicle plausibility tier)
-    to errors (FR-15).
+    Every key besides ``component`` is a parameter: numbers ride in the
+    scalar map, arrays in the vector map (the plain-data composition rule of
+    star/gnc/config.hpp), so new component parameters need no runner change.
     """
-    start_wall = time.monotonic()
-    start_utc = datetime.now(timezone.utc).isoformat()
+    cc = core.GncComponentCfg()
+    cc.component = spec["component"]
+    scalars = {}
+    vectors = {}
+    for key, value in spec.items():
+        if key == "component":
+            continue
+        if isinstance(value, list):
+            vectors[key] = [float(x) for x in value]
+        else:
+            scalars[key] = float(value)
+    cc.scalars = scalars
+    cc.vectors = vectors
+    return cc
 
-    resolved, errors = validate_mission_file(mission_path, strict=strict)
-    if errors:
-        raise MissionValidationError(errors)
 
-    # Path selection. A mission with a vehicle file, an event [[sequence]], or a
-    # geodetic launch state takes the Phase 4 6DOF path (run_vehicle); a mission
-    # that uses any Phase 3 environment surface takes the composed-environment
-    # path (run_env); anything else takes the byte-frozen Phase 1 two-body path
-    # (run), whose output is pinned by the committed determinism record.
-    is_vehicle = (
+def mission_is_vehicle(resolved) -> bool:
+    """True when a resolved mission takes the 6DOF vehicle path.
+
+    A mission with a vehicle file, an event ``[[sequence]]``, or a geodetic
+    launch state is a vehicle mission; anything else propagates a point mass.
+    Named rather than inlined because the stepping API (FR-24) drives the
+    vehicle cycle core specifically and must answer the same question the
+    batch runner does.
+    """
+    return (
         "vehicle" in resolved
         or "sequence" in resolved
         or "geodetic" in resolved["initial_state"]
     )
 
-    config_bytes = canonical_bytes(resolved)
-    config_sha = hashlib.sha256(config_bytes).hexdigest()
 
-    name = resolved["mission"]["name"]
-    out = Path(outdir) if outdir is not None else Path("out") / name
-    srlog_path = out / "run.srlog"
-    if srlog_path.exists() and not force:
-        raise RunnerError(
-            f"{srlog_path}: output already exists; pass --force to overwrite, "
-            f"or choose another directory with -o"
-        )
+def build_run_config(core, resolved, config_sha, strict=False):
+    """Map a validated, resolved mission onto a core ``RunConfig``.
 
-    core = import_core()
+    Extracted from :func:`run_mission` so a stepped run (FR-24) and a batch
+    run of one mission are configured by the same code. A second copy of this
+    mapping is precisely how a stepped run would quietly stop being the same
+    scenario as its batch twin, which is the property Phase 6 exit criterion
+    4 asserts.
 
+    Returns ``(cfg, resolved_vehicle_toml, uses_env_path)``:
+    ``resolved_vehicle_toml`` is ``None`` for a non-vehicle mission, and
+    ``uses_env_path`` is true when the mission needs the composed-environment
+    entry point rather than the byte-frozen Phase 1 two-body one.
+    """
+    is_vehicle = mission_is_vehicle(resolved)
     env = resolved["environment"]
     integ = resolved["integrator"]
     initial = resolved["initial_state"]
@@ -352,6 +368,126 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None, stric
         cfg.env_rate_hz = log_cfg.get("env_rate_hz", 1)
         resolved_vehicle_toml = canonical_vehicle_toml(vres)
 
+        # Phase 6 GNC chain (FR-23/FR-25). The oracle flag comes from [gnc]
+        # and is stamped into the log header by the core; sensors ride in
+        # the canonical FR-23 kind order, imposed here by
+        # canonical_sensor_items() rather than inherited from the resolved
+        # dict, because the two callers of this builder hand it that dict in
+        # different orders and the core is order-sensitive.
+        if "gnc" in resolved:
+            g = resolved["gnc"]
+            gc = core.GncConfig()
+            gc.enabled = True
+            gc.control_rate_hz = g["control_rate_hz"]
+            gc.latency_cycles = g["latency_cycles"]
+            gc.nav = _build_gnc_component(core, g["nav"])
+            gc.guidance = _build_gnc_component(core, g["guidance"])
+            gc.control = _build_gnc_component(core, g["control"])
+            sensor_cfgs = []
+            for kind, spec in canonical_sensor_items(resolved["sensors"]):
+                sc = core.GncSensorCfg()
+                sc.kind = kind
+                sc.sample_rate_hz = spec["sample_rate_hz"]
+                # Every other resolved key is a kind-specific model
+                # parameter, forwarded verbatim on the flat scalar/vector
+                # maps; the sensor module owns its own key vocabulary, so a
+                # new FR-23 error term needs no change here.
+                scalars = {}
+                vectors = {}
+                for key, value in spec.items():
+                    if key == "sample_rate_hz":
+                        continue
+                    if isinstance(value, list):
+                        vectors[key] = [float(v) for v in value]
+                    else:
+                        scalars[key] = float(value)
+                sc.scalars = scalars
+                sc.vectors = vectors
+                sensor_cfgs.append(sc)
+            gc.sensors = sensor_cfgs
+            cfg.gnc = gc
+            cfg.oracle = g["oracle"]
+
+    return cfg, resolved_vehicle_toml, new_path
+
+
+def _plugin_provenance(gnc_plugins) -> list[dict]:
+    """Record each loaded plugin file's path and SHA-256 for meta.json.
+
+    The resolved-config hash covers the mission, not the plugin source, so a
+    plugin run's reproducibility anchor is incomplete without this: two runs
+    of one mission with two revisions of a plugin are different experiments
+    that would otherwise carry the same config_sha256.
+    """
+    out = []
+    for raw in gnc_plugins or ():
+        path = Path(raw)
+        out.append(
+            {
+                "path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    return out
+
+
+def run_mission(
+    mission_path,
+    outdir=None,
+    force=False,
+    command_line=None,
+    strict=False,
+    gnc_plugins=None,
+) -> RunResult:
+    """Validate, resolve, hash, propagate, and write the run artifacts.
+
+    Raises ``MissionValidationError`` (exit 2 at the CLI) for config errors,
+    ``CoreMissingError`` or ``RunnerError`` (exit 1) for runtime failures.
+    ``strict`` promotes validation warnings (the vehicle plausibility tier)
+    to errors (FR-15). ``gnc_plugins`` is a sequence of Python files declaring
+    GNC components the mission selects as ``python:<name>`` (FR-25); loading
+    one executes it, so the paths come only from an explicit ``--gnc-plugin``.
+    """
+    start_wall = time.monotonic()
+    start_utc = datetime.now(timezone.utc).isoformat()
+
+    resolved, errors = validate_mission_file(mission_path, strict=strict)
+    if errors:
+        raise MissionValidationError(errors)
+
+    # Path selection. A mission with a vehicle file, an event [[sequence]], or a
+    # geodetic launch state takes the Phase 4 6DOF path (run_vehicle); a mission
+    # that uses any Phase 3 environment surface takes the composed-environment
+    # path (run_env); anything else takes the byte-frozen Phase 1 two-body path
+    # (run), whose output is pinned by the committed determinism record.
+    is_vehicle = mission_is_vehicle(resolved)
+
+    config_bytes = canonical_bytes(resolved)
+    config_sha = hashlib.sha256(config_bytes).hexdigest()
+
+    name = resolved["mission"]["name"]
+    out = Path(outdir) if outdir is not None else Path("out") / name
+    srlog_path = out / "run.srlog"
+    if srlog_path.exists() and not force:
+        raise RunnerError(
+            f"{srlog_path}: output already exists; pass --force to overwrite, "
+            f"or choose another directory with -o"
+        )
+
+    core = import_core()
+
+    # FR-25: register plugin components before the config is built, because
+    # build_run_config hands component names to a core that resolves them
+    # against its registry. The selection check runs unconditionally - with no
+    # plugin loaded it is what turns a mission naming "python:x" into an error
+    # that says which slot needs a --gnc-plugin.
+    loaded_plugins = load_plugins(gnc_plugins, core)
+    check_plugin_selections(resolved, loaded_plugins)
+
+    cfg, resolved_vehicle_toml, new_path = build_run_config(
+        core, resolved, config_sha, strict=strict
+    )
+
     out.mkdir(parents=True, exist_ok=True)
     # Exactly the hashed bytes, so the file re-hashes to config_sha256.
     (out / "resolved_config.json").write_bytes(config_bytes)
@@ -375,6 +511,10 @@ def run_mission(mission_path, outdir=None, force=False, command_line=None, stric
         "command_line": list(command_line) if command_line else [],
         "config_sha256": config_sha,
         "srlog_sha256": srlog_sha,
+        # FR-25 provenance: a plugin's code is not covered by config_sha256,
+        # so a run that flew one is only reproducible if the reader can tell
+        # which file supplied it and that the file has not changed since.
+        "gnc_plugins": _plugin_provenance(gnc_plugins),
         "host": {
             "node": platform.node(),
             "platform": platform.platform(),

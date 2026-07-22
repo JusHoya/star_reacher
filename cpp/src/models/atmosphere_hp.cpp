@@ -144,6 +144,16 @@ Eigen::Vector3d hp_bulge_apex(const Eigen::Vector3d& sun_dir_unit) {
 
 double geodetic_altitude(const Eigen::Vector3d& r_ecef_m, double a_m,
                          double inv_f) {
+  double lat_rad = 0.0;
+  double lon_rad = 0.0;
+  double alt_m = 0.0;
+  geodetic_lat_lon_alt(r_ecef_m, a_m, inv_f, lat_rad, lon_rad, alt_m);
+  return alt_m;
+}
+
+void geodetic_lat_lon_alt(const Eigen::Vector3d& r_ecef_m, double a_m,
+                          double inv_f, double& lat_rad, double& lon_rad,
+                          double& alt_m) {
   if (!r_ecef_m.allFinite() || !(a_m > 0.0) || !(inv_f > 1.0)) {
     throw std::domain_error("geodetic_altitude: invalid argument");
   }
@@ -173,9 +183,12 @@ double geodetic_altitude(const Eigen::Vector3d& r_ecef_m, double a_m,
   // Off the poles use the robust p/cos(phi) form; near them fall back to
   // the z/sin(phi) form (cos(phi) -> 0 would lose all precision).
   if (std::fabs(sphi) < 0.99) {
-    return p / std::cos(phi) - n_rad;
+    alt_m = p / std::cos(phi) - n_rad;
+  } else {
+    alt_m = z / sphi - n_rad * (1.0 - e2);
   }
-  return z / sphi - n_rad * (1.0 - e2);
+  lat_rad = phi;
+  lon_rad = std::atan2(r_ecef_m.y(), r_ecef_m.x());
 }
 
 const HpNode* hp_table(std::size_t* count) {

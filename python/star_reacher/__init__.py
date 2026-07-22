@@ -12,13 +12,15 @@ from star_reacher.srlog import (
     SrlogCorruptError,
     SrlogError,
     SrlogVersionError,
+    camera_echo,
+    decode_f64_hex,
     load,
 )
 
 # Kept in sync manually with pyproject.toml [project] version and the CMake
 # project() VERSION; single-source versioning is deferred until a release
 # process earns it (Phase 1 contract).
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "Run",
@@ -26,5 +28,7 @@ __all__ = [
     "SrlogError",
     "SrlogVersionError",
     "__version__",
+    "camera_echo",
+    "decode_f64_hex",
     "load",
 ]

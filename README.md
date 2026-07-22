@@ -24,7 +24,9 @@
 **star_reacher** is a high-fidelity 6DOF simulator for launch vehicles, satellites, and lunar/Mars missions, built as a small C++17/Eigen compute core behind a Python analysis frontend. It is a research instrument — for mission analysis, GNC algorithm development, and world-model and AI/ML spacecraft-navigation research — not a game and not an operational flight tool. The full specification lives in [`PRD.md`](PRD.md); this README is the front door.
 
 > [!IMPORTANT]
-> **Status: Phase 5 (data out) complete.** On top of the Phase 1 skeleton (Apache-2.0 per [ADR 0001](docs/adr/0001-license-and-visibility.md)), the Phase 2 math kernel, the Phase 3 environment force models, and the Phase 4 vehicle 6DOF stack, every run is now inspectable, replayable, and exportable: `star plot` renders the full quicklook PNG set (groundtrack with embedded coastline through per-source force/torque budgets) with its plot-feeding arrays gated by golden vectors; `star view` writes a self-contained single-file HTML WebGL playback viewer (vendored three.js, zero network requests, measured decimation error bound); `star export` adds bit-exact NPZ and pandas-ready Parquet alongside CSV; the loader derives osculating elements; and two new example missions — Mission A (cislunar, the < 60 s Pi 5 performance-gate mission) and a heliocentric Mars-cruise arc on the new Sun central body — run with bit-identical reruns. Performance and dependency-minimality gates are live in CI; the evidence items that need hardware or software the maintainer does not currently have (a Pi 5, a MATLAB license) are fully prepared and registered on the [pre-release checklist](docs/release_checklist.md). Track what is actually built in the [Roadmap](#roadmap).
+> **Status: Phase 6 (sensors, GNC, stepping API) complete, with audited gaps.** The AI/ML hook surface is in: a core-side `ISensor` suite (IMU, star tracker, sun sensor, external nav fix, altimeter, camera hook), the `IGncComponent` interface with built-in C++ guidance/navigation/control and a pybind11 trampoline so a Python component plugs into the same registry, the `Sim` stepping API whose stepped runs hash-identically to batch runs, a reference error-state EKF, and `star consistency` for NEES/NIS gating. All ten exit criteria are measured; an internal evidence audit then found several of their gates weaker than their wording implies, so `star verify` wires only the criteria whose gates were shown able to fail, and the rest are carried as named remediation items rather than reported as closed. Read the [Roadmap](#roadmap) row and the PRD's Phase 6 entry before relying on any single criterion.
+>
+> On top of the Phase 1 skeleton (Apache-2.0 per [ADR 0001](docs/adr/0001-license-and-visibility.md)), the Phase 2 math kernel, the Phase 3 environment force models, and the Phase 4 vehicle 6DOF stack, every run is now inspectable, replayable, and exportable: `star plot` renders the full quicklook PNG set (groundtrack with embedded coastline through per-source force/torque budgets) with its plot-feeding arrays gated by golden vectors; `star view` writes a self-contained single-file HTML WebGL playback viewer (vendored three.js, zero network requests, measured decimation error bound); `star export` adds bit-exact NPZ and pandas-ready Parquet alongside CSV; the loader derives osculating elements; and two new example missions — Mission A (cislunar, the < 60 s Pi 5 performance-gate mission) and a heliocentric Mars-cruise arc on the new Sun central body — run with bit-identical reruns. Performance and dependency-minimality gates are live in CI; the evidence items that need hardware or software the maintainer does not currently have (a Pi 5, a MATLAB license) are fully prepared and registered on the [pre-release checklist](docs/release_checklist.md). Track what is actually built in the [Roadmap](#roadmap).
 
 ## Why
 
@@ -103,7 +105,7 @@ Eight independently shippable phases, each gated on red-team-checkable exit crit
 | 3 | **Environment force models** — harmonic gravity, third-body, SRP + conical shadow, atmospheres and drag | Accelerations < 1e-12 relative vs independent synthesis; J2 secular rates within 0.5 %; shadow times within 0.1 s; LEO cross-tool RMS < 10 m (GMAT) and < 100 m with drag (Orekit) | Complete |
 | 4 | **Vehicle 6DOF** — KSP-lite schema + validator, mass properties, propulsion, aero, attitude, staging; starter fleet; ascent + TLI missions | Validator mutation tests; Tsiolkovsky closure within 0.1 %; torque-free attitude benchmarks; staging momentum conservation to 1e-12; ascent and TLI missions run in one command each with SHA-256-identical reruns; ascent cross-checked against an independent 3DOF within 2 % | Complete |
 | 5 | **Data out** — `star plot`, `star view` HTML playback, NPZ/Parquet exporters, Mission A + Mars-cruise missions, performance gates | Headless PNGs gated by golden vectors; viewer opens offline with zero network requests, exact scrub-extreme epochs, measured decimation bound; NPZ round-trips bit-exactly and Parquet loads in pandas (CI-gated); GMAT ephemeris-import transcript committed; Pi 5 gates (cislunar < 60 s wall, ascent ≥ 100× real time, SRLOG ≥ 50 MB/s) live on the ARM64 proxy leg with a documented Pi 5 hardware checklist; dependency and wheel-size minimality gates live | Complete — the MATLAB `parquetread` transcript and the Pi 5 hardware checklist run are deferred, fully prepared, to the [pre-release checklist](docs/release_checklist.md) (PRD §9 valve), which also tracks the first post-merge nightly run |
-| 6 | **Sensors, GNC, stepping API** — `ISensor` suite, GNC plugin interface (C++/Python), `Sim` stepping API, `star consistency` | Sensor statistics inside chi-square bounds; Allan deviation recovers IMU coefficients within ±10 %; reference EKF passes ensemble NEES/NIS 95 % gates; step-wise and batch runs hash-identical | Planned |
+| 6 | **Sensors, GNC, stepping API** — `ISensor` suite, GNC plugin interface (C++/Python), `Sim` stepping API, `star consistency` | Sensor statistics inside chi-square bounds; Allan deviation recovers IMU coefficients within ±10 %; reference EKF passes ensemble NEES/NIS 95 % gates; step-wise and batch runs hash-identical; the FR-32 ascent target re-gated with the C++ GNC stack in the loop | Deliverables complete, all ten criteria measured — but an internal evidence audit found the gates behind criteria 1, 2, 3, 7, and 9 weaker than their wording implies, so only the criteria it found sound are wired into `star verify`. The open gate defects are listed in the PRD's Phase 6 entry and carried as named remediation items; the Pi 5 hardware clause of criterion 10 is deferred, fully prepared, to the [pre-release checklist](docs/release_checklist.md) (PRD §9 valve) |
 | 7 | **Batch, Monte Carlo, ML layer** — `star mc` sweeps, MC regression goldens, Gymnasium + ONNX extras | 256/256 sweep manifest success with per-run reproducibility; MC statistics within distributional bounds; `check_env` passes; ONNX controller closes the loop on x86-64 and Pi 5 | Planned |
 | 8 | **Validation campaign, report, release** — full cross-tool table, completed report, fresh-machine walkthrough, tagged release | Every cross-tool case within stated tolerance (e.g., trans-lunar < 1 km at arrival); byte-identical doc rebuilds; fresh-machine README walkthrough succeeds; release wheels pass `verify --quick` on all four platforms | Planned |
 
@@ -126,6 +128,35 @@ run.events                         # structured array of (t_s, code, detail)
 
 `star export` writes CSV (one file per channel group, floats via `repr` so every value round-trips to full stored precision), NPZ (one pickle-free archive holding every group, the events, and the header — the bit-exact ML-training interchange), and Parquet (one file per group, behind the `pyarrow` extra) — the flags combine freely. Format contracts live in [`docs/formats/`](docs/formats/).
 
+## GNC in the loop
+
+Two surfaces sit on the same seam, and the full guide is [`docs/gnc_plugins.md`](docs/gnc_plugins.md).
+
+**Step a mission one control period at a time.** The core's vehicle loop is a cycle object advanced one period per call, and a batch `star run` is literally a loop over it — so a stepped run and a batch run of one scenario produce byte-identical logs by construction, not by a comparison test.
+
+```python
+from star_reacher.sim import Sim
+
+sim = Sim("missions/leo_attitude_gnc.toml", "out/stepped")
+obs, info = sim.reset()                        # -> (observation, {config_sha256, seed, ...})
+while not sim.done():
+    obs = sim.step()                           # one control period; ZOH commands
+sim.truth()                                    # privileged: never reaches a GNC component
+```
+
+`observe()` is pure — two reads without an intervening `step()` are equal. `step(commands)` drives a mission whose guidance or control slot is the `external` component: unknown command keys raise, and missing keys hold and are logged to `gnc.cmd` on every cycle.
+
+**Fly a component you wrote in Python, with no recompilation.** A plugin file declares `STAR_GNC_COMPONENTS = {"my_control": MyControl}`; a mission names it in the reserved `python:` namespace; `--gnc-plugin` loads it.
+
+```console
+$ star run missions/leo_attitude_gnc_plugin.toml \
+      --gnc-plugin examples/gnc_plugins/pd_attitude.py
+```
+
+The prefix keeps validation strict without a core or a plugin present — a misspelt built-in is still a hard error, not a presumed plugin — and makes a plugin unable to shadow a built-in, since the namespaces are disjoint. The shipped [example](examples/gnc_plugins/pd_attitude.py) reimplements the built-in `pd_attitude` law and commands torques identical to it on the reference mission, which is what makes it a check on the seam rather than a demonstration that some Python ran.
+
+Two caveats, stated plainly. Loading a plugin **executes its code** with the privileges of the process running `star`; plugins are never fetched over a network and never auto-discovered, so a mission file alone can never cause code execution. And a plugin runs *inside* the deterministic time loop, so bit-identical reruns hold only as far as the plugin's own code does — no clock, no I/O, no unseeded RNG, no set iteration, no mutable global state. The CLI restates that contract every time the flag is used.
+
 ## How to cite
 
 Citation metadata lives in [`CITATION.cff`](CITATION.cff) (validated by `cffconvert` in CI); a CI check (`scripts/check_citation.py`) keeps the BibTeX block below consistent with it field for field. The math-library PDF and the scientific-report PDF both carry the author byline **Melvin Hoyer III** and are built by `star docs`.
@@ -136,7 +167,7 @@ Citation metadata lives in [`CITATION.cff`](CITATION.cff) (validated by `cffconv
   title   = {star\_reacher},
   year    = {2026},
   url     = {https://github.com/JusHoya/star_reacher},
-  version = {0.5.0}
+  version = {0.6.0}
 }
 ```
 
@@ -149,7 +180,7 @@ Apache License 2.0 — see [`LICENSE`](LICENSE). The decision (Apache-2.0, publi
 <details>
 <summary><b>Is anything implemented yet?</b></summary>
 
-Through Phase 5: the build/install path, the `star` CLI, the SRLOG log format, the RNG streams, the verification harness, and the documentation and citation machinery on all four CI platforms (Phase 1); TAI/UTC/TT/TDB time systems, the GCRF/ITRF/Moon-PA/Mars-IAU frame family, the DE440s ephemeris pipeline, RK4/RKF7(8) integrators, and event detection (Phase 2); the full orbital perturbation environment — harmonic gravity, third-body, SRP with conical shadow, and atmospheric drag, composed behind `star run` with frozen GMAT/Orekit cross-tool baselines (Phase 3); the vehicle 6DOF — KSP-lite vehicle schema and validator, analytic mass properties, propulsion, RCS and reaction-wheel actuators, axisymmetric aero, rigid-body attitude with gravity-gradient torque, and staging with the state remap, exercised by a starter fleet flying scripted ascent and trans-lunar-injection missions and cross-checked against an independent 3DOF ascent (Phase 4); and the data-out layer — the `star plot` quicklook set gated by golden vectors, the `star view` self-contained HTML playback viewer, NPZ/Parquet exporters, loader-derived osculating elements, the Sun central body with the Mission A and Mars-cruise example missions, and the CI performance and minimality gates (Phase 5). The [Roadmap](#roadmap) reflects the true state per phase.
+Through Phase 5: the build/install path, the `star` CLI, the SRLOG log format, the RNG streams, the verification harness, and the documentation and citation machinery on all four CI platforms (Phase 1); TAI/UTC/TT/TDB time systems, the GCRF/ITRF/Moon-PA/Mars-IAU frame family, the DE440s ephemeris pipeline, RK4/RKF7(8) integrators, and event detection (Phase 2); the full orbital perturbation environment — harmonic gravity, third-body, SRP with conical shadow, and atmospheric drag, composed behind `star run` with frozen GMAT/Orekit cross-tool baselines (Phase 3); the vehicle 6DOF — KSP-lite vehicle schema and validator, analytic mass properties, propulsion, RCS and reaction-wheel actuators, axisymmetric aero, rigid-body attitude with gravity-gradient torque, and staging with the state remap, exercised by a starter fleet flying scripted ascent and trans-lunar-injection missions and cross-checked against an independent 3DOF ascent (Phase 4); and the data-out layer — the `star plot` quicklook set gated by golden vectors, the `star view` self-contained HTML playback viewer, NPZ/Parquet exporters, loader-derived osculating elements, the Sun central body with the Mission A and Mars-cruise example missions, and the CI performance and minimality gates (Phase 5); and the sensing and GNC layer — the `ISensor` suite with presets, the `IGncComponent` interface with built-in C++ components and a Python plugin path, the `Sim` stepping API, the reference error-state EKF, `star consistency`, and the closed-loop GNC ascent that re-gates the FR-32 ascent throughput target (Phase 6). The [Roadmap](#roadmap) reflects the true state per phase, including which Phase 6 exit criteria rest on gates an internal audit found weak.
 
 </details>
 

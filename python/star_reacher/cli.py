@@ -1,8 +1,8 @@
 """The ``star`` command-line interface (D-4, FR-20, DX-1).
 
-Seven subcommands (run, verify, export, docs from Phase 1; data from Phase 2;
-view and plot from Phase 5) and no stubs: every command documented here
-works. Exit codes: 0 success, 2 validation errors (accumulated per DX-2), 1
+Eight subcommands (run, verify, export, docs from Phase 1; data from Phase 2;
+view and plot from Phase 5; consistency from Phase 6) and no stubs: every
+command documented here works. Exit codes: 0 success, 2 validation errors (accumulated per DX-2), 1
 runtime errors. ``python -m star_reacher`` and the installed ``star`` console
 script both dispatch through ``main``.
 """
@@ -32,7 +32,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     sub = parser.add_subparsers(
-        dest="command", required=True, metavar="{run,verify,export,view,plot,docs,data}"
+        dest="command",
+        required=True,
+        metavar="{run,verify,export,view,plot,consistency,docs,data}",
     )
 
     p_run = sub.add_parser(
@@ -62,21 +64,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help="promote validation warnings (the FR-15 vehicle plausibility tier) "
         "to errors",
     )
+    p_run.add_argument(
+        "--gnc-plugin",
+        action="append",
+        default=None,
+        metavar="PATH.PY",
+        dest="gnc_plugin",
+        help="load a Python file declaring GNC components (FR-25), which the "
+        'mission selects as component = "python:<name>" in [gnc.nav], '
+        "[gnc.guidance], or [gnc.control]. Repeatable. SECURITY: the file is "
+        "imported, so its code runs with this process's privileges - pass "
+        "only files you trust. Plugins are never fetched over a network nor "
+        "discovered automatically; a mission file alone can never cause code "
+        "to be executed. DETERMINISM: a plugin runs inside the deterministic "
+        "time loop, so D-10 reproducibility holds only as far as the "
+        "plugin's own code does (no clock, no I/O, no unseeded RNG, no "
+        "set iteration, no mutable global state)",
+    )
 
     p_verify = sub.add_parser(
         "verify",
-        help="run the acceptance check suite (V001-V021)",
+        help="run the acceptance check suite (V001-V027)",
         description=(
-            "Self-contained acceptance runner: one line per check, ending in "
-            "'VERIFY: PASS (N/N)' or 'VERIFY: FAIL (k/N)' plus the failing check "
-            "IDs; nonzero exit on any failure. Through Phase 3 the --quick tier "
-            "runs the identical check set as the full tier."
+            "Self-contained acceptance runner: a tier line, then one line per "
+            "check, ending in 'VERIFY: PASS (N/N)' or 'VERIFY: FAIL (k/N)' plus "
+            "the failing check IDs; nonzero exit on any failure. Both tiers "
+            "currently run every registered check, the Phase 6 "
+            "exit-criterion-3 EKF ensemble (V027) included, at the criterion's "
+            "own R = 100: every gate fits inside the 60 second quick budget, "
+            "so a green means the same thing whichever tier produced it. The "
+            "tier line says which case holds - it names any registered check "
+            "the running tier leaves out, or states that it leaves out none."
         ),
     )
     p_verify.add_argument(
         "--quick",
         action="store_true",
-        help="run the smoke tier (through Phase 3: identical to the full check set)",
+        help=(
+            "run the smoke tier, budgeted for under 60 seconds; it presently "
+            "runs the identical check set, as the tier line reports"
+        ),
     )
 
     p_export = sub.add_parser(
@@ -213,11 +240,27 @@ def _build_parser() -> argparse.ArgumentParser:
         default="data",
         help="destination directory for kernels and the repack (default: data/)",
     )
+
+    # The consistency subparser lives with its handler so the FR-26 gate
+    # tooling stays one self-contained module (the import is local for the
+    # same reason the command handlers import lazily).
+    from star_reacher.consistency_cli import add_consistency_parser
+
+    add_consistency_parser(sub)
     return parser
 
 
 def _cmd_run(args: argparse.Namespace, argv: list[str]) -> int:
+    from star_reacher.plugin import DETERMINISM_NOTICE, PluginError
     from star_reacher.runner import RunnerError, run_mission
+
+    if args.gnc_plugin:
+        # Printed before the run, not buried in a docstring: someone loading a
+        # plugin from a shell may never open the Python API docs, and the
+        # contract they are accepting is exactly the one that decides whether
+        # this run is reproducible at all.
+        for line in DETERMINISM_NOTICE.splitlines():
+            print(f"star run: {line}", file=sys.stderr)
 
     try:
         result = run_mission(
@@ -226,6 +269,7 @@ def _cmd_run(args: argparse.Namespace, argv: list[str]) -> int:
             force=args.force,
             command_line=["star", *argv],
             strict=args.strict,
+            gnc_plugins=args.gnc_plugin,
         )
     except MissionValidationError as exc:
         for line in exc.errors:
@@ -237,6 +281,11 @@ def _cmd_run(args: argparse.Namespace, argv: list[str]) -> int:
         )
         return _EXIT_VALIDATION
     except CoreMissingError as exc:
+        print(f"star run: {exc}", file=sys.stderr)
+        return _EXIT_RUNTIME
+    except PluginError as exc:
+        # A runtime failure, not a validation one: the mission file may be
+        # perfectly valid and the plugin argument the thing that is wrong.
         print(f"star run: {exc}", file=sys.stderr)
         return _EXIT_RUNTIME
     except (RunnerError, OSError) as exc:
@@ -404,6 +453,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_view(args)
     if args.command == "plot":
         return _cmd_plot(args)
+    if args.command == "consistency":
+        from star_reacher.consistency_cli import cmd_consistency
+
+        return cmd_consistency(args)
     if args.command == "docs":
         return _cmd_docs(args)
     if args.command == "data":

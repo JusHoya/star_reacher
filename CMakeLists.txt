@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.26)
 
 # Version is kept in sync with pyproject.toml [project] version manually
 # (Phase 1 contract: both files carry this note).
-project(star_reacher VERSION 0.5.0 LANGUAGES CXX)
+project(star_reacher VERSION 0.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -103,6 +103,9 @@ add_library(star_core STATIC
   cpp/src/ephemeris.cpp
   cpp/src/events.cpp
   cpp/src/frames.cpp
+  cpp/src/gnc/builtin.cpp
+  cpp/src/gnc/component.cpp
+  cpp/src/gnc/ekf.cpp
   cpp/src/integrate.cpp
   cpp/src/models/actuators.cpp
   cpp/src/models/aero.cpp
@@ -123,8 +126,13 @@ add_library(star_core STATIC
   cpp/src/rng.cpp
   cpp/src/rotation.cpp
   cpp/src/run.cpp
+  cpp/src/sensors/imu.cpp
+  cpp/src/sensors/optical.cpp
+  cpp/src/sensors/radio.cpp
+  cpp/src/sensors/camera.cpp
   cpp/src/srlog_writer.cpp
   cpp/src/time.cpp
+  cpp/src/vehicle_cycle.cpp
   "${CMAKE_CURRENT_BINARY_DIR}/generated/version.cpp")
 target_include_directories(star_core PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include")
@@ -160,6 +168,9 @@ if(STAR_BUILD_TESTING)
     cpp/tests/test_drag.cpp
     cpp/tests/test_environment.cpp
     cpp/tests/test_events.cpp
+    cpp/tests/test_ekf.cpp
+    cpp/tests/test_gnc.cpp
+    cpp/tests/test_gnc_cycle.cpp
     cpp/tests/test_integrate.cpp
     cpp/tests/test_main.cpp
     cpp/tests/test_ephemeris.cpp
@@ -171,6 +182,7 @@ if(STAR_BUILD_TESTING)
     cpp/tests/test_rigidbody.cpp
     cpp/tests/test_rng.cpp
     cpp/tests/test_rotation.cpp
+    cpp/tests/test_sensors.cpp
     cpp/tests/test_srlog.cpp
     cpp/tests/test_srp.cpp
     cpp/tests/test_thirdbody.cpp

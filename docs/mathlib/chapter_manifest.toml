@@ -120,3 +120,46 @@ label = "ch:aero"
 module = "cpp/src/models/vehicle6dof.cpp"
 chapter = "docs/mathlib/chapters/vehicle6dof.tex"
 label = "ch:vehicle6dof"
+
+[[chapter]]
+module = "cpp/src/sensors/imu.cpp"
+chapter = "docs/mathlib/chapters/sensors_imu.tex"
+label = "ch:sensors-imu"
+
+[[chapter]]
+module = "cpp/src/sensors/optical.cpp"
+chapter = "docs/mathlib/chapters/sensors_optical.tex"
+label = "ch:sensors-optical"
+
+[[chapter]]
+module = "cpp/src/sensors/radio.cpp"
+chapter = "docs/mathlib/chapters/sensors_radio.tex"
+label = "ch:sensors-radio"
+
+[[chapter]]
+module = "cpp/src/sensors/camera.cpp"
+chapter = "docs/mathlib/chapters/camera.tex"
+label = "ch:camera"
+
+[[chapter]]
+module = "cpp/src/gnc/builtin.cpp"
+chapter = "docs/mathlib/chapters/gnc_builtin.tex"
+label = "ch:gnc-builtin"
+
+# The declared error-state layout: the plugin-boundary mechanism by which the
+# loop, rather than the component, forms nav.err. Its arithmetic is derived in
+# the same chapter as the built-in components that declare layouts.
+[[chapter]]
+module = "cpp/src/gnc/component.cpp"
+chapter = "docs/mathlib/chapters/gnc_builtin.tex"
+label = "ch:gnc-builtin"
+
+[[chapter]]
+module = "python/star_reacher/consistency.py"
+chapter = "docs/mathlib/chapters/ekf.tex"
+label = "ch:ekf"
+
+[[chapter]]
+module = "cpp/src/gnc/ekf.cpp"
+chapter = "docs/mathlib/chapters/ekf.tex"
+label = "ch:ekf"

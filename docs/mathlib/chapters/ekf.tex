@@ -1,0 +1,1053 @@
+% Chapter — Reference error-state EKF and consistency gates (FR-25,
+% FR-26). Follows the mandatory FR-29 six-section template: purpose;
+% assumptions and domain of validity; derivation; discretization and
+% implementation; validation evidence; references. Written ahead of the
+% implementation (Phase 6): this chapter is the binding specification for
+% the reference navigation filter and for the star-consistency statistics.
+% The implementing change adds the chapter-manifest entry and the
+% \testid{} evidence table. The equation labels eq:ekf:qerr, eq:ekf:mech,
+% eq:ekf:errdyn, eq:ekf:F, eq:ekf:G, eq:ekf:disc, eq:ekf:joseph,
+% eq:ekf:stinnov, eq:ekf:altH, eq:ekf:reset, eq:ekf:nees, eq:ekf:nis,
+% eq:ekf:ensemble, and eq:ekf:wh are intended to be echoed verbatim in the
+% module source (FR-29 traceability).
+\chapter{Reference Error-State EKF and Consistency Gates}
+\label{ch:ekf}
+
+\section{Purpose}
+\label{sec:ekf:purpose}
+
+This chapter specifies the built-in reference navigation filter (FR-25):
+an error-state (indirect) extended Kalman filter, multiplicative in
+attitude, that mechanizes a nominal state from the
+Chapter~\ref{ch:sensors-imu} IMU increments and corrects it with
+external-nav-fix, star-tracker, and altimeter updates
+(Chapters~\ref{ch:sensors-radio} and~\ref{ch:sensors-optical}). It also
+defines the estimator acceptance instrumentation of FR-26: the logged
+estimate and innovation channels, the NEES and NIS statistics, and the
+two-sided 95\,\% chi-square bounds that \texttt{star consistency}
+computes per run and over ensembles --- the acceptance instrument for
+\emph{every} estimator this project will ever host, classical or
+learned. Phase~6 exit criterion~3 gates the reference filter through
+ensemble NEES and NIS over a 100-run seeded ensemble. The filter is a
+\emph{reference}: the simplest standard formulation, exactly specified,
+chosen so an independent reimplementation from this chapter alone
+reproduces it.
+
+\section{Assumptions and domain of validity}
+\label{sec:ekf:domain}
+
+Assumptions:
+\begin{enumerate}
+  \item \textbf{Fifteen error states.} Attitude (3), velocity (3),
+    position (3), gyro bias (3), accelerometer bias (3), in that order.
+    This is the full observable set for the configured sensor suite:
+    the star tracker observes attitude directly, the nav fix observes
+    position and velocity, biases are observed through their integrated
+    signatures. Scale-factor and misalignment states are deliberately
+    excluded from the reference filter (they are configuration
+    constants of the truth model, not estimated).
+  \item \textbf{Filter dynamics model.} The navigator's internal
+    gravity model is the central-body point mass,
+    $\hat{\vv{g}}(\vv{p}) = -\mu\,\vv{p}/\norm{\vv{p}}^3$. The
+    \emph{reference consistency scenario} configures the truth
+    environment to the same class (point-mass gravity, no third bodies,
+    no SRP), so process-model mismatch is zero and the NEES/NIS gates
+    test the estimator implementation, not a model-error budget. Runs
+    against richer truth environments require process-noise inflation
+    and are diagnostics, not gates --- stated here so nobody tunes
+    $\mat{Q}$ to force a gate.
+  \item \textbf{Bias model match.} The filter models both bias errors
+    as first-order Gauss--Markov with the \emph{configured sensor}
+    parameters $(\sigma_{\mathrm{GM}}, \tau_c)$
+    (equation~\eqref{eq:imu:gm}) --- the reference-implementation
+    stance: the truth model is known. The reference scenario disables
+    the turn-on biases ($\sigma_{g0} = \sigma_{a0} = 0$) and the
+    altimeter bias ($\sigma_b = 0$), making the filter's stochastic
+    model exact; enabled turn-on biases add a non-decaying component
+    the Gauss--Markov model absorbs only over $t \ll \tau_c$, and such
+    scenarios widen NEES beyond the gate by design.
+  \item \textbf{Small-error linearization.} Standard EKF validity:
+    attitude errors $\ll 1$ rad, position/velocity errors small
+    against the linearization scale of
+    $\hat{\vv{g}}$. Divergence under gross initialization error is
+    out of scope for the reference filter.
+  \item \textbf{First-order discretization.} Transition and
+    process-noise matrices are the first-order forms of
+    equation~\eqref{eq:ekf:disc}; adequacy requires
+    $\Delta t\,\norm{\vv{\omega}} \ll 1$,
+    $\Delta t / \tau_c \ll 1$, and $\Delta t$ small against the
+    orbital dynamics ($n\,\Delta t \ll 1$, $n$ the mean motion) ---
+    all satisfied by orders of magnitude at the D-5 cycle rates
+    (\qtyrange{1}{100}{\hertz}). The Van Loan construction
+    remains the documented upgrade path if a future regime breaks
+    these conditions~\cite{vanloan1978}.
+\end{enumerate}
+
+Domain of validity: cycle-synchronous operation on the D-5 schedule
+with the Chapter~\ref{ch:sensors-imu} increment interface; aiding
+sensors may drop out arbitrarily (validity flags); the filter never
+throws inside the loop --- a non-finite or non-positive-definite input
+covariance is a configuration error caught by the FR-15 validator, and
+the Joseph-form update of equation~\eqref{eq:ekf:joseph} preserves
+symmetry and positive semi-definiteness against accumulation of
+rounding.
+
+\section{Derivation}
+\label{sec:ekf:derivation}
+
+\subsection{State, error definition, and mechanization}
+\label{sec:ekf:mechanization}
+
+The nominal (total) state is
+$\hat{\vv{x}} = (\hat{\quat{q}}_{i2b},\, \hat{\vv{v}}^{I},\,
+\hat{\vv{p}}^{I},\, \hat{\vv{b}}_g,\, \hat{\vv{b}}_a)$; the error state
+is
+\begin{equation}
+  \delta\vv{x} = \bigl[\delta\vv{\theta};\; \delta\vv{v};\;
+    \delta\vv{p};\; \delta\vv{b}_g;\; \delta\vv{b}_a\bigr]
+    \in \mathbb{R}^{15},
+  \label{eq:ekf:staterr}
+\end{equation}
+with additive errors $\delta\vv{v} = \vv{v} - \hat{\vv{v}}$ etc., and
+the multiplicative body-side attitude error
+\begin{equation}
+  \boxed{\;
+  \quat{q}_{i2b} = \hat{\quat{q}}_{i2b} \quatmul
+    \delta\quat{q}(\delta\vv{\theta}),
+  \;}
+  \qquad
+  \delta\quat{q}(\cdot) \text{ the exact map of
+    equation~\eqref{eq:gnc:exactrot}},
+  \label{eq:ekf:qerr}
+\end{equation}
+so $\delta\vv{\theta}$ is the small rotation from the estimated to the
+true body frame, resolved in the body frame --- the same convention as
+the sensor noise of Chapter~\ref{ch:sensors-optical} and the local
+error of Sol\`a~\cite{sola2017}. To first order,
+$\dcm{I}{B}(\quat{q}) = (\mat{I}_3 -
+\skewm{\delta\vv{\theta}})\,\dcm{I}{B}(\hat{\quat{q}})$ by
+equations~\eqref{eq:notation:quat2dcm}
+and~\eqref{eq:notation:quatcomp}.
+
+Per major cycle $\Delta t$, with measured increments
+$\Delta\tilde{\vv{\theta}}_k$, $\Delta\tilde{\vv{v}}_k$
+(Chapter~\ref{ch:sensors-imu}) and $\hat{\mat{C}} \equiv
+{\dcm{I}{B}(\hat{\quat{q}}_{k-1})}^{\mathsf T}$ (body to inertial), the
+nominal state mechanizes as
+\begin{equation}
+  \boxed{\;
+  \begin{aligned}
+    \Delta\hat{\vv{\theta}}_k &= \Delta\tilde{\vv{\theta}}_k
+      - \hat{\vv{b}}_{g,k-1}\,\Delta t,
+    \qquad
+    \Delta\hat{\vv{v}}_k = \Delta\tilde{\vv{v}}_k
+      - \hat{\vv{b}}_{a,k-1}\,\Delta t,\\
+    \hat{\quat{q}}_{k} &= \frac{\hat{\quat{q}}_{k-1} \quatmul
+      \delta\quat{q}(\Delta\hat{\vv{\theta}}_k)}
+      {\norm{\hat{\quat{q}}_{k-1} \quatmul
+      \delta\quat{q}(\Delta\hat{\vv{\theta}}_k)}},\\
+    \Delta\hat{\vv{v}}^{I}_k &= \hat{\mat{C}}\Bigl(\Delta\hat{\vv{v}}_k
+        + \tfrac{1}{2}\,\Delta\hat{\vv{\theta}}_k \times
+          \Delta\hat{\vv{v}}_k\Bigr),\\
+    \bar{\vv{v}}_{k} &= \hat{\vv{v}}_{k-1} + \Delta\hat{\vv{v}}^{I}_k
+      + \hat{\vv{g}}(\hat{\vv{p}}_{k-1})\,\Delta t,
+    \qquad
+    \bar{\vv{p}}_{k} = \hat{\vv{p}}_{k-1}
+      + \tfrac{1}{2}\bigl(\hat{\vv{v}}_{k-1}
+        + \bar{\vv{v}}_{k}\bigr)\,\Delta t,\\
+    \hat{\vv{v}}_{k} &= \hat{\vv{v}}_{k-1} + \Delta\hat{\vv{v}}^{I}_k
+      + \tfrac{1}{2}\bigl(\hat{\vv{g}}(\hat{\vv{p}}_{k-1})
+        + \hat{\vv{g}}(\bar{\vv{p}}_{k})\bigr)\,\Delta t,\\
+    \hat{\vv{p}}_{k} &= \hat{\vv{p}}_{k-1}
+      + \tfrac{1}{2}\bigl(\hat{\vv{v}}_{k-1}
+        + \hat{\vv{v}}_{k}\bigr)\,\Delta t,\\
+    \hat{\vv{b}}_{g,k} &= e^{-\Delta t/\tau_{c,g}}\,
+      \hat{\vv{b}}_{g,k-1},
+    \qquad
+    \hat{\vv{b}}_{a,k} = e^{-\Delta t/\tau_{c,a}}\,
+      \hat{\vv{b}}_{a,k-1},
+  \end{aligned}
+  \;}
+  \label{eq:ekf:mech}
+\end{equation}
+the standard strapdown cycle (Titterton and
+Weston~\cite{titterton2004}; Savage~\cite{savage1998b}), closed to
+second order throughout. The $\tfrac{1}{2}\Delta\vv{\theta} \times
+\Delta\vv{v}$ term is the rotation-of-frame (velocity rotation)
+compensation, leaving a residual $O(\norm{\Delta\vv{\theta}}^2
+\norm{\Delta\vv{v}})$ per cycle; $\Delta\hat{\vv{v}}^{I}_k$ is the
+\emph{sensed} increment resolved in the inertial frame, common to
+predictor and corrector because the accelerometer has already
+integrated it over the cycle and it takes no part in the quadrature.
+The bias estimates decay with their Gauss--Markov model (a $\ll 1\,\%$
+effect per cycle at the supported $\tau_c$). The attitude increment
+shares equation~\eqref{eq:gnc:exactrot} with the dead reckoner --- one
+code path.
+
+Gravity is the one acceleration in~\eqref{eq:ekf:mech} that no sensor
+reports: the accelerometer measures specific force and is identically
+blind to it. Its contribution is therefore not a measurement the filter
+transcribes but an integral the filter must evaluate itself, and the
+accuracy of that quadrature is the navigator's own responsibility.
+Equation~\eqref{eq:ekf:mech} evaluates it with a predictor-corrector
+--- an Euler predictor $(\bar{\vv{v}}_k, \bar{\vv{p}}_k)$, then the
+trapezoidal rule on $\hat{\vv{g}}$ between the endpoints --- which is
+Heun's method on the gravitational part of the dynamics (Hairer,
+N\o{}rsett, and Wanner~\cite{hairer1993}), of local order
+$O(\Delta t^3)$ and global order $O(\Delta t^2)$. It costs one
+additional evaluation of $\hat{\vv{g}}$ per cycle and nothing else.
+
+\subsection{Why the gravity step must be second order}
+\label{sec:ekf:gravityorder}
+
+The order of this step is not a free implementation choice, and the
+reason is quantitative rather than aesthetic. Replacing the corrector
+with the explicit Euler step $\hat{\vv{v}}_k = \hat{\vv{v}}_{k-1} +
+\Delta\hat{\vv{v}}^{I}_k + \hat{\vv{g}}(\hat{\vv{p}}_{k-1})\,\Delta t$
+--- a first-order velocity feeding the second-order position integral,
+which is also internally inconsistent --- leaves a truncation error
+that is \emph{deterministic}: it is a fixed function of the trajectory,
+not a random variable, so it accumulates coherently instead of
+diffusing as $\sqrt{t}$, and no term of $\mat{Q}$
+in~\eqref{eq:ekf:G} describes it.
+
+Measured noise-free from the true state on the reference consistency
+scenario of Section~\ref{sec:ekf:consistency} ($\Delta t = 0.1$\,s, a
+7000\,km circular orbit), the first-order step diverges from the RK4
+solution of the same point-mass dynamics --- the scheme the truth
+trajectory uses --- by $2.63 \times 10^{-2}$\,m/s in velocity and
+$0.79$\,m in position over 60\,s. That velocity error is equivalent to
+a constant unmodelled acceleration of $4.38 \times 10^{-4}$\,m/s\,$^2$,
+which is $41\times$ the accelerometer bias $\sigma_{\mathrm{GM}} =
+1.08 \times 10^{-5}$\,m/s\,$^2$ the filter carries as a state. The
+estimator's own numerical error would then be the largest single term
+in its error budget, dominating the instrument errors the filter exists
+to estimate, and it would do so while the covariance remained unaware
+of it --- precisely the failure mode the NEES gate of
+Section~\ref{sec:ekf:consistency} is built to detect. The
+predictor-corrector reduces the same 60\,s divergence to
+$4.7 \times 10^{-7}$\,m/s and $4.4 \times 10^{-4}$\,m, an equivalent
+acceleration of $7.9 \times 10^{-9}$\,m/s\,$^2$ --- $1/1400$ of the
+bias sigma, and comfortably below every error the filter models.
+
+The requirement scales with scenario duration, which is why it cannot
+be discharged by observing that some particular short scenario passes
+its gate: the first-order step's equivalent acceleration is
+approximately constant, so its velocity error grows linearly in $t$
+while the filter's modelled uncertainty grows as $\sqrt{t}$, and the
+ratio between them therefore grows without bound. A reimplementation
+that adopts the first-order step will reproduce this chapter's gates on
+a short scenario and fail them on a longer one.
+
+\subsection{Linearized error dynamics}
+\label{sec:ekf:errordynamics}
+
+Write the rate-level sensor models of Chapter~\ref{ch:sensors-imu} as
+$\tilde{\vv{\omega}} = \vv{\omega} + \vv{b}_g + \vv{n}_g$ and
+$\tilde{\vv{f}} = \vv{f} + \vv{b}_a + \vv{n}_a$, so the corrected
+estimates satisfy $\hat{\vv{\omega}} = \vv{\omega} + \delta\vv{b}_g +
+\vv{n}_g$ and $\hat{\vv{f}} = \vv{f} + \delta\vv{b}_a + \vv{n}_a$.
+Differentiating the error definition~\eqref{eq:ekf:qerr} with the true
+and nominal kinematics $\dot{\quat{q}} = \tfrac12 \quat{q} \quatmul
+[0, \vv{\omega}]$, $\dot{\hat{\quat{q}}} = \tfrac12 \hat{\quat{q}}
+\quatmul [0, \hat{\vv{\omega}}]$ gives $\dot{\delta\quat{q}} =
+\tfrac12\bigl(\delta\quat{q} \quatmul [0, \vv{\omega}] -
+[0, \hat{\vv{\omega}}] \quatmul \delta\quat{q}\bigr)$; expanding the
+Hamilton products~\eqref{eq:notation:hamiltonproduct} at
+$\delta\quat{q} = [1, \delta\vv{\theta}/2]$ and keeping first order,
+the vector part yields the attitude error rate, and the velocity error
+follows from $\dot{\vv{v}} = \dcm{B}{I}\vv{f} + \vv{g}(\vv{p})$ with
+$\dcm{B}{I} = \hat{\mat{C}}(\mat{I}_3 + \skewm{\delta\vv{\theta}})$:
+\begin{equation}
+  \boxed{\;
+  \begin{aligned}
+    \dot{\delta\vv{\theta}} &= -\hat{\vv{\omega}} \times
+      \delta\vv{\theta} - \delta\vv{b}_g - \vv{n}_g,\\
+    \dot{\delta\vv{v}} &= -\hat{\mat{C}}\,\skewm{\hat{\vv{f}}}\,
+      \delta\vv{\theta} + \mat{G}(\hat{\vv{p}})\,\delta\vv{p}
+      - \hat{\mat{C}}\,\delta\vv{b}_a - \hat{\mat{C}}\,\vv{n}_a,\\
+    \dot{\delta\vv{p}} &= \delta\vv{v},\\
+    \dot{\delta\vv{b}}_g &= -\delta\vv{b}_g/\tau_{c,g} + \vv{w}_g,
+    \qquad
+    \dot{\delta\vv{b}}_a = -\delta\vv{b}_a/\tau_{c,a} + \vv{w}_a,
+  \end{aligned}
+  \;}
+  \label{eq:ekf:errdyn}
+\end{equation}
+the local-error form of Sol\`a~\cite{sola2017} transcribed to the
+project convention, with the point-mass gravity gradient
+\begin{equation}
+  \mat{G}(\vv{p}) = \frac{\mu}{\norm{\vv{p}}^3}
+    \bigl(3\,\hat{\vv{p}}\hat{\vv{p}}^{\mathsf T} - \mat{I}_3\bigr),
+  \qquad
+  \hat{\vv{p}} = \vv{p}/\norm{\vv{p}} .
+  \label{eq:ekf:gravgrad}
+\end{equation}
+In block form over the ordering~\eqref{eq:ekf:staterr}, with
+$\hat{\vv{\omega}} = \Delta\hat{\vv{\theta}}_k/\Delta t$ and
+$\hat{\vv{f}} = \Delta\hat{\vv{v}}_k/\Delta t$ the cycle averages,
+\begin{equation}
+  \mat{F} =
+  \begin{bmatrix}
+    -\skewm{\hat{\vv{\omega}}} & \mat{0} & \mat{0} & -\mat{I}_3 &
+      \mat{0} \\
+    -\hat{\mat{C}}\skewm{\hat{\vv{f}}} & \mat{0} &
+      \mat{G}(\hat{\vv{p}}) & \mat{0} & -\hat{\mat{C}} \\
+    \mat{0} & \mat{I}_3 & \mat{0} & \mat{0} & \mat{0} \\
+    \mat{0} & \mat{0} & \mat{0} & -\mat{I}_3/\tau_{c,g} & \mat{0} \\
+    \mat{0} & \mat{0} & \mat{0} & \mat{0} & -\mat{I}_3/\tau_{c,a}
+  \end{bmatrix},
+  \label{eq:ekf:F}
+\end{equation}
+\begin{equation}
+  \mat{\Gamma} =
+  \begin{bmatrix}
+    -\mat{I}_3 & \mat{0} & \mat{0} & \mat{0} \\
+    \mat{0} & -\hat{\mat{C}} & \mat{0} & \mat{0} \\
+    \mat{0} & \mat{0} & \mat{0} & \mat{0} \\
+    \mat{0} & \mat{0} & \mat{I}_3 & \mat{0} \\
+    \mat{0} & \mat{0} & \mat{0} & \mat{I}_3
+  \end{bmatrix},
+  \qquad
+  \mat{Q}_c = \mathrm{diag}\bigl(
+    N_g^2\,\mat{I}_3,\;
+    N_a^2\,\mat{I}_3,\;
+    q_g\,\mat{I}_3,\;
+    q_a\,\mat{I}_3\bigr),
+  \label{eq:ekf:G}
+\end{equation}
+where $N_g, N_a$ are the configured ARW/VRW coefficients
+(equation~\eqref{eq:imu:arw}) and $q = 2\sigma_{\mathrm{GM}}^2/\tau_c$
+is the continuous-time Gauss--Markov drive density consistent with the
+discrete recursion~\eqref{eq:imu:gm} (Maybeck~\cite{maybeck1979}).
+
+\subsection{Discrete propagation and updates}
+\label{sec:ekf:updates}
+
+Discretization, first order by decision (assumption 5):
+\begin{equation}
+  \boxed{\;
+  \mat{\Phi}_k = \mat{I}_{15} + \mat{F}\,\Delta t,
+  \qquad
+  \mat{Q}_k = \mat{\Gamma}\,\mat{Q}_c\,\mat{\Gamma}^{\mathsf T}\,
+    \Delta t,
+  \qquad
+  \mat{P}_k^{-} = \mat{\Phi}_k \mat{P}_{k-1} \mat{\Phi}_k^{\mathsf T}
+    + \mat{Q}_k,
+  \;}
+  \label{eq:ekf:disc}
+\end{equation}
+with $\mat{P} \leftarrow \tfrac12(\mat{P} + \mat{P}^{\mathsf T})$
+after every propagation and update (symmetry pinning against rounding
+drift). Updates process the valid measurements of each cycle
+sequentially in the fixed order \emph{nav fix, star tracker,
+altimeter}, each against the running post-update covariance; invalid
+samples (Chapter~\ref{ch:sensors-optical} flags) are skipped. Every
+update uses the Joseph-form covariance update, chosen over the short
+form for guaranteed symmetric positive semi-definite results:
+\begin{equation}
+  \boxed{\;
+  \vv{y} = \vv{z} - \vv{h}(\hat{\vv{x}}),
+  \quad
+  \mat{S} = \mat{H}\mat{P}^{-}\mat{H}^{\mathsf T} + \mat{R},
+  \quad
+  \mat{K} = \mat{P}^{-}\mat{H}^{\mathsf T}\mat{S}^{-1},
+  \quad
+  \delta\hat{\vv{x}} = \mat{K}\,\vv{y},
+  \quad
+  \mat{P}^{+} = (\mat{I} - \mat{K}\mat{H})\,\mat{P}^{-}\,
+    (\mat{I} - \mat{K}\mat{H})^{\mathsf T}
+    + \mat{K}\mat{R}\mat{K}^{\mathsf T}.
+  \;}
+  \label{eq:ekf:joseph}
+\end{equation}
+
+\paragraph{External nav fix} ($m = 6$): $\vv{z} =
+[\vv{r}_{\mathrm{meas}}; \vv{v}_{\mathrm{meas}}]$, $\vv{h} =
+[\hat{\vv{p}}; \hat{\vv{v}}]$, and over the
+ordering~\eqref{eq:ekf:staterr}
+\begin{equation}
+  \mat{H}_{\mathrm{fix}} =
+  \begin{bmatrix}
+    \mat{0} & \mat{0} & \mat{I}_3 & \mat{0} & \mat{0} \\
+    \mat{0} & \mat{I}_3 & \mat{0} & \mat{0} & \mat{0}
+  \end{bmatrix},
+  \qquad
+  \mat{R}_{\mathrm{fix}} = \mathrm{diag}\bigl(\sigma_{r,x}^2,
+    \sigma_{r,y}^2, \sigma_{r,z}^2,
+    \sigma_{v,x}^2, \sigma_{v,y}^2, \sigma_{v,z}^2\bigr),
+  \label{eq:ekf:navfixH}
+\end{equation}
+position rows first. The optional Gauss--Markov fix component
+(Chapter~\ref{ch:sensors-radio}) is not modeled by the reference filter
+and must be disabled in consistency-gate scenarios.
+
+\paragraph{Star tracker} ($m = 3$): the measurement model is
+equation~\eqref{eq:optical:stmodel}. The filter predicts the aberrated
+attitude with its own state, $\quat{q}_{\mathrm{pred}} =
+\hat{\quat{q}}_{\mathrm{ab}} \quatmul \hat{\quat{q}}$ ---
+$\hat{\quat{q}}_{\mathrm{ab}}$ per equation~\eqref{eq:optical:qab}
+evaluated at the estimated rotation vector $-\hat{\vv{\rho}}$, with
+$\hat{\vv{\rho}} = \hat{\vv{b}}^{I} \times \hat{\vv{\beta}}$, the
+boresight $\hat{\vv{b}}^{I} =
+{\dcm{I}{B}(\hat{\quat{q}})}^{\mathsf T}\hat{\vv{b}}^{B}$, and
+$\hat{\vv{\beta}}$ assembled from
+$\hat{\vv{v}}$ and the same ephemeris chain
+(equation~\eqref{eq:optical:beta}); the velocity-estimate contribution
+to the aberration error is $\norm{\delta\vv{v}}/c \approx
+\qty{3.3e-9}{\radian}$ per \unit{\metre\per\second}, negligible ---
+and forms the innovation by exact error extraction:
+\begin{equation}
+  \boxed{\;
+  \delta\quat{q}_y = \quat{q}_{\mathrm{pred}}^{-1} \quatmul
+    \quat{q}_{\mathrm{meas}},
+  \qquad
+  \vv{y}_{\mathrm{st}} = 2\,\operatorname{sgn}(\delta q_{y,w})\,
+    \delta\vv{q}_{y,v},
+  \;}
+  \label{eq:ekf:stinnov}
+\end{equation}
+with $\operatorname{sgn}(0) = +1$. Substituting the models:
+$\delta\quat{q}_y = \hat{\quat{q}}^{-1} \quatmul \quat{q}_{\mathrm{true}}
+\quatmul \delta\quat{q}_n = \delta\quat{q}(\delta\vv{\theta}) \quatmul
+\delta\quat{q}_n$, so $\vv{y}_{\mathrm{st}} = \delta\vv{\theta} +
+\vv{\epsilon}_n + O(\norm{\cdot}^2)$ and
+\begin{equation}
+  \mat{H}_{\mathrm{st}} =
+  \begin{bmatrix}
+    \mat{I}_3 & \mat{0} & \mat{0} & \mat{0} & \mat{0}
+  \end{bmatrix},
+  \qquad
+  \mat{R}_{\mathrm{st}} = \mathrm{diag}\bigl(\sigma_1^2, \sigma_2^2,
+    \sigma_3^2\bigr).
+  \label{eq:ekf:stH}
+\end{equation}
+
+\paragraph{Altimeter} ($m = 1$): $z = h_{\mathrm{meas}}$, $h(\hat{\vv{x}})
+= h_{\mathrm{geo}}(\hat{\vv{p}})$, the same Bowring conversion as the
+sensor (equation~\eqref{eq:radio:alt}). The gradient of geodetic height
+with respect to Cartesian position is exactly the unit ellipsoidal
+normal at the sub-vehicle point, so
+\begin{equation}
+  \boxed{\;
+  \mat{H}_{\mathrm{alt}} =
+  \begin{bmatrix}
+    \mat{0} & \mat{0} & \hat{\vv{n}}^{I\,\mathsf T} & \mat{0} & \mat{0}
+  \end{bmatrix},
+  \;}
+  \qquad
+  \hat{\vv{n}}^{I} = {\dcm{I}{E}}^{\mathsf T}
+  \begin{bmatrix}
+    \cos\hat\phi\cos\hat\lambda \\
+    \cos\hat\phi\sin\hat\lambda \\
+    \sin\hat\phi
+  \end{bmatrix},
+  \qquad
+  R_{\mathrm{alt}} = \sigma_h^2 ,
+  \label{eq:ekf:altH}
+\end{equation}
+with $(\hat\phi, \hat\lambda)$ the geodetic latitude and longitude of
+$\hat{\vv{p}}$ from the same conversion. The altimeter turn-on bias is
+not estimated; when enabled, $\sigma_b^2$ is added to $R_{\mathrm{alt}}$
+as inflation and the residual mismatch is accepted (gate scenarios
+disable it, assumption 3).
+
+\paragraph{Closed-loop reset.} After each update the correction is
+folded into the nominal state and the error mean returns to zero:
+\begin{equation}
+  \boxed{\;
+  \hat{\quat{q}} \leftarrow \frac{\hat{\quat{q}} \quatmul
+    \delta\quat{q}(\delta\hat{\vv{\theta}})}{\norm{\cdot}},
+  \quad
+  \hat{\vv{v}} \leftarrow \hat{\vv{v}} + \delta\hat{\vv{v}},
+  \quad
+  \hat{\vv{p}} \leftarrow \hat{\vv{p}} + \delta\hat{\vv{p}},
+  \quad
+  \hat{\vv{b}} \leftarrow \hat{\vv{b}} + \delta\hat{\vv{b}},
+  \quad
+  \delta\hat{\vv{x}} \leftarrow \vv{0},
+  \;}
+  \label{eq:ekf:reset}
+\end{equation}
+using the same exact map~\eqref{eq:gnc:exactrot}. The exact reset also
+transports the covariance by a Jacobian that differs from identity only
+in the attitude block, by $O(\delta\hat{\vv{\theta}})$
+(Sol\`a~\cite{sola2017}); the reference filter omits this correction,
+a second-order effect in the post-update error, and the omission is
+part of the specification.
+
+\subsection{Consistency statistics: NEES, NIS, and the chi-square
+gates}
+\label{sec:ekf:consistency}
+
+Per FR-26 the filter logs, every cycle, the total-state estimate
+\texttt{nav.est.x\_hat} $= [\hat{\quat{q}}\ (4,\ \text{scalar-first}),\
+\hat{\vv{v}}\ (3),\ \hat{\vv{p}}\ (3),\ \hat{\vv{b}}_g\ (3),\
+\hat{\vv{b}}_a\ (3)]$ (16 values) and the error covariance
+\texttt{nav.est.P} as the row-major packed upper triangle of the
+$15 \times 15$ matrix (120 values), and, per update, the innovation
+pair \texttt{nav.innov.y}, \texttt{nav.innov.S} (packed upper triangle)
+tagged by sensor --- all inside the FR-16 reserved groups, by these
+names.
+
+The estimation error itself is formed core-side and logged on
+\texttt{nav.err}: the filter differences its nominal state against the
+truth kinematics and the true in-run bias states of
+Chapter~\ref{ch:sensors-imu}, in its own error conventions ---
+$\delta\quat{q}_k = \hat{\quat{q}}_k^{-1} \quatmul
+\quat{q}_{\mathrm{true},k}$ per~\eqref{eq:ekf:qerr}, canonicalized to the
+$+w$ hemisphere so the double cover cannot flip the logged error between
+neighbouring epochs, and additive differences elsewhere.
+
+\paragraph{The $n \to m$ reduction.} \texttt{nav.err.e} has the state
+dimension $n$ while $\mat{P}$ has the error dimension $m$, and for this
+filter those differ ($16$ against $15$). The evaluator therefore reduces
+the logged error to the parameterization the covariance describes before
+forming~\eqref{eq:ekf:nees}. For a quaternion-led error state --- the
+case $m = n - 1$, the leading four entries being an error quaternion ---
+the reduction is the small-angle extraction
+\begin{equation}
+  \delta\vv{\theta} = 2\,\operatorname{sgn}(\delta q_w)\,\delta\vv{q}_v,
+  \label{eq:ekf:reduce}
+\end{equation}
+with the remaining $n - 4$ entries passing through unchanged. Any other
+pairing of $n$ and $m$ is a genuine mismatch and is rejected rather than
+guessed at. The statistics
+(Bar-Shalom, Li, and Kirubarajan~\cite{barshalom2001}) are the
+normalized estimation error squared and the normalized innovation
+squared,
+\begin{equation}
+  \epsilon_k = \delta\vv{x}_k^{\mathsf T}\, \mat{P}_k^{-1}\,
+    \delta\vv{x}_k
+  \quad (n = 15),
+  \label{eq:ekf:nees}
+\end{equation}
+\begin{equation}
+  \nu_k = \vv{y}_k^{\mathsf T}\, \mat{S}_k^{-1}\, \vv{y}_k
+  \quad (n = m_k, \text{ the update dimension}),
+  \label{eq:ekf:nis}
+\end{equation}
+each distributed $\chi^2_n$ at every epoch for a consistent filter.
+Three aggregations are computed, of which exactly one gates:
+\begin{itemize}
+  \item \textbf{Per-run time average} $\bar\epsilon = \tfrac1K
+    \sum_k \epsilon_k$ (and likewise per sensor for $\nu$): reported as
+    a \emph{diagnostic} with indicative bounds, because successive
+    errors of one run are serially correlated and the independence
+    assumption behind chi-square bounds does not hold across time
+    within a run~\cite{barshalom2001}. The effect is large, not
+    marginal, and is measured rather than assumed: on the
+    exit-criterion-3 ensemble --- whose per-epoch statistic lies inside
+    the acceptance bounds at \emph{every} epoch --- the per-run interval
+    evaluated at $\mathrm{dof} = K n$ admits only 7 of those 100
+    consistent runs, because serial correlation inflates the
+    spread of $\bar\epsilon$ far beyond the width such an interval
+    assumes while leaving its expectation at $n$. The same caveat
+    applies to any statistic pooled across epochs at
+    $\mathrm{dof} = N K n$. Neither aggregation is an acceptance gate;
+    equation~\eqref{eq:ekf:ensemble} applied across runs is. A command
+    that gated on either would report \texttt{FAIL} on a filter this
+    chapter certifies as consistent, so \texttt{star consistency}
+    prints both without letting them reach its exit code.
+  \item \textbf{$N$-run ensemble average} at each epoch: for $N$
+    independent seeded runs, $N\bar\epsilon_N =
+    \sum_{i=1}^{N}\epsilon^{(i)} \sim \chi^2_{Nn}$ exactly under
+    consistency --- the averaging is across runs, which are independent
+    by construction, so no across-time premise enters --- giving the
+    two-sided 95\,\% acceptance interval
+    \begin{equation}
+      \boxed{\;
+      \frac{\chi^2_{0.025}(Nn)}{N}
+        \;\le\; \bar\epsilon_N \;\le\;
+      \frac{\chi^2_{0.975}(Nn)}{N},
+      \;}
+      \label{eq:ekf:ensemble}
+    \end{equation}
+    the acceptance form for both NEES ($n = 15$) and NIS ($n = m$ per
+    sensor). For the exit-criterion-3 ensemble, $N = 100$: NEES bounds
+    $[13.95,\; 16.09]$; NIS bounds $[5.34,\; 6.70]$ for the nav fix
+    ($n = 6$), $[2.54,\; 3.50]$ for the star tracker ($n = 3$), and
+    $[0.74,\; 1.30]$ for the altimeter ($n = 1$).
+  \item \textbf{Epoch coverage} against that same interval: the count
+    of epochs whose $\bar\epsilon_N$ falls inside it. This is the
+    companion criterion to the headline, sensitive to a defect confined
+    to part of a run that an epoch average would dilute.
+\end{itemize}
+The gate is taken in two parts. The \emph{headline} applies
+equation~\eqref{eq:ekf:ensemble} to $\bar\epsilon_N$ averaged over
+epochs. Averaging over epochs cannot increase that statistic's variance
+above a single epoch's --- equality would require perfectly correlated
+epochs --- so judging it against the single-epoch interval is
+conservative whatever the across-time correlation is, and it is the
+criterion that catches a shifted level: a mis-scaled covariance or a
+biased estimator displaces $\bar\epsilon_N$ by a multiple of the
+interval width.
+
+The \emph{coverage} criterion needs a threshold, and the natural-looking
+choice is wrong. Under consistency each epoch falls inside a two-sided
+95\,\% interval with probability $q = 0.95$, so the count inside is
+$X \sim \mathrm{Binomial}(K, q)$ with $\mathbb{E}[X] = qK$: a rule of
+``at least 95\,\% of epochs inside'' tests $X$ against its own mean and
+a correct filter passes it only about half the time. Measured on the
+exit-criterion-3 ensemble, the three NIS statistics landed at
+93.3\,\%, 93.3\,\% and 95.0\,\% inside --- two of the three would
+``fail'' a rule they had even odds of meeting. The threshold is placed
+in the lower tail of that binomial instead: at confidence $c$,
+\begin{equation}
+  \boxed{\;
+  t = 1 + \max\{\, j : \Pr[X \le j] \le 1 - c \,\},
+  \qquad X \sim \mathrm{Binomial}(K, q),
+  \;}
+  \label{eq:ekf:coverage}
+\end{equation}
+so that $\Pr[\text{reject} \mid \text{consistent}] = \Pr[X < t] \le
+1 - c$ by construction. The default $c = 0.999$ follows from the
+instrument's role rather than from convention: \texttt{star
+consistency} is an automated gate reporting one coverage criterion per
+statistic --- four for the reference filter --- so a per-criterion
+budget of $10^{-3}$ holds a whole report's spurious-failure rate near
+$4 \times 10^{-3}$, about one false red in 250 clean runs. At $K = 60$
+this gives $t = 51$ ($\Pr[X < t] = 7.4 \times 10^{-4}$) and at
+$K = 601$, $t = 553$ ($6.7 \times 10^{-4}$). The cost in power is small
+because genuine inconsistency does not nudge the coverage fraction, it
+collapses it.
+
+Equation~\eqref{eq:ekf:coverage} gates only where its independence
+premise holds, and that is a structural property of the statistic known
+before any data is seen. For \textbf{NIS} it holds exactly: the
+innovation sequence of a consistent filter is white~\cite{barshalom2001},
+so successive epochs are independent. Measured over 20\,000 synthetic
+null trials at $K = 60$, the spurious-failure rate was 0.0750\,\%
+against the 0.0738\,\% predicted. For \textbf{NEES} it fails: the state
+error is a smooth trajectory, and averaging across runs does not whiten
+it, since every run carries the same autocorrelation. Measured on the
+reference filter, the epoch-mean NEES series has an integrated
+autocorrelation time near 30 epochs --- roughly 20 effective samples in
+a 601-epoch run rather than 601 --- and a binomial threshold applied to
+its inside-count rejected 21 of 40 disjoint consistent 100-run
+ensembles. The coverage criterion is therefore \emph{gated} for NIS and
+\emph{reported} for NEES, with the headline gating both.
+
+No effective-sample-size correction is applied to rescue the correlated
+case, for two reasons. Such a correction must estimate the
+autocorrelation time from the same data it judges, and an error that is
+stuck or drifting inflates that estimate and so loosens its own
+threshold; a gate must not be a function the system under test can move.
+And measurement shows no threshold would work regardless: over 40
+disjoint consistent 100-run ensembles the NEES inside-fraction ranged
+from 0.100 to 1.000 with a 5th percentile of 0.363, so any threshold
+loose enough to admit correct output at the $10^{-3}$ level admits
+nearly everything. The consequence is stated plainly rather than hidden:
+a sustained NEES defect that leaves the epoch average inside
+equation~\eqref{eq:ekf:ensemble} while pushing many individual epochs
+out is visible in the reported coverage number but does not set the exit
+code. Section~\ref{sec:ekf:validation} records a measured instance.
+Chi-square quantiles are evaluated without external dependencies
+(D-12) by the Wilson--Hilferty transformation~\cite{wilson1931},
+\begin{equation}
+  \boxed{\;
+  \chi^2_p(k) \approx k \left( 1 - \frac{2}{9k}
+    + z_p \sqrt{\frac{2}{9k}} \right)^{\!3},
+  \;}
+  \qquad
+  z_{0.975} = -z_{0.025} = 1.959963984540054,
+  \label{eq:ekf:wh}
+\end{equation}
+whose relative error against the exact quantiles is below
+$5 \times 10^{-5}$ for $k \ge 300$ (verified numerically during
+drafting) --- four orders below the gate widths. The ensemble driver
+initializes each run's estimate by perturbing the known true initial
+state with a seeded draw from $\mathcal{N}(\vv{0}, \mat{P}_0)$
+(attitude via equation~\eqref{eq:ekf:qerr}), so the initial error is
+distributed exactly as the filter believes --- the precondition for
+NEES consistency from the first cycle.
+
+\section{Discretization and implementation}
+\label{sec:ekf:implementation}
+
+Binding implementation notes for the Phase~6 module:
+\begin{enumerate}
+  \item \textbf{Module and traceability.} The filter is a built-in
+    C++ \texttt{IGncComponent} (navigation role) in the FR-25
+    registry; \texttt{star consistency} is Python-side, reading only
+    logs. Source comments echo \texttt{eq:ekf:qerr},
+    \texttt{eq:ekf:mech}, \texttt{eq:ekf:errdyn}, \texttt{eq:ekf:F},
+    \texttt{eq:ekf:disc}, \texttt{eq:ekf:joseph},
+    \texttt{eq:ekf:stinnov}, \texttt{eq:ekf:altH},
+    \texttt{eq:ekf:reset}, and the consistency evaluator echoes
+    \texttt{eq:ekf:nees}, \texttt{eq:ekf:nis},
+    \texttt{eq:ekf:ensemble}, \texttt{eq:ekf:coverage},
+    \texttt{eq:ekf:wh}.
+  \item \textbf{Cycle order, normative.} (1) mechanize the nominal
+    state, equation~\eqref{eq:ekf:mech}; (2) propagate the covariance,
+    equation~\eqref{eq:ekf:disc}, with $\mat{F}$ evaluated at the
+    pre-cycle nominal and the cycle-average $\hat{\vv{\omega}}$,
+    $\hat{\vv{f}}$; (3) process valid updates in the fixed order nav
+    fix, star tracker, altimeter, each as
+    equations~\eqref{eq:ekf:joseph}--\eqref{eq:ekf:reset} with an
+    immediate reset; (4) log estimate, covariance, and innovations.
+  \item \textbf{Linear algebra.} Fixed-size Eigen operations only; the
+    $\mat{S}$ solves use \texttt{Eigen::LDLT} on the (at most
+    $6 \times 6$) innovation covariance --- deterministic, no pivoting
+    hazards at these sizes; no heap allocation in the cycle path
+    (D-10). Every Eigen product is bound to a named concrete type,
+    never \texttt{auto} (the Phase~4 dangling-expression lesson).
+  \item \textbf{No truth access.} The filter sees only
+    \texttt{GncInput}; the consistency evaluator, not the filter,
+    consumes \texttt{truth} channels offline. The \texttt{oracle}
+    flag exists for debugging other components and is never read by
+    the reference filter.
+  \item \textbf{Determinism.} Same seed, same binary: identical
+    \texttt{nav.*} channels byte-for-byte; the exit-criterion-3
+    ensemble rerun is bit-identical because every run's draws come
+    from named streams keyed by the manifest seed schedule.
+\end{enumerate}
+
+\section{Validation evidence}
+\label{sec:ekf:validation}
+
+This chapter specifies two separable pieces, both now implemented. The
+consistency statistics of Section~\ref{sec:ekf:consistency} ---
+equations~\eqref{eq:ekf:nees}, \eqref{eq:ekf:nis},
+\eqref{eq:ekf:ensemble}, \eqref{eq:ekf:coverage},
+and~\eqref{eq:ekf:wh} --- are implemented in
+\texttt{python/star\_reacher/consistency.py} (with the quantile and
+binomial evaluators in \texttt{chi2.py}) and are covered by
+Table~\ref{tab:ekf:validation-py}. The reference error-state filter of
+Sections~\ref{sec:ekf:purpose}--\ref{sec:ekf:implementation} is
+implemented in \texttt{cpp/src/gnc/ekf.cpp} and is covered by
+Table~\ref{tab:ekf:validation-filter}.
+
+\paragraph{Measured sensitivity of the gate.} The gate was exercised
+against deliberately broken filters produced by perturbing the reference
+mission only --- no source change, the same binary --- each judged by
+\texttt{star consistency} over its own 100-run ensemble. An unmodelled
+gyro turn-on bias (NEES $5.7 \times 10^{3}$), an unmodelled accelerometer
+turn-on bias ($6.8 \times 10^{3}$), an unmodelled nav-fix Gauss--Markov
+error ($68.0$) and a 500\,m biased initial estimate ($21.0$, with nav-fix
+NIS at $10.97$) were all rejected with a nonzero exit code. Against the
+same ensembles the covariance-scaling detection floor of the headline
+criterion at $N = 100$ is about $\pm 7\,\%$, matching the interval
+half-width: reported covariance at $0.9\times$ and $1.1\times$ truth is
+caught, $0.95\times$ and $1.05\times$ are not.
+
+Two classes are measured as \emph{not} caught, and are recorded here
+rather than left to be rediscovered. A defect confined to a short
+transient escapes both criteria: initializing the filter fourfold
+over-confident drives ensemble NEES to $41.7$ over the first ten epochs
+--- far outside the bounds --- yet the 601-epoch average is $15.68$ and
+the coverage count $574/601$, so both criteria pass. And a sustained
+defect that lands just inside the interval escapes the headline while
+being plainly visible in the reported coverage number: a 10\,m
+unmodelled altimeter turn-on bias gives ensemble NEES $15.96$ against an
+upper bound of $16.09$ (pass) with coverage $343/601$ against an
+indicative threshold of 553 --- the case
+Section~\ref{sec:ekf:consistency} says the NEES coverage number reports
+but does not gate. A campaign that needs either class covered should
+gate on a windowed statistic over a segment short enough to resolve the
+transient, which is separate work from this chapter's whole-run
+aggregates.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the consistency statistics and their
+    chi-square gates (pytest, \texttt{tests/python/test\_consistency.py}).}
+  \label{tab:ekf:validation-py}
+  \begin{tabular}{lp{7.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{test_chi2_ppf_matches_published_tables} &
+      The quantile evaluator matches published chi-square table values
+      across the used $(p, k)$ set, and each reference digit is
+      independently cross-checked against the Wilson--Hilferty
+      form~\eqref{eq:ekf:wh}, so a mistranscribed table value cannot
+      silently anchor the suite. \\
+    \testid{test_chi2_ppf_wilson_hilferty_agreement_at_large_dof} &
+      The exact evaluator and the Wilson--Hilferty
+      approximation~\eqref{eq:ekf:wh} agree to the stated relative bound
+      at large degrees of freedom, the regime the ensemble gate uses. \\
+    \testid{test_nees_matches_explicit_inverse} &
+      The Cholesky-solve NEES engine reproduces
+      equation~\eqref{eq:ekf:nees} computed through an explicit matrix
+      inverse to $10^{-10}$ relative --- two paths sharing nothing beyond
+      their inputs. \\
+    \testid{test_packed_triangle_order_is_row_major_upper} &
+      The packed covariance interchange order is row-major upper
+      triangular, fixing the convention the logged \texttt{nav} covariance
+      channels and the engine share. \\
+    \testid{test_consistent_ensemble_nees_gate_passes} &
+      A 100-run, 200-epoch consistent ensemble passes the
+      gate~\eqref{eq:ekf:ensemble} on both criteria, headline and
+      coverage. \\
+    \testid{test_miscalibrated_covariance_fails_nees_gate} &
+      The gate is shown able to fail, in the correct direction: covariance
+      reported at $0.7\times$ truth fails high (overconfident) and
+      $1.4\times$ fails low, with the pooled mean outside the corresponding
+      bound. \\
+    \testid{test_consistent_ensemble_nis_gate_passes} &
+      The same ensemble construction applied to innovations passes the
+      NIS gate of equation~\eqref{eq:ekf:nis}. \\
+    \testid{test_miscalibrated_covariance_fails_nis_gate} &
+      The NIS gate likewise fails, directionally, under a miscalibrated
+      innovation covariance. \\
+    \testid{test_gate_functions_are_deterministic} &
+      Repeated evaluation reproduces every statistic exactly; the engine
+      draws no random numbers (FR-21). \\
+    \testid{test_binom_cdf_matches_exact_rational_arithmetic} &
+      The binomial evaluator behind~\eqref{eq:ekf:coverage} agrees to
+      $10^{-12}$ with exact rational arithmetic over $n \le 200$ and
+      $p \in \{0.05, 0.5, 0.95\}$ --- a reference sharing no code with the
+      log-gamma implementation. \\
+    \testid{test_inside_count_threshold_is_the_binomial_lower_tail} &
+      The threshold solves~\eqref{eq:ekf:coverage} exactly: admitting one
+      fewer epoch would breach the budget and the threshold itself does
+      not, and it lies strictly below $qK$, so it can never degenerate
+      into the coin flip it replaced. \\
+    \testid{test_coverage_threshold_false_failure_rate_is_at_budget} &
+      20\,000-trial Monte Carlo of the coverage criterion under the exact
+      null with independent epochs: the spurious-failure rate matches the
+      binomial prediction of~\eqref{eq:ekf:coverage} within three sigma,
+      while the superseded ``$\ge 95\,\%$ of epochs'' rule rejects more
+      than 30\,\% of the same consistent draws. \\
+    \testid{test_headline_criterion_does_not_spuriously_fail} &
+      The headline's conservatism is measured, not assumed: zero
+      spurious failures in 4000 null trials. \\
+    \testid{test_biased_estimator_fails_the_gate} &
+      The gate is shown able to fail against a biased estimator: a
+      constant offset of one and two reported sigmas is rejected, high,
+      as an overconfident covariance would be. \\
+    \testid{test_wrong_measurement_noise_model_fails_the_gate} &
+      An anisotropic wrong $\mat{R}$ --- one component's assumed variance
+      inflated $2\times$ and $5\times$, the rest correct --- is rejected,
+      so the gate responds to a partial covariance error and not only to
+      a global rescale. \\
+    \testid{test_defect_confined_to_part_of_the_run_fails_the_gate} &
+      A covariance defect over the last quarter of a run is rejected on
+      both paths: where coverage gates, and where only the headline
+      does. \\
+    \testid{test_coverage_is_reported_but_not_gated_for_correlated_epochs} &
+      Declaring epochs correlated leaves the measured inside-count
+      unchanged but removes it from the verdict, which then rests on the
+      headline alone --- the NEES configuration of
+      Section~\ref{sec:ekf:consistency}. \\
+    \testid{test_ensemble_gate_accepts_a_single_run} &
+      A lone run is gated as its own $N = 1$ ensemble, so a single-log
+      invocation is low-powered rather than ungated. \\
+    \testid{test_cli_single_run_overconfident_fails} &
+      FR-26 at the command level: \texttt{star consistency} on a run whose
+      covariance is logged at half its true value reports
+      \texttt{CONSISTENCY: FAIL} and exits nonzero, naming the failure as
+      overconfident. \\
+    \testid{test_cli_ensemble_overconfident_directory_fails} &
+      The same at ensemble scale: a directory of runs whose covariances
+      are all logged at half truth exits nonzero, so narrowing what gates
+      has not left the instrument unable to fail. \\
+    \testid{test_cli_time_averaged_numbers_never_set_the_exit_code} &
+      The regression this revision prevents: a run whose time-averaged
+      diagnostic lands outside its indicative interval, with every gate
+      passing, still exits 0, and no diagnostic line carries the words
+      \texttt{PASS} or \texttt{FAIL}. \\
+    \testid{test_cli_ensemble_over_directory} &
+      The command evaluates an ensemble over a directory of runs. This is
+      the sanctioned command-line form of the ensemble gate, but it is not
+      the path exit criterion~3 takes: that driver derives its bounds
+      in-process and never invokes the CLI, as the note following
+      Table~\ref{tab:ekf:validation-filter} records. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Validation evidence for the reference error-state filter
+    (doctest, \texttt{cpp/tests/test\_ekf.cpp}; pytest,
+    \texttt{tests/python/test\_ekf\_consistency.py} and
+    \texttt{test\_ekf\_channels.py}).}
+  \label{tab:ekf:validation-filter}
+  \begin{tabular}{lp{7.2cm}}
+    \toprule
+    Test ID & Acceptance basis \\
+    \midrule
+    \testid{test_ensemble_nees_gate_passes} &
+      Phase~6 exit criterion~3, NEES half, taken through
+      \texttt{consistency.ensemble\_gate} with
+      \texttt{epochs\_independent = False}. A 100-run seeded ensemble of
+      the reference consistency scenario satisfies the
+      gate~\eqref{eq:ekf:ensemble} at $n = 15$: the ensemble average is
+      inside the two-sided 95\,\% bounds. Bounds are evaluated with the
+      project's exact quantile function, not the
+      approximation~\eqref{eq:ekf:wh}, and are asserted equal to the ones
+      this module derives independently from the chapter, so a change to
+      either is caught rather than silently shifting the gate. The verdict
+      rests on the headline alone: the epoch coverage fraction is computed
+      and reported but excluded from it, because the state error is a
+      serially correlated trajectory for which the binomial premise does
+      not hold. The test asserts that exclusion
+      (\texttt{coverage\_gated} is false) rather than leaving it to
+      configuration. \\
+    \testid{test_ensemble_nis_gate_passes} &
+      Exit criterion~3, NIS half, parameterized over the three aiding
+      sensors and taken through the same instrument with
+      \texttt{epochs\_independent = True}. Each sensor's ensemble
+      NIS~\eqref{eq:ekf:nis} must lie inside the
+      gate~\eqref{eq:ekf:ensemble} evaluated at that sensor's own update
+      dimension $m$, \emph{and} the epoch coverage must meet the binomial
+      threshold, which here gates rather than merely reports: a consistent
+      filter's innovations are white, so successive NIS epochs are
+      independent and the threshold is an exact bound on the
+      spurious-failure probability at the library's $c = 0.999$. \\
+    \testid{test_ensemble_rerun_is_bit_identical} &
+      Exit criterion~3's determinism half: re-executing the whole ensemble
+      reproduces the SRLOG SHA-256 of every one of the 100 runs. \\
+    \testid{test_ensemble_has_the_expected_shape} &
+      All three aiding sensors contributed innovations in every run, so a
+      filter that silently skipped a sensor cannot pass the gates it did
+      run and appear healthy. \\
+    \testid{test_mission_file_matches_driver_run_zero} &
+      The committed reference mission is exactly run~0 of the ensemble:
+      the driver regenerates its initial estimate from the draw seed and
+      requires bit-equality, so scenario and driver cannot drift apart. \\
+    \testid{test_per_run_time_average_is_a_diagnostic_not_a_gate} &
+      Quantifies the serial-correlation caveat of
+      Section~\ref{sec:ekf:consistency}: on the same ensemble whose
+      per-epoch statistic is inside the bounds at every epoch, the mean
+      over runs of the per-run time averages is unbiased, while the
+      per-run interval --- whose bounds assume epochs within a run are
+      independent --- rejects the large majority of those same consistent
+      runs. \\
+    \testid{ekf_mechanization_attitude_matches_the_exact_rotation_path} &
+      The attitude line of~\eqref{eq:ekf:mech} composes each increment as
+      the exact rotation~\eqref{eq:gnc:exactrot}, the same map the
+      Chapter~\ref{ch:gnc-builtin} dead reckoner uses, reproduced over
+      twenty cycles to $10^{-14}$ relative. \\
+    \testid{ekf_free_fall_velocity_is_second_order_in_gravity} &
+      With zero specific force the velocity mechanization
+      of~\eqref{eq:ekf:mech} reduces to a quadrature of the navigator's
+      own point-mass gravity (assumption~2). The predictor-corrector is
+      reproduced independently, and the step is checked against an RK4
+      step of the same two-body dynamics --- a different scheme of
+      higher order, so the agreement is evidence about accuracy rather
+      than self-consistency --- to $10^{-8}$\,m/s, against the
+      $4.4 \times 10^{-5}$\,m/s the first-order step of
+      Section~\ref{sec:ekf:gravityorder} would leave. \\
+    \testid{ekf_navfix_update_matches_an_explicit_inverse_implementation} &
+      The update algebra of~\eqref{eq:ekf:joseph} and the reset
+      of~\eqref{eq:ekf:reset} for the nav fix, recomputed through an
+      explicit matrix inverse and the textbook expressions --- two paths
+      sharing nothing beyond their inputs --- agreeing on the posterior
+      covariance and on the state correction, with the applied update
+      reported for \texttt{nav.innov} at the right sensor id and
+      dimension. \\
+    \testid{ekf_star_tracker_innovation_recovers_an_injected_attitude_error} &
+      Equation~\eqref{eq:ekf:stinnov} in the noise-free, zero-aberration
+      case: the innovation equals an injected $\delta\vv{\theta}$ to
+      $10^{-8}$ relative, and the update absorbs all but 2\,\% of it. \\
+    \testid{ekf_propagated_covariance_stays_symmetric_and_psd} &
+      Covariance hygiene over 200 cycles of alternating propagation,
+      updates, and aiding outages: the symmetrization
+      of~\eqref{eq:ekf:disc} holds symmetry exactly, and the Joseph
+      form~\eqref{eq:ekf:joseph} keeps the smallest eigenvalue non-negative
+      to a floor scaled by the covariance's own magnitude. \\
+    \testid{ekf_skips_stale_and_invalid_aiding_samples} &
+      A held (non-fresh) sample and a sensor-gated invalid sample both
+      leave the covariance bit-unchanged and emit no innovation ---
+      folding one measurement in twice would be invisible in the state
+      error but would corrupt the covariance directly. \\
+    \testid{ekf_error_state_reports_the_multiplicative_attitude_error} &
+      The \texttt{nav.err} convention: the leading four entries are the
+      error quaternion of~\eqref{eq:ekf:qerr}, canonicalized to the $+w$
+      hemisphere so the double cover cannot flip the logged error, with
+      additive truth-minus-estimate entries thereafter including the bias
+      rows. \\
+    \testid{ekf_registry_and_declared_dimensions} &
+      The pinned interchange contract: $n = 16$, $m = 15$ (so
+      \texttt{nav.est.P} carries 120 doubles), and a maximum innovation
+      dimension of six. \\
+    \testid{ekf_rejects_malformed_parameters} &
+      Missing parameters, unknown parameters, a zero initial sigma (which
+      would make $\mat{P}_0$ singular and NEES undefined), and a run
+      configuring no IMU are each refused at construction or
+      initialization rather than producing a silently degraded filter. \\
+    \testid{ekf_initial_state_and_covariance_are_the_configured_belief} &
+      The filter starts from the configured nominal state with
+      $\mat{P}_0$ diagonal in the~\eqref{eq:ekf:staterr} block ordering,
+      so its initial belief is stated in the mission file and never
+      inferred from truth. \\
+    \testid{test_nav_channels_have_the_pinned_dimensions} &
+      \texttt{nav.est} and \texttt{nav.err} round-trip through the loader
+      at the pinned 16/120/16 shapes, at identical timestamps and equal
+      record counts, with a unit quaternion in the state's leading four
+      entries. \\
+    \testid{test_nav_innov_fires_for_every_aiding_sensor} &
+      Every configured aiding sensor contributes \texttt{nav.innov}
+      records, each tagged with its own fixed valid dimension $m$. \\
+    \testid{test_nav_innov_padding_is_structural} &
+      The zero-padding rule of the format document: entries whose row or
+      column exceeds $m$ are exactly zero and the leading $m \times m$
+      block factorizes, so a padded record is a valid covariance rather
+      than a singular one. \\
+    \testid{test_star_consistency_consumes_a_real_ekf_log} &
+      FR-26 at the command level on a real error-state run:
+      \texttt{star consistency} applies the $n \to m$ reduction of
+      Section~\ref{sec:ekf:consistency} and gates each aiding sensor's NIS
+      at that sensor's own dimension. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{How the criterion-3 driver reaches its verdict.} The driver
+takes both halves of the criterion through
+\texttt{consistency.ensemble\_gate()}, the same instrument
+\texttt{star consistency} uses, rather than reimplementing the
+bounds~\eqref{eq:ekf:ensemble} beside it. It does so in-process, importing
+the function directly; it does not shell out to the command line, which is
+why the CLI rows of Table~\ref{tab:ekf:validation-py} are the sanctioned
+command-line form of the ensemble gate rather than the path this criterion
+takes. The two remain tied together because both call one implementation.
+
+The consequence that matters is that the instrument's coverage logic now
+runs on the criterion-3 path, and it distinguishes the two statistics. NEES
+is gated with \texttt{epochs\_independent = False}: the epoch coverage
+fraction is computed and reported, but excluded from the verdict, which
+rests on the headline bound alone. That exclusion is structural, made from
+what the statistic is rather than estimated from the data being judged. The
+count of epochs inside is $\mathrm{Binomial}(n, 0.95)$ under the null, so a
+threshold set at 95\,\% would test that count against its own mean and a
+correct filter would meet it about half the time; for NEES it is worse than
+a coin flip, because the epoch-mean series has an integrated
+autocorrelation time of roughly 30 epochs and the count-inside is
+correspondingly over-dispersed. Such a rule would be green only while the
+seeds stayed pinned, and any legitimate change perturbing the last bits ---
+a compiler change, a platform with different rounding, a model fix ---
+would flip it with probability near one half and present as an EKF
+consistency failure when nothing was wrong.
+
+NIS is gated with \texttt{epochs\_independent = True}, where the binomial
+premise does hold: a consistent filter's innovations are white, so
+successive epochs are independent and
+\texttt{consistency.inside\_count\_threshold} is an exact bound on the
+spurious-failure probability at the library's default $c = 0.999$ rather
+than a test of the count against its own mean. Both halves additionally
+assert that the instrument's interval equals the one
+\texttt{test\_ekf\_consistency} derives independently from this chapter, so
+a change to either the chapter or the library is caught here instead of
+silently shifting the gate.
+
+\section{References}
+\label{sec:ekf:references}
+
+The error-state (multiplicative) EKF formulation follows
+Sol\`a~\cite{sola2017} and the MEKF heritage in Markley and
+Crassidis~\cite{markley2014}, transcribed to the D-7 conventions of
+Chapter~\ref{ch:notation}; strapdown mechanization terms follow
+Titterton and Weston~\cite{titterton2004} and
+Savage~\cite{savage1998b}, with the predictor-corrector gravity
+quadrature of Section~\ref{sec:ekf:gravityorder} following Hairer,
+N\o{}rsett, and Wanner~\cite{hairer1993}; Gauss--Markov process algebra
+follows Maybeck~\cite{maybeck1979}; NEES/NIS consistency testing and its
+chi-square acceptance bounds follow Bar-Shalom, Li, and
+Kirubarajan~\cite{barshalom2001}; the quantile approximation is
+Wilson and Hilferty~\cite{wilson1931}; the rejected higher-order
+discretization is Van Loan~\cite{vanloan1978}. Full bibliographic
+details appear in the bibliography.

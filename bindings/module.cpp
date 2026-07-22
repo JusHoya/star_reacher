@@ -5,8 +5,12 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <map>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -14,6 +18,8 @@
 
 #include "star/ephemeris.hpp"
 #include "star/frames.hpp"
+#include "star/gnc/builtin.hpp"
+#include "star/gnc/component.hpp"
 #include "star/models/atmosphere_hp.hpp"
 #include "star/models/atmosphere_mars.hpp"
 #include "star/models/atmosphere_ussa76.hpp"
@@ -27,6 +33,7 @@
 #include "star/testsupport/acceptance.hpp"
 #include "star/testsupport/kepler_ref.hpp"
 #include "star/time.hpp"
+#include "star/vehicle_cycle.hpp"
 #include "star/version.hpp"
 
 namespace py = pybind11;
@@ -405,6 +412,426 @@ double geodetic_altitude(const std::array<double, 3>& r_ecef_m, double a_m,
   return star::models::geodetic_altitude(to_vec3(r_ecef_m), a_m, inv_f);
 }
 
+// ---------------------------------------------------------------------------
+// Phase 6 GNC/stepping surface (FR-24 Sim, FR-25 Python components).
+//
+// Marshalling rules, uniform across every struct below:
+//   * Eigen::Vector3d crosses as a 3-element list, Eigen::Matrix3d as a
+//     9-element row-major list, Eigen::Quaterniond as a scalar-first
+//     (w, x, y, z) 4-tuple - NEVER Eigen coeffs() order (the D-7 storage
+//     trap documented in star/rotation.hpp).
+//   * Every accessor COPIES. Nothing handed to Python is a view into a core
+//     buffer, which is what lets observe() satisfy the exit-criterion-4
+//     idempotence clause: the dict cannot alias memory a later step()
+//     overwrites.
+// ---------------------------------------------------------------------------
+
+Eigen::Quaterniond quat_in(const std::array<double, 4>& q) {
+  return Eigen::Quaterniond(q[0], q[1], q[2], q[3]);  // scalar-first (D-7)
+}
+
+std::array<double, 4> quat_arr(const Eigen::Quaterniond& q) {
+  return {q.w(), q.x(), q.y(), q.z()};
+}
+
+// Property helpers for the fixed-size Eigen members. Macros rather than
+// thirty hand-written lambda pairs: the conversion is mechanical and
+// identical everywhere, so writing it once removes the class of bug where
+// one field silently uses a different component order.
+#define STAR_V3_PROP(Cls, Name, Member)                                    \
+  def_property(                                                            \
+      Name, [](const Cls& s) { return from_vec3(s.Member); },              \
+      [](Cls& s, const std::array<double, 3>& a) { s.Member = to_vec3(a); })
+#define STAR_QUAT_PROP(Cls, Name, Member)                                  \
+  def_property(                                                            \
+      Name, [](const Cls& s) { return quat_arr(s.Member); },               \
+      [](Cls& s, const std::array<double, 4>& a) { s.Member = quat_in(a); })
+#define STAR_M3_PROP(Cls, Name, Member)                                    \
+  def_property(                                                            \
+      Name, [](const Cls& s) { return mat_out(s.Member); },                \
+      [](Cls& s, const std::array<double, 9>& a) { s.Member = mat_in(a); })
+
+// Copy a Python sequence of n floats into a core buffer. A component that
+// returns the wrong length is a configuration error the loop must not
+// absorb: writing short would leave stale values in the log and writing long
+// would corrupt memory, so both are refused by name.
+//
+// `n` is std::size_t rather than int because its two call sites derive it
+// from a pinned dimension m as m(m+1)/2, which overflows a 32-bit int for an
+// m the interface never bounds.
+void copy_fixed(const py::object& value, const char* method, std::size_t n,
+                double* out) {
+  const std::vector<double> v = value.cast<std::vector<double>>();
+  if (v.size() != n) {
+    throw std::length_error(
+        std::string("gnc component method ") + method + " returned " +
+        std::to_string(v.size()) + " values; the declared dimension requires " +
+        std::to_string(n));
+  }
+  std::copy(v.begin(), v.end(), out);
+}
+
+// The FR-25 pybind11 trampoline: a Python subclass of _core.IGncComponent
+// plugs into the same registry and the same chain as a built-in C++
+// component. init() and update() are pure virtual and must be overridden;
+// the introspection methods fall back to the C++ defaults ("not an
+// estimator") when the subclass does not define them, so a Python guidance
+// or control law implements exactly two methods.
+//
+// DETERMINISM: the component runs INSIDE the deterministic time loop, so
+// the D-10 guarantee is only as strong as the Python in it. See the
+// star_reacher.sim module docstring for the contract a component must
+// respect; nothing here can enforce it.
+class PyGncComponent : public star::gnc::IGncComponent {
+ public:
+  using star::gnc::IGncComponent::IGncComponent;
+
+  void init(const star::gnc::GncInitContext& ctx) override {
+    PYBIND11_OVERRIDE_PURE(void, IGncComponent, init, ctx);
+  }
+
+  star::gnc::GncOutput update(const star::gnc::GncInput& input) override {
+    PYBIND11_OVERRIDE_PURE(star::gnc::GncOutput, IGncComponent, update, input);
+  }
+
+  // The zero-argument introspection methods are dispatched explicitly rather
+  // than through PYBIND11_OVERRIDE: that macro expands to a variadic call
+  // with an empty argument list, which is a pedantic-mode diagnostic under
+  // the -Werror Linux job.
+  int state_dim() const override {
+    int v = 0;
+    if (!int_override("state_dim", &v)) v = star::gnc::IGncComponent::state_dim();
+    return pin("state_dim", &state_dim_, v);
+  }
+
+  int cov_dim() const override {
+    int v = 0;
+    if (!int_override("cov_dim", &v)) {
+      // The base default is state_dim(), which dispatches back into Python:
+      // a subclass that declares only state_dim() gets a square covariance of
+      // that dimension without writing a second method.
+      v = star::gnc::IGncComponent::cov_dim();
+    }
+    return pin("cov_dim", &cov_dim_, v);
+  }
+
+  int innov_max_dim() const override {
+    int v = 0;
+    if (!int_override("innov_max_dim", &v)) {
+      v = star::gnc::IGncComponent::innov_max_dim();
+    }
+    return pin("innov_max_dim", &innov_max_dim_, v);
+  }
+
+  const std::vector<star::gnc::InnovationSample>& innovations() const override {
+    py::gil_scoped_acquire gil;
+    const py::function ov = py::get_override(this, "innovations");
+    if (!ov) return star::gnc::IGncComponent::innovations();
+    // Cached in a member because the interface returns a reference: the
+    // Python list is converted once per call and outlives the temporary.
+    innov_cache_ = ov().cast<std::vector<star::gnc::InnovationSample>>();
+    return innov_cache_;
+  }
+
+  void state(double* x_hat) const override {
+    py::gil_scoped_acquire gil;
+    const py::function ov = py::get_override(this, "state");
+    if (!ov) return star::gnc::IGncComponent::state(x_hat);
+    copy_fixed(ov(), "state", static_cast<std::size_t>(state_dim()), x_hat);
+  }
+
+  void covariance_upper(double* p) const override {
+    py::gil_scoped_acquire gil;
+    const py::function ov = py::get_override(this, "covariance_upper");
+    if (!ov) return star::gnc::IGncComponent::covariance_upper(p);
+    // Widened before multiplying: pin() has already refused a negative m, so
+    // the product is well defined, but m(m+1)/2 overflows a 32-bit int well
+    // before it exceeds the addressable buffer.
+    const std::size_t m = static_cast<std::size_t>(cov_dim());
+    copy_fixed(ov(), "covariance_upper", m * (m + 1) / 2, p);
+  }
+
+  // The FR-24 boundary in the trampoline: what a Python estimator returns
+  // here is a DESCRIPTION of its state vector, and no argument carries the
+  // state of the world. There is deliberately no truth-bearing virtual for a
+  // subclass to override - the loop computes nav.err itself from this
+  // declaration (gnc/component.hpp).
+  const std::vector<star::gnc::ErrorBlock>& error_layout() const override {
+    py::gil_scoped_acquire gil;
+    const py::function ov = py::get_override(this, "error_layout");
+    if (!ov) return star::gnc::IGncComponent::error_layout();
+    // Cached in a member for the same reason as innovations(): the interface
+    // returns a reference, so the converted vector must outlive the call.
+    layout_cache_ = ov().cast<std::vector<star::gnc::ErrorBlock>>();
+    return layout_cache_;
+  }
+
+ private:
+  // True when the subclass defines `name`, with its value in *out. Kept
+  // lazy so the C++ fallback is not evaluated when an override exists.
+  bool int_override(const char* name, int* out) const {
+    py::gil_scoped_acquire gil;
+    const py::function ov = py::get_override(this, name);
+    if (!ov) return false;
+    *out = ov().cast<int>();
+    return true;
+  }
+
+  // Pin a declared dimension to the value of its first query and refuse any
+  // later divergence.
+  //
+  // These three integers are CONSTANTS OF A RUN, not per-cycle queries. The
+  // loop calls each once at GNC activation and sizes the fixed log buffers
+  // from what it got (vehicle_cycle.cpp); nothing resizes those buffers
+  // afterwards. A Python method, though, is re-evaluated on every call, so
+  // an estimator that augments its state mid-run -- exactly the adaptive
+  // filter FR-25 exists to permit -- would return a larger state_dim() on a
+  // later cycle. The length check in copy_fixed() would then compare a
+  // Python-supplied length against a Python-supplied dimension, agree, and
+  // copy past the end of a buffer sized at construction. Pinning makes the
+  // constancy the interface assumes an enforced precondition rather than an
+  // unstated one, and turns a silent heap write into a named exception.
+  int pin(const char* name, int* pinned, int value) const {
+    if (value < 0) {
+      throw std::length_error(
+          std::string("gnc component method ") + name + " returned " +
+          std::to_string(value) +
+          "; a declared dimension must not be negative");
+    }
+    if (*pinned < 0) {
+      *pinned = value;
+    } else if (*pinned != value) {
+      throw std::length_error(
+          std::string("gnc component method ") + name + " returned " +
+          std::to_string(value) + " but returned " + std::to_string(*pinned) +
+          " when the run was configured; a component's declared dimensions "
+          "are fixed for the lifetime of a run, because the loop's log "
+          "buffers are sized once from them");
+    }
+    return *pinned;
+  }
+
+  // Negative marks "not yet queried"; pin() refuses a negative value, so no
+  // legal dimension can be confused with the unset state.
+  mutable int state_dim_ = -1;
+  mutable int cov_dim_ = -1;
+  mutable int innov_max_dim_ = -1;
+  mutable std::vector<star::gnc::InnovationSample> innov_cache_;
+  mutable std::vector<star::gnc::ErrorBlock> layout_cache_;
+};
+
+// Name -> Python factory table for components registered from Python. It is
+// a side table because gnc::GncFactory is a plain function pointer and so
+// cannot capture the class object; the single C++ factory below recovers the
+// class from cfg.component, which the registry passes through verbatim.
+std::map<std::string, py::object>& python_component_table() {
+  // Deliberately leaked: a static map of py::object would release Python
+  // references during static destruction, which runs after the interpreter
+  // has finalized. The table lives as long as the process, which is exactly
+  // as long as a registered component can be selected.
+  static std::map<std::string, py::object>* table =
+      new std::map<std::string, py::object>();
+  return *table;
+}
+
+// Owns the Python object for the lifetime the core expects of a component
+// and forwards the interface to the trampoline inside it. The core's
+// unique_ptr then deletes only this handle, dropping one Python reference,
+// rather than trying to delete an object Python owns.
+class PythonComponentHandle : public star::gnc::IGncComponent {
+ public:
+  explicit PythonComponentHandle(py::object obj)
+      : obj_(std::move(obj)), impl_(obj_.cast<star::gnc::IGncComponent*>()) {}
+
+  ~PythonComponentHandle() override {
+    py::gil_scoped_acquire gil;  // releasing a Python reference needs the GIL
+    obj_ = py::object();
+  }
+
+  void init(const star::gnc::GncInitContext& ctx) override { impl_->init(ctx); }
+  star::gnc::GncOutput update(const star::gnc::GncInput& in) override {
+    return impl_->update(in);
+  }
+  int state_dim() const override { return impl_->state_dim(); }
+  int cov_dim() const override { return impl_->cov_dim(); }
+  int innov_max_dim() const override { return impl_->innov_max_dim(); }
+  const std::vector<star::gnc::InnovationSample>& innovations() const override {
+    return impl_->innovations();
+  }
+  void state(double* x) const override { impl_->state(x); }
+  void covariance_upper(double* p) const override {
+    impl_->covariance_upper(p);
+  }
+  const std::vector<star::gnc::ErrorBlock>& error_layout() const override {
+    return impl_->error_layout();
+  }
+
+ private:
+  py::object obj_;
+  star::gnc::IGncComponent* impl_;
+};
+
+std::unique_ptr<star::gnc::IGncComponent> make_python_component(
+    const star::gnc::GncComponentCfg& cfg) {
+  py::gil_scoped_acquire gil;
+  const auto it = python_component_table().find(cfg.component);
+  if (it == python_component_table().end()) {
+    throw std::invalid_argument(
+        "gnc component '" + cfg.component +
+        "' is registered as a Python component but its factory is no longer "
+        "present; register_python_component must be called before the run");
+  }
+  py::object obj = it->second(cfg);
+  if (!py::isinstance<star::gnc::IGncComponent>(obj)) {
+    throw std::invalid_argument(
+        "the factory for gnc component '" + cfg.component +
+        "' returned an object that does not derive from IGncComponent");
+  }
+  return std::unique_ptr<star::gnc::IGncComponent>(
+      new PythonComponentHandle(std::move(obj)));
+}
+
+void register_python_component(const std::string& name, py::object factory) {
+  if (!py::hasattr(factory, "__call__")) {
+    throw std::invalid_argument(
+        "register_python_component: factory must be callable as "
+        "factory(cfg) -> IGncComponent (a subclass object is such a "
+        "callable)");
+  }
+  // Register with the core FIRST: a duplicate name throws there, and the
+  // side table must not gain an entry the core does not know about.
+  star::gnc::register_component(name, &make_python_component);
+  python_component_table()[name] = std::move(factory);
+}
+
+// -- FR-24 observation marshalling -----------------------------------------
+
+py::dict imu_dict(const star::gnc::ImuSample& s) {
+  py::dict d;
+  d["valid"] = s.valid;
+  d["t_s"] = s.t_s;
+  d["dt_s"] = s.dt_s;
+  d["dtheta_b_rad"] = from_vec3(s.dtheta_b_rad);
+  d["dv_b_mps"] = from_vec3(s.dv_b_mps);
+  return d;
+}
+
+py::dict navfix_dict(const star::gnc::NavFixSample& s) {
+  py::dict d;
+  d["valid"] = s.valid;
+  d["fresh"] = s.fresh;
+  d["sensor_id"] = s.sensor_id;
+  d["r_i_m"] = from_vec3(s.r_i_m);
+  d["v_i_mps"] = from_vec3(s.v_i_mps);
+  return d;
+}
+
+py::dict startracker_dict(const star::gnc::StarTrackerSample& s) {
+  py::dict d;
+  d["valid"] = s.valid;
+  d["fresh"] = s.fresh;
+  d["sensor_id"] = s.sensor_id;
+  d["q_i2b"] = quat_arr(s.q_i2b);
+  return d;
+}
+
+py::dict altimeter_dict(const star::gnc::AltimeterSample& s) {
+  py::dict d;
+  d["valid"] = s.valid;
+  d["fresh"] = s.fresh;
+  d["sensor_id"] = s.sensor_id;
+  d["h_m"] = s.h_m;
+  return d;
+}
+
+py::dict env_dict(const star::gnc::NavEnvironment& e) {
+  py::dict d;
+  d["ephemeris_valid"] = e.ephemeris_valid;
+  d["v_central_ssb_mps"] = from_vec3(e.v_central_ssb_mps);
+  d["bodyfixed_valid"] = e.bodyfixed_valid;
+  d["c_gcrf_to_bodyfixed"] = mat_out(e.c_gcrf_to_bodyfixed);
+  return d;
+}
+
+py::dict output_dict(const star::gnc::GncOutput& o) {
+  py::dict d;
+  d["valid"] = o.valid;
+  d["q_i2b"] = quat_arr(o.q_i2b);
+  d["omega_b_radps"] = from_vec3(o.omega_b_radps);
+  d["torque_b_nm"] = from_vec3(o.torque_b_nm);
+  return d;
+}
+
+py::dict observation_dict(const star::CycleObservation& o) {
+  py::dict d;
+  d["cycle"] = o.cycle;
+  d["t_s"] = o.t_s;
+  d["processed"] = o.processed;
+  d["done"] = o.done;
+  d["gnc_active"] = o.gnc_active;
+  d["imu"] = imu_dict(o.imu);
+  d["imu_fresh"] = o.imu_fresh;
+  d["navfix"] = navfix_dict(o.navfix);
+  d["startracker"] = startracker_dict(o.startracker);
+  d["altimeter"] = altimeter_dict(o.altimeter);
+  d["env"] = env_dict(o.env);
+  d["nav_est"] = output_dict(o.nav_est);
+  d["att_cmd"] = output_dict(o.att_cmd);
+  d["applied"] = output_dict(o.applied);
+  d["nav_x_hat"] = o.nav_x_hat;
+  d["nav_p_upper"] = o.nav_p_upper;
+  return d;
+}
+
+py::dict truth_dict(const star::gnc::TruthState& t) {
+  py::dict d;
+  d["valid"] = t.valid;
+  d["t_s"] = t.t_s;
+  d["r_i_m"] = from_vec3(t.r_i_m);
+  d["v_i_mps"] = from_vec3(t.v_i_mps);
+  d["q_i2b"] = quat_arr(t.q_i2b);
+  d["omega_b_radps"] = from_vec3(t.omega_b_radps);
+  d["mass_kg"] = t.mass_kg;
+  d["imu_bias_valid"] = t.imu_bias_valid;
+  d["b_g_radps"] = from_vec3(t.b_g_radps);
+  d["b_a_mps2"] = from_vec3(t.b_a_mps2);
+  return d;
+}
+
+// FR-24 step(commands): fold a command dict into the run's held external
+// command. Missing keys hold (the previous value is read back and rewritten
+// unchanged, D-5 zero-order hold); an unknown key raises rather than being
+// ignored, because a silently dropped command is indistinguishable from a
+// vehicle that refused to manoeuvre.
+void apply_commands(star::VehicleCycle& sim, const py::dict& commands) {
+  star::gnc::GncOutput cmd = sim.external_command();
+  bool any = false;
+  bool explicit_valid = false;
+  for (const auto& item : commands) {
+    const std::string key = item.first.cast<std::string>();
+    if (key == "torque_b_nm") {
+      cmd.torque_b_nm = to_vec3(item.second.cast<std::array<double, 3>>());
+    } else if (key == "omega_b_radps") {
+      cmd.omega_b_radps = to_vec3(item.second.cast<std::array<double, 3>>());
+    } else if (key == "q_i2b") {
+      cmd.q_i2b = quat_in(item.second.cast<std::array<double, 4>>());
+    } else if (key == "valid") {
+      cmd.valid = item.second.cast<bool>();
+      explicit_valid = true;
+    } else {
+      throw std::invalid_argument(
+          "Sim.step: unknown command key '" + key +
+          "'; accepted keys are 'torque_b_nm', 'omega_b_radps', 'q_i2b', "
+          "'valid'");
+    }
+    any = true;
+  }
+  // Supplying a command means commanding: the entry becomes live unless the
+  // caller explicitly asked for a hold.
+  if (any && !explicit_valid) cmd.valid = true;
+  if (any) sim.set_external_command(cmd);
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_core, m) {
@@ -492,6 +919,33 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite("stages", &star::VehicleConfig::stages)
       .def_readwrite("aero", &star::VehicleConfig::aero);
 
+  // -- Phase 6 GNC configuration (D-2 plain data; run_vehicle only) ---------
+  // Component parameters ride as two flat maps so a new built-in (or a
+  // future Python plugin) adds fields with zero binding changes.
+  py::class_<star::gnc::GncComponentCfg>(m, "GncComponentCfg")
+      .def(py::init<>())
+      .def_readwrite("component", &star::gnc::GncComponentCfg::component)
+      .def_readwrite("scalars", &star::gnc::GncComponentCfg::scalars)
+      .def_readwrite("vectors", &star::gnc::GncComponentCfg::vectors);
+
+  py::class_<star::gnc::GncSensorCfg>(m, "GncSensorCfg")
+      .def(py::init<>())
+      .def_readwrite("kind", &star::gnc::GncSensorCfg::kind)
+      .def_readwrite("sample_rate_hz",
+                     &star::gnc::GncSensorCfg::sample_rate_hz)
+      .def_readwrite("scalars", &star::gnc::GncSensorCfg::scalars)
+      .def_readwrite("vectors", &star::gnc::GncSensorCfg::vectors);
+
+  py::class_<star::gnc::GncConfig>(m, "GncConfig")
+      .def(py::init<>())
+      .def_readwrite("enabled", &star::gnc::GncConfig::enabled)
+      .def_readwrite("control_rate_hz", &star::gnc::GncConfig::control_rate_hz)
+      .def_readwrite("latency_cycles", &star::gnc::GncConfig::latency_cycles)
+      .def_readwrite("nav", &star::gnc::GncConfig::nav)
+      .def_readwrite("guidance", &star::gnc::GncConfig::guidance)
+      .def_readwrite("control", &star::gnc::GncConfig::control)
+      .def_readwrite("sensors", &star::gnc::GncConfig::sensors);
+
   py::class_<star::SequenceEntry>(m, "SequenceEntry")
       .def(py::init<>())
       .def_readwrite("name", &star::SequenceEntry::name)
@@ -561,7 +1015,9 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite("launch_alt_m", &star::RunConfig::launch_alt_m)
       .def_readwrite("forces_rate_hz", &star::RunConfig::forces_rate_hz)
       .def_readwrite("mass_rate_hz", &star::RunConfig::mass_rate_hz)
-      .def_readwrite("env_rate_hz", &star::RunConfig::env_rate_hz);
+      .def_readwrite("env_rate_hz", &star::RunConfig::env_rate_hz)
+      // Phase 6 extension (contract section: run.hpp).
+      .def_readwrite("gnc", &star::RunConfig::gnc);
 
   m.def("run", &run_and_summarize, py::arg("config"), py::arg("out_path"),
         "Propagate the configured two-body case and write an SRLOG v1.0 file "
@@ -642,6 +1098,388 @@ PYBIND11_MODULE(_core, m) {
         py::arg("a_m"), py::arg("inv_f"),
         "Geodetic altitude [m] of a body-fixed Cartesian position above the "
         "(a, 1/f) ellipsoid (Bowring's closed form with one refinement).");
+
+  // -- FR-25 GNC component interface (Python plugin path) ------------------
+  // The structs below are the component's whole view of the world. They are
+  // bound before IGncComponent so its update() signature resolves.
+
+  py::class_<star::gnc::ImuSample>(
+      m, "ImuSample",
+      "Accumulated IMU increments over the sample interval ending at t_s "
+      "(FR-23). valid is false until the first sample instant has passed.")
+      .def(py::init<>())
+      .def_readwrite("valid", &star::gnc::ImuSample::valid)
+      .def_readwrite("t_s", &star::gnc::ImuSample::t_s)
+      .def_readwrite("dt_s", &star::gnc::ImuSample::dt_s)
+      .STAR_V3_PROP(star::gnc::ImuSample, "dtheta_b_rad", dtheta_b_rad)
+      .STAR_V3_PROP(star::gnc::ImuSample, "dv_b_mps", dv_b_mps);
+
+  py::class_<star::gnc::NavFixSample>(
+      m, "NavFixSample",
+      "External navigation fix (generalized GNSS, FR-23). fresh is true only "
+      "on the cycle the sensor was sampled: folding a held measurement in "
+      "twice makes a filter overconfident in a way that is invisible in the "
+      "state error but immediate in NEES.")
+      .def(py::init<>())
+      .def_readwrite("valid", &star::gnc::NavFixSample::valid)
+      .def_readwrite("fresh", &star::gnc::NavFixSample::fresh)
+      .def_readwrite("sensor_id", &star::gnc::NavFixSample::sensor_id)
+      .STAR_V3_PROP(star::gnc::NavFixSample, "r_i_m", r_i_m)
+      .STAR_V3_PROP(star::gnc::NavFixSample, "v_i_mps", v_i_mps);
+
+  py::class_<star::gnc::StarTrackerSample>(
+      m, "StarTrackerSample",
+      "Star-tracker attitude measurement (FR-23), scalar-first q_i2b "
+      "relative to the APPARENT inertial frame - a consumer that predicts it "
+      "must apply the same velocity-aberration factor. valid echoes the "
+      "sensor's exclusion/slew gating.")
+      .def(py::init<>())
+      .def_readwrite("valid", &star::gnc::StarTrackerSample::valid)
+      .def_readwrite("fresh", &star::gnc::StarTrackerSample::fresh)
+      .def_readwrite("sensor_id", &star::gnc::StarTrackerSample::sensor_id)
+      .STAR_QUAT_PROP(star::gnc::StarTrackerSample, "q_i2b", q_i2b);
+
+  py::class_<star::gnc::AltimeterSample>(
+      m, "AltimeterSample",
+      "Altimeter measurement (FR-23): geodetic height over the central "
+      "body's reference ellipsoid. valid echoes the sensor's band gate.")
+      .def(py::init<>())
+      .def_readwrite("valid", &star::gnc::AltimeterSample::valid)
+      .def_readwrite("fresh", &star::gnc::AltimeterSample::fresh)
+      .def_readwrite("sensor_id", &star::gnc::AltimeterSample::sensor_id)
+      .def_readwrite("h_m", &star::gnc::AltimeterSample::h_m);
+
+  py::class_<star::gnc::NavEnvironment>(
+      m, "NavEnvironment",
+      "Ephemeris and frame context a real onboard navigator computes from "
+      "time and its own ephemeris - never from truth. Supplied every cycle "
+      "so an estimator can predict frame-dependent measurements (star-"
+      "tracker aberration, altimeter body-fixed conversion) without reaching "
+      "across the FR-25 privileged boundary. c_gcrf_to_bodyfixed is a "
+      "row-major 9-element list.")
+      .def(py::init<>())
+      .def_readwrite("ephemeris_valid",
+                     &star::gnc::NavEnvironment::ephemeris_valid)
+      .STAR_V3_PROP(star::gnc::NavEnvironment, "v_central_ssb_mps",
+                    v_central_ssb_mps)
+      .def_readwrite("bodyfixed_valid",
+                     &star::gnc::NavEnvironment::bodyfixed_valid)
+      .STAR_M3_PROP(star::gnc::NavEnvironment, "c_gcrf_to_bodyfixed",
+                    c_gcrf_to_bodyfixed);
+
+  py::class_<star::gnc::TruthState>(
+      m, "TruthState",
+      "Truth kinematics snapshot: privileged data (FR-24). It reaches a GNC "
+      "component on exactly one path, GncInput.oracle, and only when the "
+      "scenario sets oracle = true; the loop's own use of it to compute "
+      "nav.err never crosses the plugin boundary, because the loop does that "
+      "arithmetic itself from the component's declared error_layout(). "
+      "Sim.truth() is the separate privileged accessor, available to a "
+      "stepping driver rather than to a component. b_g_radps/b_a_mps2 are "
+      "the true in-run IMU biases, valid only when the run configures an "
+      "IMU, so a bias-carrying estimator reports a complete error instead of "
+      "logging zeros that read as 'no error'.")
+      .def(py::init<>())
+      .def_readwrite("valid", &star::gnc::TruthState::valid)
+      .def_readwrite("t_s", &star::gnc::TruthState::t_s)
+      .STAR_V3_PROP(star::gnc::TruthState, "r_i_m", r_i_m)
+      .STAR_V3_PROP(star::gnc::TruthState, "v_i_mps", v_i_mps)
+      .STAR_QUAT_PROP(star::gnc::TruthState, "q_i2b", q_i2b)
+      .STAR_V3_PROP(star::gnc::TruthState, "omega_b_radps", omega_b_radps)
+      .def_readwrite("mass_kg", &star::gnc::TruthState::mass_kg)
+      .def_readwrite("imu_bias_valid", &star::gnc::TruthState::imu_bias_valid)
+      .STAR_V3_PROP(star::gnc::TruthState, "b_g_radps", b_g_radps)
+      .STAR_V3_PROP(star::gnc::TruthState, "b_a_mps2", b_a_mps2);
+
+  py::class_<star::gnc::NavSensorModel>(
+      m, "NavSensorModel",
+      "The run's configured sensor-suite parameters, handed to components at "
+      "init so an estimator's stochastic model IS the configured truth model "
+      "rather than a hand-copied duplicate in the mission file that can "
+      "silently drift out of sync with the sensors it describes.")
+      .def(py::init<>())
+      .def_readwrite("imu_present", &star::gnc::NavSensorModel::imu_present)
+      .def_readwrite("imu_id", &star::gnc::NavSensorModel::imu_id)
+      .def_readwrite("gyro_arw", &star::gnc::NavSensorModel::gyro_arw)
+      .def_readwrite("accel_vrw", &star::gnc::NavSensorModel::accel_vrw)
+      .def_readwrite("gyro_gm_sigma", &star::gnc::NavSensorModel::gyro_gm_sigma)
+      .def_readwrite("gyro_tau_s", &star::gnc::NavSensorModel::gyro_tau_s)
+      .def_readwrite("accel_gm_sigma",
+                     &star::gnc::NavSensorModel::accel_gm_sigma)
+      .def_readwrite("accel_tau_s", &star::gnc::NavSensorModel::accel_tau_s)
+      .def_readwrite("navfix_present",
+                     &star::gnc::NavSensorModel::navfix_present)
+      .def_readwrite("navfix_id", &star::gnc::NavSensorModel::navfix_id)
+      .STAR_V3_PROP(star::gnc::NavSensorModel, "navfix_sigma_r_m",
+                    navfix_sigma_r_m)
+      .STAR_V3_PROP(star::gnc::NavSensorModel, "navfix_sigma_v_mps",
+                    navfix_sigma_v_mps)
+      .def_readwrite("startracker_present",
+                     &star::gnc::NavSensorModel::startracker_present)
+      .def_readwrite("startracker_id",
+                     &star::gnc::NavSensorModel::startracker_id)
+      .STAR_V3_PROP(star::gnc::NavSensorModel, "startracker_sigma_rad",
+                    startracker_sigma_rad)
+      .STAR_V3_PROP(star::gnc::NavSensorModel, "startracker_boresight_b",
+                    startracker_boresight_b)
+      .def_readwrite("altimeter_present",
+                     &star::gnc::NavSensorModel::altimeter_present)
+      .def_readwrite("altimeter_id", &star::gnc::NavSensorModel::altimeter_id)
+      .def_readwrite("altimeter_sigma_noise_m",
+                     &star::gnc::NavSensorModel::altimeter_sigma_noise_m)
+      .def_readwrite("altimeter_sigma_bias_m",
+                     &star::gnc::NavSensorModel::altimeter_sigma_bias_m);
+
+  py::class_<star::gnc::GncOutput>(
+      m, "GncOutput",
+      "One component's output. The same struct serves all three chain roles "
+      "with role-dependent meaning: nav -> q_i2b/omega are the ESTIMATE; "
+      "guidance -> they are the COMMAND; control -> torque_b_nm is the "
+      "commanded body torque, already saturated. valid == false means HOLD: "
+      "the loop keeps applying the previous applied command and logs the "
+      "held values with valid = 0.")
+      .def(py::init<>())
+      .def_readwrite("valid", &star::gnc::GncOutput::valid)
+      .STAR_QUAT_PROP(star::gnc::GncOutput, "q_i2b", q_i2b)
+      .STAR_V3_PROP(star::gnc::GncOutput, "omega_b_radps", omega_b_radps)
+      .STAR_V3_PROP(star::gnc::GncOutput, "torque_b_nm", torque_b_nm);
+
+  py::class_<star::gnc::GncInput>(
+      m, "GncInput",
+      "Everything a component may read on one control cycle. The loop fills "
+      "the chain slots progressively in the fixed order nav -> guidance -> "
+      "control: guidance sees nav_est, control sees nav_est and att_cmd. "
+      "prev_applied is the command actually applied on the previous cycle "
+      "(post-latency), so a component can rate-limit against what the "
+      "vehicle really did. oracle is populated if and only if the scenario "
+      "set oracle = true; treat oracle.valid == false as 'truth does not "
+      "exist'.")
+      .def(py::init<>())
+      .def_readwrite("cycle", &star::gnc::GncInput::cycle)
+      .def_readwrite("t_s", &star::gnc::GncInput::t_s)
+      .def_readwrite("dt_s", &star::gnc::GncInput::dt_s)
+      .def_readwrite("imu", &star::gnc::GncInput::imu)
+      .def_readwrite("imu_fresh", &star::gnc::GncInput::imu_fresh)
+      .def_readwrite("nav_est", &star::gnc::GncInput::nav_est)
+      .def_readwrite("att_cmd", &star::gnc::GncInput::att_cmd)
+      .def_readwrite("prev_applied", &star::gnc::GncInput::prev_applied)
+      .def_readwrite("oracle", &star::gnc::GncInput::oracle)
+      .def_readwrite("navfix", &star::gnc::GncInput::navfix)
+      .def_readwrite("startracker", &star::gnc::GncInput::startracker)
+      .def_readwrite("altimeter", &star::gnc::GncInput::altimeter)
+      .def_readwrite("env", &star::gnc::GncInput::env);
+
+  py::class_<star::gnc::GncInitContext>(
+      m, "GncInitContext",
+      "One-time initialization context captured at GNC activation. q0/omega0 "
+      "are the attitude state at activation; the pad ENU basis is valid only "
+      "for geodetic launch missions. mu_m3ps2 and the ellipsoid pair are the "
+      "central-body constants an estimator needs for its own dynamics and "
+      "measurement models; sensors is the configured suite.")
+      .def(py::init<>())
+      .def_readwrite("t0_s", &star::gnc::GncInitContext::t0_s)
+      .STAR_QUAT_PROP(star::gnc::GncInitContext, "q0_i2b", q0_i2b)
+      .STAR_V3_PROP(star::gnc::GncInitContext, "omega0_b_radps",
+                    omega0_b_radps)
+      .def_readwrite("pad_basis_valid",
+                     &star::gnc::GncInitContext::pad_basis_valid)
+      .STAR_V3_PROP(star::gnc::GncInitContext, "up_i", up_i)
+      .STAR_V3_PROP(star::gnc::GncInitContext, "east_i", east_i)
+      .STAR_V3_PROP(star::gnc::GncInitContext, "north_i", north_i)
+      .def_readwrite("control_rate_hz",
+                     &star::gnc::GncInitContext::control_rate_hz)
+      .def_readwrite("dt_s", &star::gnc::GncInitContext::dt_s)
+      .def_readwrite("mu_m3ps2", &star::gnc::GncInitContext::mu_m3ps2)
+      .def_readwrite("ellipsoid_a_m", &star::gnc::GncInitContext::ellipsoid_a_m)
+      .def_readwrite("ellipsoid_inv_f",
+                     &star::gnc::GncInitContext::ellipsoid_inv_f)
+      .def_readwrite("sensors", &star::gnc::GncInitContext::sensors);
+
+  py::class_<star::gnc::InnovationSample>(
+      m, "InnovationSample",
+      "One applied aiding update, reported for nav.innov logging: the "
+      "innovation vector y (size m) and the innovation covariance S packed "
+      "row-major upper triangle (size m(m+1)/2). sensor_id indexes the run's "
+      "configured sensor list.")
+      .def(py::init<>())
+      .def_readwrite("sensor_id", &star::gnc::InnovationSample::sensor_id)
+      .def_readwrite("y", &star::gnc::InnovationSample::y)
+      .def_readwrite("s_upper", &star::gnc::InnovationSample::s_upper);
+
+  py::enum_<star::gnc::ErrorQuantity>(
+      m, "ErrorQuantity",
+      "Which truth quantity a block of an estimator's state vector is "
+      "compared against when the loop computes nav.err. Each names a "
+      "quantity the simulator knows truly; a state with no truth counterpart "
+      "cannot be declared.")
+      .value("POSITION", star::gnc::ErrorQuantity::kPosition)
+      .value("VELOCITY", star::gnc::ErrorQuantity::kVelocity)
+      .value("ATTITUDE", star::gnc::ErrorQuantity::kAttitude)
+      .value("ANGULAR_RATE", star::gnc::ErrorQuantity::kAngularRate)
+      .value("GYRO_BIAS", star::gnc::ErrorQuantity::kGyroBias)
+      .value("ACCEL_BIAS", star::gnc::ErrorQuantity::kAccelBias)
+      .value("MASS", star::gnc::ErrorQuantity::kMass);
+
+  py::enum_<star::gnc::ErrorForm>(
+      m, "ErrorForm",
+      "How the error in a declared quantity is formed. DIFFERENCE is "
+      "elementwise truth minus estimate and is the only form for every "
+      "quantity except ATTITUDE. An attitude error is a rotation difference: "
+      "QUAT_ERROR_LOCAL is dq = conj(q_est) (x) q_true (4 slots, resolved in "
+      "the estimated body frame), QUAT_ERROR_GLOBAL is dq = q_true (x) "
+      "conj(q_est) (4 slots, resolved in the inertial frame), and "
+      "QUAT_DIFFERENCE_ALIGNED is the componentwise q_true - q_est with "
+      "q_true first sign-aligned to the estimate's hemisphere (4 slots), for "
+      "an estimator that treats the quaternion components as ordinary state "
+      "entries. The multiplicative forms are sign canonicalized to the +w "
+      "hemisphere. Every attitude form is four slots, so a block's error "
+      "width always equals its state width. Quaternions are scalar-first "
+      "(D-7).")
+      .value("DIFFERENCE", star::gnc::ErrorForm::kDifference)
+      .value("QUAT_ERROR_LOCAL", star::gnc::ErrorForm::kQuatErrorLocal)
+      .value("QUAT_ERROR_GLOBAL", star::gnc::ErrorForm::kQuatErrorGlobal)
+      .value("QUAT_DIFFERENCE_ALIGNED",
+             star::gnc::ErrorForm::kQuatDifferenceAligned);
+
+  py::class_<star::gnc::ErrorBlock>(
+      m, "ErrorBlock",
+      "One contiguous run of an estimator's state vector, and how its error "
+      "is formed. offset is the index of the block's first slot, shared by "
+      "the state vector and the error vector. The blocks a component returns "
+      "from error_layout() must tile [0, state_dim()) exactly.")
+      .def(py::init<>())
+      .def(py::init([](star::gnc::ErrorQuantity q, star::gnc::ErrorForm f,
+                       int offset) {
+             star::gnc::ErrorBlock b;
+             b.quantity = q;
+             b.form = f;
+             b.offset = offset;
+             return b;
+           }),
+           py::arg("quantity"), py::arg("form"), py::arg("offset"))
+      .def_readwrite("quantity", &star::gnc::ErrorBlock::quantity)
+      .def_readwrite("form", &star::gnc::ErrorBlock::form)
+      .def_readwrite("offset", &star::gnc::ErrorBlock::offset);
+
+  py::class_<star::gnc::IGncComponent, PyGncComponent>(
+      m, "IGncComponent",
+      "The FR-25 GNC plugin base. Subclass it in Python and override "
+      "init(ctx) and update(input) -> GncOutput; register the subclass with "
+      "register_python_component(name, cls) and select it from a mission "
+      "file by that name.\n\n"
+      "An estimator additionally overrides state_dim() and state(), and may "
+      "override cov_dim()/covariance_upper(), innov_max_dim()/innovations(), "
+      "and error_layout(). state() returns state_dim() floats and "
+      "covariance_upper() returns cov_dim()*(cov_dim()+1)/2 floats (packed "
+      "row-major upper triangle); a wrong length raises rather than being "
+      "silently truncated.\n\n"
+      "error_layout() returns a list of ErrorBlock describing what each slot "
+      "of the state vector means. The loop uses it to compute nav.err "
+      "itself: no method of this class is ever handed the true state, which "
+      "is what makes FR-24's privileged-truth boundary structural rather "
+      "than a promise. An estimator that declares no layout gets no nav.err "
+      "channel.\n\n"
+      "DETERMINISM (D-10): update() runs inside the deterministic time loop. "
+      "It must not read the clock, perform I/O, or draw from an unseeded "
+      "RNG. See star_reacher.sim for the full contract - the core cannot "
+      "enforce it on arbitrary Python.")
+      .def(py::init<>())
+      .def("init", &star::gnc::IGncComponent::init, py::arg("ctx"))
+      .def("update", &star::gnc::IGncComponent::update, py::arg("input"))
+      .def("state_dim", &star::gnc::IGncComponent::state_dim)
+      .def("cov_dim", &star::gnc::IGncComponent::cov_dim)
+      .def("innov_max_dim", &star::gnc::IGncComponent::innov_max_dim)
+      .def("error_layout", &star::gnc::IGncComponent::error_layout);
+
+  m.def("register_python_component", &register_python_component,
+        py::arg("name"), py::arg("factory"),
+        "Register a Python GNC component factory under a config-file name "
+        "(FR-25). factory(cfg) must return an IGncComponent subclass "
+        "instance; a class object is such a callable. Duplicate names raise, "
+        "because two components silently shadowing each other would be a "
+        "determinism hazard.");
+
+  // -- FR-24 stepping API ---------------------------------------------------
+
+  py::class_<star::VehicleCycle>(
+      m, "Sim",
+      "The FR-24 stepping API over the 6DOF vehicle loop. Sim(config, "
+      "out_path) opens the SRLOG and writes its header; each step() advances "
+      "exactly one GNC control period (D-5) and returns the observation.\n\n"
+      "Stepped and batch execution of one scenario produce byte-identical "
+      "logs because they are the same code: run_vehicle() is literally a "
+      "loop over this same cycle core (Phase 6 exit criterion 4).")
+      .def(py::init<const star::RunConfig&, const std::string&>(),
+           py::arg("config"), py::arg("out_path"))
+      .def(
+          "step",
+          [](star::VehicleCycle& s, const py::object& commands) {
+            if (!commands.is_none()) {
+              apply_commands(s, commands.cast<py::dict>());
+            }
+            s.step();
+            return observation_dict(s.observation());
+          },
+          py::arg("commands") = py::none(),
+          "Advance exactly one control period and return the observation "
+          "dict for the cycle just processed. commands is an optional dict "
+          "with keys 'torque_b_nm', 'omega_b_radps', 'q_i2b' (scalar-first), "
+          "and 'valid'; supplied keys replace the held command and missing "
+          "keys hold it (D-5 zero-order hold), while an unknown key raises. "
+          "Commanding requires the mission to configure an 'external' "
+          "gnc.guidance or gnc.control component. Stepping after the run has "
+          "ended raises: the log is complete and closed.")
+      .def(
+          "observe",
+          [](const star::VehicleCycle& s) {
+            return observation_dict(s.observation());
+          },
+          "The non-privileged observation of the most recently processed "
+          "cycle (before the first step(), of the initial state). Reading is "
+          "PURE - it runs no component, draws no random number, consumes no "
+          "sensor sample, and returns fresh copies rather than views - so "
+          "two calls without an intervening step() return equal dicts (exit "
+          "criterion 4).")
+      .def(
+          "truth",
+          [](const star::VehicleCycle& s) { return truth_dict(s.truth()); },
+          "PRIVILEGED true state at the instant observe() describes. Never "
+          "visible to a GNC component through this path: a component sees "
+          "truth only via GncInput.oracle, and only when the scenario set "
+          "oracle = true.")
+      .def("time", &star::VehicleCycle::time_s,
+           "Current cycle time [s] - the time of the next cycle to be "
+           "processed, which after a step() is one period past the "
+           "observation's t_s.")
+      .def("cycle", &star::VehicleCycle::cycle,
+           "Current cycle index (0-based), the next cycle to be processed.")
+      .def("done", &star::VehicleCycle::done,
+           "True once the run has ended (terminal event or final cycle); the "
+           "log is then complete and closed and step() must not be called "
+           "again.")
+      .def(
+          "summary",
+          [](const star::VehicleCycle& s) { return summary_dict(s.summary()); },
+          "Run summary dict (steps, final state, record tallies); valid once "
+          "done().")
+      .def("has_external_command", &star::VehicleCycle::has_external_command,
+           "True when the mission configures an 'external' guidance or "
+           "control component, i.e. when step(commands) has an addressee.")
+      .def("close", &star::VehicleCycle::close,
+           "Flush and release the SRLOG handle without completing the run. "
+           "Idempotent, and implied by a run that ends normally. An "
+           "abandoned run otherwise holds its log open for as long as the "
+           "object lives, which on Windows makes a later unlink or a reopen "
+           "of the same path fail with a sharing violation - the object's "
+           "lifetime is governed by refcounting and by whether a traceback "
+           "still pins the frame that holds it, neither of which a driver "
+           "controls. step() after close() raises.");
+
+  m.def("gnc_component_names", &star::gnc::component_names,
+        "Registered GNC component names (FR-25 registry), sorted. Exposed "
+        "so the test suite can assert the mission validator's core-less "
+        "component vocabulary (mission.py) never drifts from the core "
+        "registry, and so tooling can enumerate the built-ins.");
 
   m.def("core_version", &star::core_version,
         "Semantic version of the compiled core, e.g. \"0.1.0\".");
