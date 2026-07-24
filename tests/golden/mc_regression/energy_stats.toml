@@ -1,0 +1,13 @@
+# Frozen golden statistics of the Phase 7 Monte Carlo regression
+# ensemble (FR-22 layer 6). Written only by scripts/golden_update.py
+# --apply; provenance and the values_sha256 gate live in manifest.toml.
+# The mean/std are exact binary64 hex literals (float.hex()); the
+# *_readable decimals are for the eye only and are never read back.
+
+metric = "energy_m2ps2"
+mission = "leo_gravity_8x8.toml"
+n = 128
+mean_hex = "-0x1.b5003aedbc07ap+24"
+std_hex = "0x1.857d1c2e64849p+17"
+mean_readable = -28639290.928650357
+std_readable = 199418.22016579125

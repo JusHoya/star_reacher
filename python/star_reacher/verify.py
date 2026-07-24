@@ -25,7 +25,12 @@ golden suite in ``tests/python/test_plot_golden.py``. V022-V027 cover the
 Phase 6 exit-criterion battery: the stepped/batch agreement of criterion 4,
 the v1.2 schema and oracle header of criterion 5, version coherence, the PD
 reimplementation contract of criterion 2, the aberration recomputation of
-criterion 9, and the EKF ensemble consistency of criterion 3.
+criterion 9, and the EKF ensemble consistency of criterion 3. V028-V029 cover
+the Phase 7 Monte Carlo layer: the seeded-sweep reproducibility of exit
+criterion 1 (a manifest entry re-executed through the star run API reproduces
+its logged hash) and the ensemble-statistics regression of exit criterion 2
+(chi-square and Anderson-Darling 99 % gates against a frozen golden), both on
+temp-directory fixtures with V029's golden inlined for the bare wheel.
 
 TIERS. Every registered check runs in both tiers, criterion 3's ensemble
 (V027) included, at the criterion's own R = 100. Criterion 3 was once split
@@ -2714,6 +2719,373 @@ def _check_v027(ctx: dict) -> None:
     _p6_criterion3(_V027_RUNS)
 
 
+# --------------------------------------------------------------------------
+# Phase 7 checks (V028-V029): the Monte Carlo layer's two exit criteria.
+#
+# V028 is criterion 1 (the seeded sweep is bit-reproducible: expanding a spec,
+# deriving a per-run seed, running, and hashing, then re-executing one manifest
+# entry through the star run API reproduces its logged hash), and V029 is
+# criterion 2 (an ensemble's statistics match frozen goldens within
+# chi-square/Anderson-Darling 99 % bounds). Both are self-contained on a bare
+# wheel like every check above: the sweep mission is synthesized in a temp
+# directory (V029's harmonic gravity field via _synthetic_j2_field, the same
+# helper V014 uses), and V029's frozen golden statistics are inlined with their
+# provenance rather than read from tests/golden/, because an installed wheel
+# carries no source tree.
+#
+# WORKER COUNT. Both ensembles run at workers=1 (in-process). The result is
+# worker-count-independent by construction (D-10: no mutable state is shared,
+# so a run is bit-identical whether pooled or standalone), and that
+# independence is gated in the pytest suite by
+# test_mc.py::test_worker_count_does_not_change_the_result. Housing the
+# parallel-pool exercise there rather than here keeps star verify -- the
+# documented first command on a fresh install -- off the process pool, whose
+# abrupt-worker-death failures are an environment property (observed on some
+# Windows hosts) and not a determinism defect the acceptance gate should
+# translate into a red.
+
+
+_V028_MISSION = """\
+schema_version = 1
+
+[mission]
+name = "verify-v028"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 600.0
+
+[run]
+seed = 24601
+
+[integrator]
+type = "rk4"
+dt_s = 1.0
+
+[initial_state.cartesian]
+r_m = [6778137.0, 0.0, 0.0]
+v_mps = [0.0, 7668.6, 0.0]
+frame = "GCRF"
+
+[environment]
+central_body = "earth"
+
+[logging]
+truth_rate_hz = 1
+"""
+
+# A two-dimensional Latin hypercube over the two-body mission: a whole-second
+# propagation window and the in-plane velocity component (an indexed vector
+# override, so the sweep exercises the dotted-path override vocabulary). N is
+# 32, which expands, runs, hashes, and reproduces in well under a second at one
+# worker.
+_V028_SWEEP = """\
+schema_version = 1
+
+[sweep]
+mission = "v028_mission.toml"
+master_seed = 20260723
+method = "lhs"
+n_runs = 32
+
+[[sweep.parameter]]
+path = "mission.duration_s"
+min = 600.0
+max = 900.0
+integer = true
+
+[[sweep.parameter]]
+path = "initial_state.cartesian.v_mps.1"
+min = 7600.0
+max = 7700.0
+"""
+_V028_N_RUNS = 32
+_V028_REEXEC_INDEX = 7  # any interior entry; re-executed to reproduce its hash
+
+
+def _check_v028(ctx: dict) -> None:
+    """Phase 7 exit criterion 1: a seeded sweep is individually reproducible.
+
+    Runs a self-contained 32-run LHS sweep of a two-body mission through the
+    star mc engine (star_reacher.mc.run_sweep), asserts every run succeeds and
+    every logged hash is distinct, then re-executes one manifest entry through
+    run_mission -- the star run API -- with only its recorded seed and
+    overrides and asserts it reproduces both the entry's log_sha256 and its
+    config_sha256. That reproduction is the criterion.
+
+    The gate is shown able to fail, not assumed to be: re-executing the same
+    entry with the seed flipped by one bit must NOT reproduce the hash, so a
+    reproduction that ignored the seed would be caught here.
+    """
+    import os
+
+    from star_reacher.mc import run_sweep
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        (tdp / "v028_mission.toml").write_text(_V028_MISSION, encoding="utf-8")
+        (tdp / "sweep.toml").write_text(_V028_SWEEP, encoding="utf-8")
+        cwd = os.getcwd()
+        os.chdir(tdp)
+        try:
+            manifest = run_sweep(
+                tdp / "sweep.toml", workers=1, outdir=str(tdp / "out"), force=True
+            )
+            runs = manifest["runs"]
+            failed = [r for r in runs if r["status"] != "success"]
+            if failed:
+                raise CheckFailure(
+                    f"{len(failed)} of {len(runs)} sweep runs failed (first: "
+                    f"{failed[0].get('error')})"
+                )
+            if len(runs) != _V028_N_RUNS:
+                raise CheckFailure(
+                    f"the sweep produced {len(runs)} runs, expected {_V028_N_RUNS}"
+                )
+            # Distinct hashes: a sweep that silently ran the same case N times
+            # would pass a per-entry reproduction while testing nothing.
+            distinct = len({r["log_sha256"] for r in runs})
+            if distinct != len(runs):
+                raise CheckFailure(
+                    f"only {distinct} of {len(runs)} logged hashes are distinct; "
+                    f"the sweep is not dispersing its runs"
+                )
+
+            entry = runs[_V028_REEXEC_INDEX]
+            reexec = run_mission(
+                tdp / "v028_mission.toml",
+                outdir=str(tdp / "reexec"),
+                force=True,
+                seed=entry["seed"],
+                overrides=entry["overrides"],
+            )
+            if reexec.srlog_sha256 != entry["log_sha256"]:
+                raise CheckFailure(
+                    f"re-executing manifest entry {_V028_REEXEC_INDEX} with its "
+                    f"recorded seed and overrides gave log SHA-256 "
+                    f"{reexec.srlog_sha256}, not the manifest's "
+                    f"{entry['log_sha256']}"
+                )
+            if reexec.config_sha256 != entry["config_sha256"]:
+                raise CheckFailure(
+                    f"re-executed config SHA-256 {reexec.config_sha256} != "
+                    f"manifest {entry['config_sha256']}"
+                )
+
+            # Able to fail: the same overrides under a one-bit-different seed
+            # must produce a different log, or the reproduction proved nothing.
+            wrong = run_mission(
+                tdp / "v028_mission.toml",
+                outdir=str(tdp / "wrong"),
+                force=True,
+                seed=entry["seed"] ^ 1,
+                overrides=entry["overrides"],
+            )
+            if wrong.srlog_sha256 == entry["log_sha256"]:
+                raise CheckFailure(
+                    "a one-bit-different seed reproduced the same log hash; the "
+                    "reproduction is not seed-sensitive and the gate is vacuous"
+                )
+        finally:
+            os.chdir(cwd)
+
+
+# V029 fixture: a J2-only harmonic mission, dispersed over the same
+# initial-velocity coordinate the shipped missions/mc_regression_sweep.toml sweep
+# uses, but self-contained (synthesized field, inline golden) for the bare
+# wheel. The outcome metric is the final osculating specific mechanical energy,
+# via star_reacher.mc_regression.
+_V029_MISSION = """\
+schema_version = 1
+
+[mission]
+name = "verify-v029"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 2700.0
+
+[run]
+seed = 20260723
+
+[integrator]
+type = "rk4"
+dt_s = 1.0
+
+[spacecraft]
+mass_kg = 500.0
+
+[initial_state.cartesian]
+r_m = [7000000.0, 0.0, 0.0]
+v_mps = [0.0, 6900.0, 3000.0]
+frame = "GCRF"
+
+[environment]
+central_body = "earth"
+
+[environment.gravity]
+model = "harmonic"
+field = "{field}"
+degree = 2
+order = 0
+
+[logging]
+truth_rate_hz = 1
+"""
+
+_V029_SWEEP = """\
+schema_version = 1
+
+[sweep]
+mission = "v029_mission.toml"
+master_seed = 20260723
+method = "lhs"
+n_runs = 64
+
+[[sweep.parameter]]
+path = "mission.duration_s"
+min = 2700.0
+max = 2701.0
+integer = true
+
+[[sweep.parameter]]
+path = "initial_state.cartesian.v_mps.1"
+min = 6850.0
+max = 6950.0
+"""
+
+# The frozen golden statistics of the V029 ensemble, measured from this exact
+# synthesized fixture at master_seed 20260723 and inlined (a bare wheel has no
+# tests/golden/ tree). The ensemble is bit-reproducible, so these are exact
+# binary64 values, carried as float.hex() literals; the gate reproduces the
+# statistics below to the bit. The committed, full-field analogue is
+# tests/golden/mc_regression/energy_stats.toml, frozen from
+# missions/mc_regression_sweep.toml through scripts/golden_update.py --apply and
+# tested in tests/python/test_mc_regression.py.
+_V029_N = 64
+_V029_MEAN = float.fromhex("-0x1.b4f37e59ac1adp+24")  # metric mean [m^2/s^2]
+_V029_STD = float.fromhex("0x1.84dc5495b5d03p+17")  # sample std (ddof=1)
+
+
+def _check_v029(ctx: dict) -> None:
+    """Phase 7 exit criterion 2: ensemble statistics match a frozen golden.
+
+    Runs a self-contained 64-run LHS sweep of a J2-only harmonic mission, takes
+    each run's final osculating specific mechanical energy as the outcome
+    metric (star_reacher.mc_regression), and gates the ensemble against the
+    inlined golden (mean, std) at 99 % with BOTH a chi-square two-sided
+    interval on the standardized sum of squares and an Anderson-Darling test of
+    the standardized metric against N(mean, std).
+
+    Measured at the pass point on this fixture: chi-square S = 63.000 inside
+    [38.610, 96.878] (dof 64), and Anderson-Darling A2 = 0.710 with
+    p = 0.551. Both are a fixed function of the frozen master seed.
+
+    The gate was shown able to fail, not assumed to be. Against this same
+    golden:
+
+    * a +0.5-sigma shift of the metric leaves the chi-square statistic inside
+      its interval (a pure location shift barely moves the sum of squares) but
+      drives the Anderson-Darling p-value to 1.0e-4 -- red -- which is exactly
+      why both tests gate: A-D catches a shift chi-square tolerates;
+    * a 1.4x scale inflation of the metric drives BOTH red -- chi-square to
+      S = 123.5 (above the 96.878 upper bound) and Anderson-Darling to
+      A2 = 5.478, p = 1.7e-3.
+
+    Both mutations are re-measured here on the live ensemble and asserted to
+    flip the respective gate, so a future change that made either gate
+    insensitive fails this check rather than passing it silently.
+    """
+    import os
+
+    from star_reacher.mc import run_sweep
+    from star_reacher.mc_regression import (
+        GoldenStats,
+        ensemble_metric,
+        regression_gate,
+    )
+
+    golden = GoldenStats(
+        n=_V029_N,
+        mean=_V029_MEAN,
+        std=_V029_STD,
+        metric="energy_m2ps2",
+        mission="verify-v029-j2",
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        field_path, _gm, _radius, _c20 = _synthetic_j2_field(tdp)
+        (tdp / "v029_mission.toml").write_text(
+            _V029_MISSION.format(field=field_path.as_posix()), encoding="utf-8"
+        )
+        (tdp / "sweep.toml").write_text(_V029_SWEEP, encoding="utf-8")
+        cwd = os.getcwd()
+        os.chdir(tdp)
+        try:
+            manifest = run_sweep(
+                tdp / "sweep.toml", workers=1, outdir=str(tdp / "out"), force=True
+            )
+            failed = [r for r in manifest["runs"] if r["status"] != "success"]
+            if failed:
+                raise CheckFailure(
+                    f"{len(failed)} of {len(manifest['runs'])} V029 runs failed "
+                    f"(first: {failed[0].get('error')})"
+                )
+            metric = ensemble_metric(manifest, tdp / "out")
+        finally:
+            os.chdir(cwd)
+
+    if metric.shape != (_V029_N,):
+        raise CheckFailure(
+            f"the V029 ensemble metric has shape {metric.shape}, expected "
+            f"({_V029_N},)"
+        )
+
+    gate = regression_gate(metric, golden)
+    if not gate.chi2_passed:
+        raise CheckFailure(
+            f"MC-regression chi-square statistic {gate.chi2_stat:.4f} outside "
+            f"the 99 % interval [{gate.chi2_lower:.4f}, {gate.chi2_upper:.4f}] "
+            f"(dof {gate.dof}) against the frozen golden"
+        )
+    if not gate.ad_passed:
+        raise CheckFailure(
+            f"MC-regression Anderson-Darling A2 {gate.ad_stat:.4f} has p-value "
+            f"{gate.ad_pvalue:.6f} below the 99 % threshold of 0.01 against the "
+            f"frozen golden N(mean, std)"
+        )
+
+    # The pass-point statistics are pinned: a drift in either is a visible
+    # failure rather than a silently moved gate.
+    if abs(gate.chi2_stat - 63.0) > 1e-6:
+        raise CheckFailure(
+            f"chi-square statistic {gate.chi2_stat:.6f} drifted from the frozen "
+            f"63.000; the ensemble is no longer the one the golden was frozen on"
+        )
+    if abs(gate.ad_stat - 0.710) > 1e-2:
+        raise CheckFailure(
+            f"Anderson-Darling A2 {gate.ad_stat:.6f} drifted from the frozen 0.710"
+        )
+
+    # Able to fail, demonstrated on the live ensemble. A pure shift must trip
+    # A-D (the location test) while chi-square tolerates it; a scale inflation
+    # must trip BOTH. If either mutation stopped flipping its gate, the gate
+    # would have gone insensitive and this check must catch that.
+    shifted = regression_gate(metric + 0.5 * golden.std, golden)
+    if shifted.ad_passed:
+        raise CheckFailure(
+            f"a +0.5-sigma shift did not fail the Anderson-Darling gate "
+            f"(p={shifted.ad_pvalue:.6f}); the location test has gone "
+            f"insensitive and the gate is not meaningful"
+        )
+    inflated = regression_gate(
+        golden.mean + (metric - golden.mean) * 1.4, golden
+    )
+    if inflated.chi2_passed or inflated.ad_passed:
+        raise CheckFailure(
+            f"a 1.4x scale inflation did not fail both gates (chi-square "
+            f"passed={inflated.chi2_passed}, A-D passed={inflated.ad_passed}); "
+            f"the regression gate cannot see a distribution this different"
+        )
+
+
 # Tier membership. BOTH runs in the full tier and in --quick; FULL and QUICK
 # restrict a check to one tier. No check currently uses them: every gate,
 # criterion 3's 100-run ensemble included, fits inside the < 60 s quick
@@ -2752,6 +3124,8 @@ _CHECKS = [
     ("V025", TIER_BOTH, "P6 EC-2: Python PD law reproduces core torques < 1e-9 N*m, scenario non-degenerate", _check_v025),
     ("V026", TIER_BOTH, "P6 EC-9: logged Sun direction vs independent aberration + DCM < 1e-5 mas", _check_v026),
     ("V027", TIER_BOTH, "P6 EC-3 (R=100): ensemble NEES/NIS gates + bit-identical rerun", _check_v027),
+    ("V028", TIER_BOTH, "P7 EC-1: seeded MC sweep reproduces each entry's log hash via star run", _check_v028),
+    ("V029", TIER_BOTH, "P7 EC-2: MC ensemble stats match frozen golden (chi-square + A-D 99 %)", _check_v029),
 ]
 
 
