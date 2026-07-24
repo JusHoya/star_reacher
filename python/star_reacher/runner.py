@@ -438,6 +438,8 @@ def run_mission(
     command_line=None,
     strict=False,
     gnc_plugins=None,
+    seed=None,
+    overrides=None,
 ) -> RunResult:
     """Validate, resolve, hash, propagate, and write the run artifacts.
 
@@ -447,6 +449,16 @@ def run_mission(
     to errors (FR-15). ``gnc_plugins`` is a sequence of Python files declaring
     GNC components the mission selects as ``python:<name>`` (FR-25); loading
     one executes it, so the paths come only from an explicit ``--gnc-plugin``.
+
+    ``seed`` replaces the mission master seed and ``overrides`` is a dict of
+    numeric ``{dotted.path: value}`` entries (the FR-24/FR-27 override
+    vocabulary), both applied to the resolved mission *before* it is hashed,
+    so an overridden run carries its own ``config_sha256`` and re-hashes its
+    log to exactly what a Monte Carlo manifest recorded for the same seed and
+    overrides -- Phase 7 exit criterion 1. A bad override raises
+    ``OverrideError`` (a ``ValueError``, reported as a validation error at the
+    CLI). This is the identical transformation ``Sim.reset`` applies, housed
+    in ``star_reacher.overrides`` so the batch and stepping paths cannot drift.
     """
     start_wall = time.monotonic()
     start_utc = datetime.now(timezone.utc).isoformat()
@@ -454,6 +466,18 @@ def run_mission(
     resolved, errors = validate_mission_file(mission_path, strict=strict)
     if errors:
         raise MissionValidationError(errors)
+
+    if seed is not None or overrides:
+        # Apply on a deep copy before hashing. `run.seed` rides the same
+        # integer-leaf path as any other override, so a fractional seed is
+        # refused there rather than silently truncated.
+        from star_reacher.overrides import apply_override, deep_copy_resolved
+
+        resolved = deep_copy_resolved(resolved)
+        if seed is not None:
+            apply_override(resolved, "run.seed", seed)
+        for key, value in dict(overrides or {}).items():
+            apply_override(resolved, key, value)
 
     # Path selection. A mission with a vehicle file, an event [[sequence]], or a
     # geodetic launch state takes the Phase 4 6DOF path (run_vehicle); a mission

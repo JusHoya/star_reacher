@@ -143,6 +143,23 @@ std::vector<std::uint64_t> rng_stream_u64(std::uint64_t master_seed,
   return out;
 }
 
+// First n outputs of a SplitMix64 seeded with `seed`, exposed so the Monte
+// Carlo layer (FR-27) derives its per-run seeds from the ONE SplitMix64 the
+// core owns (D-9) rather than a second copy that could drift from it. The
+// per-run seed for run index i is stream[i]: SplitMix64(master).next() called
+// i+1 times, the last value taken. Distinct from make_stream(), which XORs in
+// an FNV-1a stream key and expands into PCG64; this is the bare expander.
+std::vector<std::uint64_t> splitmix64_stream(std::uint64_t seed,
+                                             std::size_t n) {
+  star::rng::SplitMix64 sm(seed);
+  std::vector<std::uint64_t> out;
+  out.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    out.push_back(sm.next());
+  }
+  return out;
+}
+
 std::vector<double> rng_stream_normal(std::uint64_t master_seed,
                                       const std::string& stream_name,
                                       std::size_t n) {
@@ -1496,6 +1513,13 @@ PYBIND11_MODULE(_core, m) {
         py::arg("stream_name"), py::arg("n"),
         "First n standard-normal Box-Muller deviates of the named stream "
         "(D-9; see star/rng.hpp for the exact draw-consumption pattern).");
+
+  m.def("splitmix64_stream", &splitmix64_stream, py::arg("seed"),
+        py::arg("n"),
+        "First n outputs of a SplitMix64 seeded with `seed` (Vigna's "
+        "splitmix64.c). The FR-27 Monte Carlo per-run seed for run index i is "
+        "element i of this stream, so every sweep derives its per-run seeds "
+        "from the one SplitMix64 the core owns (D-9).");
 
   m.def("utc_to_tai", &utc_to_tai, py::arg("year"), py::arg("month"),
         py::arg("day"), py::arg("hour"), py::arg("minute"), py::arg("second"),

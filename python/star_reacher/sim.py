@@ -94,6 +94,12 @@ from star_reacher.mission import (
     canonical_bytes,
     validate_mission_file,
 )
+from star_reacher.overrides import (
+    OVERRIDE_ALIASES as _OVERRIDE_ALIASES,
+    OverrideError,
+    apply_override as _apply_override,
+    deep_copy_resolved as _deep_copy_resolved,
+)
 from star_reacher.plugin import check_plugin_selections, load_plugins
 from star_reacher.runner import RunnerError, build_run_config, mission_is_vehicle
 
@@ -227,13 +233,19 @@ class Sim:
         per episode constructs a ``Sim`` per output directory.
         """
         resolved = _deep_copy_resolved(self._resolved)
-        if seed is not None:
-            # Through the same path as any other integer override, so a
-            # fractional seed is refused here for the reason it is refused
-            # there rather than silently truncated.
-            _apply_override(resolved, "run.seed", seed)
-        for key, value in dict(overrides or {}).items():
-            _apply_override(resolved, _OVERRIDE_ALIASES.get(key, key), value)
+        try:
+            if seed is not None:
+                # Through the same path as any other integer override, so a
+                # fractional seed is refused here for the reason it is refused
+                # there rather than silently truncated.
+                _apply_override(resolved, "run.seed", seed)
+            for key, value in dict(overrides or {}).items():
+                _apply_override(resolved, _OVERRIDE_ALIASES.get(key, key), value)
+        except OverrideError as exc:
+            # The stepping API's public error type is SimError; the shared
+            # override module raises OverrideError, so translate it here while
+            # preserving the message verbatim (the same one the tests match).
+            raise SimError(str(exc)) from exc
 
         config_bytes = canonical_bytes(resolved)
         config_sha = hashlib.sha256(config_bytes).hexdigest()
@@ -372,143 +384,3 @@ class Sim:
                 )
             raise SimError("call reset() before stepping the simulation")
         return self._sim
-
-
-# The two paths a stepping driver overrides most, kept as bare names because
-# they were the whole accepted vocabulary before dotted paths existed and are
-# still the two a hand-written driver reaches for.
-_OVERRIDE_ALIASES = {
-    "duration_s": "mission.duration_s",
-    "latency_cycles": "gnc.latency_cycles",
-}
-
-
-def _is_number(value) -> bool:
-    # TOML/JSON booleans are ints in Python; they are never a numeric leaf.
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-def _override_target(resolved, path):
-    """Walk a dotted override path to its ``(container, key)`` slot.
-
-    Raises :class:`SimError` naming the failing segment rather than the whole
-    path, because on a long path the segment is the actionable part.
-    """
-    segments = path.split(".")
-    node = resolved
-    for depth, segment in enumerate(segments[:-1]):
-        walked = ".".join(segments[: depth + 1])
-        if isinstance(node, list):
-            if not segment.isdigit() or int(segment) >= len(node):
-                raise SimError(
-                    f"override path {path!r}: {walked!r} does not index the "
-                    f"list at {'.'.join(segments[:depth]) or 'the mission'} "
-                    f"(length {len(node)})"
-                )
-            node = node[int(segment)]
-        elif isinstance(node, dict):
-            if segment not in node:
-                raise SimError(
-                    f"override path {path!r}: the resolved mission has no "
-                    f"{walked!r}"
-                )
-            node = node[segment]
-        else:
-            raise SimError(
-                f"override path {path!r}: {walked!r} is not a table or an "
-                f"array, so it has no members to override"
-            )
-    leaf = segments[-1]
-    if isinstance(node, list):
-        if not leaf.isdigit() or int(leaf) >= len(node):
-            raise SimError(
-                f"override path {path!r}: {leaf!r} does not index a list of "
-                f"length {len(node)}"
-            )
-        return node, int(leaf)
-    if not isinstance(node, dict) or leaf not in node:
-        raise SimError(
-            f"override path {path!r}: the resolved mission has no such key; "
-            f"an override may only change a value the mission already sets, "
-            f"because a key the validator never saw would not have been "
-            f"checked"
-        )
-    return node, leaf
-
-
-def _apply_override(resolved, path, value):
-    """Apply one numeric override in place, preserving the leaf's kind."""
-    container, key = _override_target(resolved, path)
-    current = container[key]
-
-    if _is_number(current):
-        if not _is_number(value):
-            raise SimError(
-                f"override {path!r}: expected a number to replace "
-                f"{current!r}, got {type(value).__name__}"
-            )
-        # An integer leaf keeps its type: control_rate_hz, latency_cycles and
-        # seed are counts, and letting one become 10.0 would change the
-        # canonical config bytes - and so the config hash - without changing
-        # the run. A fractional value is REFUSED rather than truncated: the
-        # truncated run is perfectly reproducible and is not the run the
-        # driver asked for, which is the worst of both.
-        if isinstance(current, int):
-            if float(value) != int(value):
-                raise SimError(
-                    f"override {path!r}: {current!r} is an integer count, so "
-                    f"it takes an integer; {value!r} would be truncated to "
-                    f"{int(value)}"
-                )
-            container[key] = int(value)
-        else:
-            container[key] = float(value)
-        return
-
-    if isinstance(current, list) and current and all(_is_number(v) for v in current):
-        if not isinstance(value, (list, tuple)) or len(value) != len(current):
-            raise SimError(
-                f"override {path!r}: expected an array of {len(current)} "
-                f"number(s) to replace {current!r}, got {value!r}"
-            )
-        if not all(_is_number(v) for v in value):
-            raise SimError(
-                f"override {path!r}: every element must be a number, got "
-                f"{value!r}"
-            )
-        # Same rule as the scalar branch, element by element.
-        fractional = [
-            v for c, v in zip(current, value)
-            if isinstance(c, int) and float(v) != int(v)
-        ]
-        if fractional:
-            raise SimError(
-                f"override {path!r}: {current!r} is an array of integer "
-                f"counts, so every element takes an integer; {fractional!r} "
-                f"would be truncated"
-            )
-        container[key] = [
-            int(v) if isinstance(c, int) else float(v)
-            for c, v in zip(current, value)
-        ]
-        return
-
-    raise SimError(
-        f"override {path!r}: only numbers and arrays of numbers are "
-        f"overridable, and this key currently holds {current!r}. A string or "
-        f"a table selects structure the mission validator checked, and "
-        f"changing it here would skip that check"
-    )
-
-
-def _deep_copy_resolved(resolved):
-    """Copy a resolved mission deeply enough for override application.
-
-    ``copy.deepcopy`` would work, but the resolved config is plain JSON-able
-    data by construction (it is hashed through ``canonical_bytes``), so a
-    round trip through the same canonical representation is both sufficient
-    and a check that the assumption still holds.
-    """
-    import json
-
-    return json.loads(canonical_bytes(resolved).decode("utf-8"))

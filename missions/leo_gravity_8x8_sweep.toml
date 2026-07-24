@@ -1,0 +1,38 @@
+# Latin-hypercube Monte Carlo sweep over the committed EGM2008 8x8 LEO mission
+# (missions/leo_gravity_8x8.toml), the Phase 7 exit-criterion-1 reference
+# sweep. The base mission runs on committed gravity data with no fetched
+# ephemeris, so the sweep runs on a clean clone.
+#
+# The two swept dimensions are a short propagation window and the spacecraft
+# mass. The window is deliberately overridden down from the base mission's
+# 7-day cross-tool duration to a fraction of one orbit (3600-7200 s), so a
+# 256-run sweep completes in well under a minute on 8 workers while still
+# exercising the full expand -> per-run-seed -> run -> hash -> manifest path.
+# Every run is individually reproducible from its recorded seed and overrides
+# via `star run --seed <seed> --set mission.duration_s=<v> --set
+# spacecraft.mass_kg=<v>`.
+
+schema_version = 1
+
+[sweep]
+mission = "leo_gravity_8x8.toml"
+master_seed = 20260723
+method = "lhs"
+n_runs = 256
+
+[[sweep.parameter]]
+# A short propagation window: a fraction of one ~90 min LEO orbit up to about
+# 1.3 orbits, keeping each run fast. Sampled to whole seconds (integer = true)
+# because the base mission logs truth at 1 Hz, so duration_s * truth_rate_hz
+# must be an integer for uniform-rate dense-output sampling.
+path = "mission.duration_s"
+min = 3600.0
+max = 7200.0
+integer = true
+
+[[sweep.parameter]]
+# Spacecraft mass around the base 500 kg; changes the state through the
+# initial mass the propagator carries.
+path = "spacecraft.mass_kg"
+min = 400.0
+max = 600.0
