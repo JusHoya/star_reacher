@@ -231,3 +231,152 @@ citation = "Maisonobe, Pommier, and Parraud, 'Orekit: An open source library for
 generation = "scripts/crosstool/run_orekit.py --case drag, 2026-07-03 (command line in [golden].generation). SHA-256 786b0bcfe2813ce8c41b983e02fdaf0064c0326d552eba485b9f8ac9c1f89554"
 date = "2026-07-03"
 tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-LEO-DRAG-OREKIT, tests/python/test_crosstool_frozen_truth.py). Frozen-baseline measurement: 3.376229 m. The bound is PRD Phase 3 exit criterion 5 verbatim; the residual is a nearly pure in-track quadratic from ~4e-4 relative integrated-drag difference (v_rel and frame-chain formulation differences), with integration error bounded at 3.3e-5 m RMS by the convergence rerun"
+
+# ===========================================================================
+# Phase 8 cross-tool cases (exit criterion 1, D-15). GMAT is not installed on
+# the Phase 8 execution host, so the five truth CSVs below are DEFERRED through
+# the PRD section 9 valve: everything except the truth CSV bytes and the
+# measured RMS is committed and ready here, and generating the truth is
+# docs/release_checklist.md item 10. The five gates skip (never pass vacuously)
+# in tests/python/test_crosstool_frozen_truth.py until their CSVs land. The
+# comparison machinery those gates use is proven correct independent of the
+# absent external truth by test_rms_machinery_is_correct_on_sim_own_states
+# (sim-own states as pseudo-truth, position RMS ~5e-9 m).
+#
+# Cases, missions, and gates (PRD Phase 8 exit criterion 1 verbatim):
+#   XTOOL-MOLNIYA-GMAT       missions/molniya.toml        RMS < 100 m / 7 d
+#   XTOOL-LUNAR-GMAT         missions/lunar_orbiter.toml  RMS < 100 m / 7 d
+#   XTOOL-MARS-ORBITER-GMAT  missions/mars_orbiter.toml   RMS < 100 m / 7 d
+#   XTOOL-TRANSLUNAR-GMAT    missions/tli.toml coast      < 1 km at lunar arrival
+#   XTOOL-MARS-CRUISE-GMAT   missions/mars_cruise.toml    < 100 km at arrival
+#
+# Toolchain provenance: identical to the Phase 3 block above (GMAT R2026a
+# portable, pinned SHA-256 F7B00BDE...; stock startup file and EOP pins as
+# recorded there). The Earth-regime cases (Molniya, trans-lunar) reuse the same
+# gmat_startup_zeroeop.txt zero-EOP override committed above; the Moon-, Mars-,
+# and Sun-centred cases use body-centred ICRF coordinate systems whose
+# orientation the Earth-EOP convention does not touch.
+#
+# Controlled-comparison configuration (per case, in the .script headers):
+#   * Identical (GM, R, coefficients) fields: Molniya/trans-lunar read the
+#     committed earth_egm2008_8x8.cof (Molniya) or point-mass Earth
+#     (trans-lunar); the lunar case reads moon_grgm1200a_50x50.cof and the
+#     Mars case mars_mro120f_20x20.cof, both generated below from the same
+#     committed coefficient excerpts the missions load, each with its own
+#     self-consistent GM/R triple.
+#   * SRP where the mission carries it (Mars orbiter, lunar orbiter, Mars
+#     cruise): GMAT spherical (cannonball) SRP with Cr and area chosen so
+#     Cr*A/m equals the mission's cr_a_over_m_m2pkg; the SRP flux/AU are stated
+#     in each .script and matched to the simulator's SRP constants.
+#   * Fixed-step RK89 at 60 s (ErrorControl None) so report rows land on the
+#     shared 60 s comparison grid, as in the Phase 3 GMAT case.
+#   * Initial state: each .script carries the simulator's exact t = 0 Cartesian
+#     truth state (keplerian element sets converted through the core GM), in the
+#     body-centred ICRF system, so both tools start from identical numbers.
+#
+# Irreducible tool differences (bounded, recorded per case in the .script and
+# below): GMAT's Mars/Moon body-fixed orientation vs the simulator's analytic
+# IAU 2015 Mars elements and DE440 Moon principal-axis frame; these are the
+# Phase 8 analogue of the Phase 3 FK5/IAU-76-vs-CIO residual, expected far
+# below each 100 m / 1 km / 100 km gate.
+
+[[file]]
+name = "mars_mro120f_20x20.cof"
+source = "tests/golden/gravity/mars_mro120f_n20.csv (the committed MRO120F excerpt; source pins in tests/golden/gravity/manifest.toml), truncated to 20x20"
+citation = "Genova, Goossens, Lemoine, Mazarico, Neumann, Smith, and Zuber, 'Seasonal and static gravity field of Mars from MGS, Mars Odyssey and MRO radio science', Icarus 272, 228-245, 2016; COF layout per the Phase 3 earth_egm2008_8x8.cof (reverse-engineered from GMAT R2026a's shipped data)"
+generation = "scripts/crosstool/gen_field_files_phase8.py (deterministic; 15-significant-digit fixed-column fields, measured exact round trip on this excerpt). SHA-256 55213d13b06ddc754ae29216d6e673cd5779e3cd4cdb84b5682967096a368c6a"
+date = "2026-07-24"
+tolerance = "not applicable (external-tool input fixture; measured COF 15-digit worst relative deviation 0.0 on this excerpt, and GM/R/coefficients are the field's own self-consistent triple)"
+
+[[file]]
+name = "moon_grgm1200a_50x50.cof"
+source = "tests/golden/gravity/moon_grgm1200a_n50.csv (the committed GRGM1200A excerpt; source pins in tests/golden/gravity/manifest.toml), truncated to 50x50"
+citation = "Lemoine, Goossens, Sabaka, Nicholas, Mazarico, Rowlands, Loomis, Chinn, Caprette, Neumann, Smith, and Zuber, 'GRGM900C: A degree 900 lunar gravity model from GRAIL primary and extended mission data', Geophysical Research Letters 41, 2014 (GRGM1200A is the degree-1200 successor); COF layout per the Phase 3 earth_egm2008_8x8.cof"
+generation = "scripts/crosstool/gen_field_files_phase8.py (deterministic; 15-significant-digit fixed-column fields, measured exact round trip on this excerpt). SHA-256 e03a13c91b248d6469cc6535b802116d32c48772fdc6008863371daac0df993e"
+date = "2026-07-24"
+tolerance = "not applicable (external-tool input fixture; measured COF 15-digit worst relative deviation 0.0 on this excerpt, and GM/R/coefficients are the field's own self-consistent triple)"
+
+[[file]]
+name = "gmat_molniya.script"
+source = "hand-written replication of missions/molniya.toml per README.md; Cartesian state and output in the built-in EarthICRF system; Sun and Luna point masses"
+citation = "GMAT R2026a (NASA GSFC, SourceForge distribution pinned in the Phase 3 toolchain block); Hughes, Qureshi, Cooley, and Parker, 'Verification and Validation of the General Mission Analysis Tool (GMAT)', AIAA 2014-4151, 2014"
+generation = "committed as-run (contains maintainer-machine absolute paths by design, D-15). SHA-256 9abfbc480dae0c51476b517f89e589c32dde9902e6d5f5d0fa17974402752a4a"
+date = "2026-07-24"
+tolerance = "not applicable (configuration evidence)"
+
+[[file]]
+name = "gmat_lunar_orbiter.script"
+source = "hand-written replication of missions/lunar_orbiter.toml per README.md; Cartesian state and output in a LunaICRF (Luna origin, ICRF axes) system; moon_grgm1200a_50x50.cof 50x50; Sun and Earth point masses; spherical SRP Cr*A/m = 0.02"
+citation = "GMAT R2026a (pinned above; AIAA 2014-4151 as above)"
+generation = "committed as-run (maintainer-machine absolute paths by design, D-15). SHA-256 a912c8c42d912c2c0d71e9618a4b34f9197d2598874dddd9406b34b9e38effde"
+date = "2026-07-24"
+tolerance = "not applicable (configuration evidence)"
+
+[[file]]
+name = "gmat_mars_orbiter.script"
+source = "hand-written replication of missions/mars_orbiter.toml per README.md; Cartesian state and output in a MarsICRF (Mars origin, ICRF axes) system; mars_mro120f_20x20.cof 20x20; Sun point mass; spherical SRP Cr*A/m = 0.02"
+citation = "GMAT R2026a (pinned above; AIAA 2014-4151 as above)"
+generation = "committed as-run (maintainer-machine absolute paths by design, D-15). SHA-256 b78bf3a7df068b0b94eb960ffdd150118974fb26fe9717be57f8ddaaa53b7cf9"
+date = "2026-07-24"
+tolerance = "not applicable (configuration evidence)"
+
+[[file]]
+name = "gmat_translunar.script"
+source = "hand-written replication of the missions/tli.toml BALLISTIC COAST per README.md; Cartesian state (the simulator's exact tli t = 353 s MECO truth state) and output in EarthICRF; Earth, Sun, and Luna point masses (tli.toml's point-mass Earth with the Sun and Moon third bodies); no SRP/drag"
+citation = "GMAT R2026a (pinned above; AIAA 2014-4151 as above)"
+generation = "committed as-run (maintainer-machine absolute paths by design, D-15). SHA-256 83cdf2eff10935dc2c740b8a85b4e538d184a803119889aaacbbd060bc7ea2ca"
+date = "2026-07-24"
+tolerance = "not applicable (configuration evidence). The gate is a single-point arrival comparison, not a 7-day RMS: position < 1 km at the lunar-SOI arrival epoch the simulator locates"
+
+[[file]]
+name = "gmat_mars_cruise.script"
+source = "hand-written replication of missions/mars_cruise.toml per README.md; Cartesian state (the mission's patched-conic departure-handoff state) and output in a SunICRF (Sun origin, ICRF axes) system; Sun, Earth, Luna, Venus, Mars, and Jupiter point masses; spherical SRP Cr*A/m = 0.013, no occulter"
+citation = "GMAT R2026a (pinned above; AIAA 2014-4151 as above)"
+generation = "committed as-run (maintainer-machine absolute paths by design, D-15). SHA-256 2835f8a8404a97baa94a318bfb36a4ad957418442ddf498686dce76727793ac3"
+date = "2026-07-24"
+tolerance = "not applicable (configuration evidence). Replicates the committed 7-day report arc; the full 'arrival SOI' variant (Propagate to the Mars-SOI crossing) is the maintainer extension noted in the .script header"
+
+# ---- Phase 8 frozen truth (PENDING: GMAT not available; deferred to
+#      docs/release_checklist.md item 10). Each entry states the mission it
+#      replicates, the exact GMAT configuration, and the PRD gate verbatim;
+#      only the CSV bytes and the measured RMS are what the maintainer produces.
+
+[[file]]
+name = "truth_gmat_molniya.csv"
+source = "PENDING -- GMAT R2026a fixed-step RK89 propagation of gmat_molniya.script under gmat_startup_zeroeop.txt; report converted km -> m on the exact 60 s grid (10081 rows). Not committed at Phase 8 execution: GMAT is not installed on the execution host (docs/release_checklist.md item 10)"
+citation = "GMAT R2026a (pinned above); force model: earth_egm2008_8x8.cof 8x8 TideModel None, Sun+Luna point masses, no SRP/drag"
+generation = "scripts/crosstool/run_gmat_phase8.py --case molniya (the maintainer freeze driver, committed; PENDING run). SHA-256 pending"
+date = "pending"
+tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-MOLNIYA-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim. Frozen-baseline measurement: pending GMAT run"
+
+[[file]]
+name = "truth_gmat_lunar_orbiter.csv"
+source = "PENDING -- GMAT R2026a fixed-step RK89 propagation of gmat_lunar_orbiter.script; report converted km -> m on the exact 60 s grid (10081 rows). Not committed: GMAT unavailable AND the mission's moon_librations excerpt (tests/golden/ephemeris/excerpt_de440s_lunar.sreph) is itself pending (docs/release_checklist.md item 10)"
+citation = "GMAT R2026a (pinned above); force model: moon_grgm1200a_50x50.cof 50x50 TideModel None in the Moon PA frame, Sun+Earth point masses, spherical SRP Cr*A/m = 0.02"
+generation = "scripts/crosstool/run_gmat_phase8.py --case lunar_orbiter (committed; PENDING run). SHA-256 pending"
+date = "pending"
+tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-LUNAR-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (lunar orbiter, degree-matched GRGM field, SRP on). Frozen-baseline measurement: pending GMAT run"
+
+[[file]]
+name = "truth_gmat_mars_orbiter.csv"
+source = "PENDING -- GMAT R2026a fixed-step RK89 propagation of gmat_mars_orbiter.script; report converted km -> m on the exact 60 s grid (10081 rows). Not committed: GMAT unavailable (docs/release_checklist.md item 10)"
+citation = "GMAT R2026a (pinned above); force model: mars_mro120f_20x20.cof 20x20 TideModel None in the Mars IAU body-fixed frame, Sun point mass, spherical SRP Cr*A/m = 0.02"
+generation = "scripts/crosstool/run_gmat_phase8.py --case mars_orbiter (committed; PENDING run). SHA-256 pending"
+date = "pending"
+tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-MARS-ORBITER-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (Mars orbiter, MRO-class, harmonics + SRP). Frozen-baseline measurement: pending GMAT run"
+
+[[file]]
+name = "truth_gmat_translunar.csv"
+source = "PENDING -- GMAT R2026a fixed-step RK89 coast propagation of gmat_translunar.script from the tli MECO state; the arrival-epoch state (single row) converted km -> m. Not committed: GMAT unavailable (docs/release_checklist.md item 10)"
+citation = "GMAT R2026a (pinned above); force model: Earth+Sun+Luna point masses, no SRP/drag (the tli.toml coast force set)"
+generation = "scripts/crosstool/run_gmat_phase8.py --case translunar (committed; PENDING run). SHA-256 pending"
+date = "pending"
+tolerance = "gate: 3D position difference at lunar-SOI arrival < 1 km (XTOOL-TRANSLUNAR-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (trans-lunar < 1 km at lunar arrival). Frozen-baseline measurement: pending GMAT run"
+
+[[file]]
+name = "truth_gmat_mars_cruise.csv"
+source = "PENDING -- GMAT R2026a fixed-step RK89 propagation of gmat_mars_cruise.script over the committed 7-day arc; report converted km -> m on the exact 60 s grid (10081 rows). Not committed: GMAT unavailable (docs/release_checklist.md item 10)"
+citation = "GMAT R2026a (pinned above); force model: heliocentric Sun two-body plus Earth/Luna/Venus/Mars/Jupiter point masses, spherical SRP Cr*A/m = 0.013 no occulter"
+generation = "scripts/crosstool/run_gmat_phase8.py --case mars_cruise (committed; PENDING run). SHA-256 pending"
+date = "pending"
+tolerance = "gate: 3D position difference at arrival < 100 km (XTOOL-MARS-CRUISE-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (Mars cruise < 100 km at arrival SOI); the committed gate applies it at the end of the 7-day report arc, the full-cruise 'arrival SOI' variant per the .script header. Frozen-baseline measurement: pending GMAT run"

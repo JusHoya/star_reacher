@@ -1,0 +1,80 @@
+# Illustrative LRO-ephemeris comparison (Phase 8 deliverable): a ~50 km
+# LRO-class lunar mapping orbit under Moon GRGM1200A 50x50 harmonic gravity in
+# the principal-axis frame plus cannonball SRP, with the Sun and Earth third
+# bodies. This is a REPORT CASE STUDY ONLY, NOT a validation gate (PRD Phase 8
+# deliverables): the real Lunar Reconnaissance Orbiter's momentum-management
+# and orbit-maintenance maneuvers and its detailed SRP/attitude history are
+# not modeled here, so the simulated free-flight arc necessarily diverges from
+# the real published LRO ephemeris and no pass/fail tolerance is asserted
+# against it. The case is carried to show a real-spacecraft comparison
+# qualitatively in the report, alongside the gated lunar-orbiter case
+# (missions/lunar_orbiter.toml), which IS the < 100 m frozen-GMAT gate.
+#
+# The orbit mirrors LRO's ~50 km mean-altitude near-circular polar mapping
+# orbit: semimajor axis 1788 km (altitude ~50 km above the 1738 km GRGM
+# reference radius), eccentricity 0.01, inclination 90 deg, period ~1.89 h.
+# At 50 km the lunar mascon field drives eccentricity growth an unmaneuvered
+# arc does not correct - which is precisely why the real LRO maneuvers and why
+# this case is illustrative rather than a gate.
+#
+# Central body Moon: like the gated lunar_orbiter mission this REQUIRES the
+# maintainer-generated moon_librations excerpt
+# (tests/golden/ephemeris/excerpt_de440s_lunar.sreph,
+# tests/golden/ephemeris/generate_lunar.py), which covers this same
+# 2026-01-01 window. FR-6/FR-15 require the Earth and Sun third bodies in the
+# lunar regime.
+#
+# SRP: cannonball Cr*A/m = 0.02 m^2/kg with the Moon as the only occulter
+# (FR-7).
+#
+# provenance "representative": a representative LRO-class 50 km mapping-orbit
+# element set, NOT the real LRO ephemeris. The real-ephemeris comparison the
+# report draws is against an externally obtained LRO SPICE/definitive
+# ephemeris, described in the Phase 8 report case study, not committed here.
+
+schema_version = 1
+
+[mission]
+name = "lro-illustrative"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 604800.0
+
+[run]
+seed = 20260101
+
+[integrator]
+type = "rkf78"
+rtol = 1e-11
+atol_pos_m = 1e-6
+atol_vel_mps = 1e-9
+h_init_s = 30.0
+h_max_s = 60.0
+
+[spacecraft]
+mass_kg = 1000.0
+cr_a_over_m_m2pkg = 0.02
+
+[initial_state.keplerian]
+sma_m = 1788000.0
+ecc = 0.01
+inc_deg = 90.0
+raan_deg = 0.0
+argp_deg = 0.0
+ta_deg = 0.0
+
+[environment]
+central_body = "moon"
+third_bodies = ["sun", "earth"]
+ephemeris = "tests/golden/ephemeris/excerpt_de440s_lunar.sreph"
+
+[environment.gravity]
+model = "harmonic"
+field = "tests/golden/gravity/moon_grgm1200a_n50.srgrav"
+degree = 50
+order = 50
+
+[environment.srp]
+occulters = ["moon"]
+
+[logging]
+truth_rate_hz = 1

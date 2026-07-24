@@ -146,3 +146,79 @@ Both missions are covered by `tests/python/test_crosstool_missions.py`:
 end-to-end double runs must produce bit-identical `run.srlog` files
 (D-10), the gravity-only orbit must stay bounded with a drift-free
 Keplerian energy trend, and the drag case must lose energy secularly.
+
+## Phase 8 cross-tool cases (exit criterion 1, D-15)
+
+Five additional GMAT cases extend the table to the full validation campaign.
+Their gates are PRD Phase 8 exit criterion 1 verbatim:
+
+| Case | Mission | External baseline | Gate |
+|---|---|---|---|
+| Molniya | `missions/molniya.toml` | GMAT | position RMS < 100 m over 7 days |
+| Lunar orbiter | `missions/lunar_orbiter.toml` | GMAT | position RMS < 100 m over 7 days |
+| Mars orbiter | `missions/mars_orbiter.toml` | GMAT | position RMS < 100 m over 7 days |
+| Trans-lunar | `missions/tli.toml` (coast) | GMAT | position < 1 km at lunar arrival |
+| Earth-Mars cruise | `missions/mars_cruise.toml` | GMAT | position < 100 km at arrival |
+
+Plus an illustrative LRO-ephemeris comparison (`missions/lro_illustrative.toml`,
+a ~50 km LRO-class mapping orbit) carried as a **report case study only, NOT a
+validation gate**: the real LRO's maneuvers and SRP/attitude history are not
+modeled, so its free-flight arc diverges from the published LRO ephemeris by
+construction and no tolerance is asserted.
+
+Each case's controlled-comparison configuration follows the same discipline as
+the Phase 3 cases and is recorded in `manifest.toml` and in the case's
+committed `gmat_<case>.script`: identical (GM, R, coefficients) gravity fields
+(the committed `earth_egm2008_8x8.cof`, `moon_grgm1200a_50x50.cof`, and
+`mars_mro120f_20x20.cof`, each with its own self-consistent GM/R triple),
+GMAT spherical (cannonball) SRP with Cr and area chosen so Cr*A/m matches the
+mission where SRP is on, body-centred ICRF coordinate systems (EarthICRF,
+LunaICRF, MarsICRF, SunICRF) as the GMAT equivalents of the mission's
+body-centred GCRF frame, fixed-step RK89 at 60 s so rows land on the shared
+comparison grid, and the simulator's exact t = 0 Cartesian state in each
+script. The Earth-regime cases (Molniya, trans-lunar) reuse the same
+zero-EOP startup override as Phase 3.
+
+### Configuration notes per case
+
+- **Molniya** (Earth): EGM2008 8x8 harmonic gravity plus the Sun and Luna as
+  point masses (the Earth-regime third-body pair). No SRP/drag. sma 26554 km,
+  ecc 0.74, inc 63.4 deg (critical), argp 270 deg — period ~11.97 h, apogee
+  ~40,100 km where the third-body torque is the leading non-Keplerian signal.
+- **Lunar orbiter** (Moon): GRGM1200A 50x50 harmonic gravity in the Moon
+  principal-axis frame (built from the DE440 lunar librations — this is the
+  case that needs the `moon_librations` excerpt segment, i.e. the deferred
+  `excerpt_de440s_lunar.sreph`), plus the Sun and Earth point masses (the
+  lunar-regime pair) and cannonball SRP (Moon occulter). ~100 km circular
+  polar mapping orbit, stable unmaneuvered over 7 days.
+- **Mars orbiter** (Mars): MRO120F 20x20 harmonic gravity in the analytic
+  IAU 2015 Mars body-fixed frame (no ephemeris orientation data needed), plus
+  the Sun point mass and cannonball SRP (Mars occulter). ~400 km near-polar
+  MRO-class science orbit.
+- **Trans-lunar** (Earth coast): the ballistic coast of `tli.toml` from its
+  exact MECO state under Earth+Sun+Luna point masses (the tli coast force
+  set), compared at the lunar-SOI arrival epoch. The finite TLI burn is a
+  simulator-internal maneuver and is not replicated; the gate measures the
+  transfer trajectory.
+- **Earth-Mars cruise** (heliocentric): Sun two-body plus Earth/Luna/Venus/
+  Mars/Jupiter point masses and cannonball SRP (no occulter), over the
+  committed 7-day report arc. The full 259-day "arrival SOI" propagation is
+  the maintainer variant noted in `gmat_mars_cruise.script`.
+
+## Phase 8 deferral (frozen truth pending)
+
+GMAT is not installed on the Phase 8 execution host (the same class of blocker
+as the Phase 3 maintainer boundary, D-15), so the five Phase 8 truth CSVs and
+the lunar libration excerpt are **deferred through the PRD section 9 valve** to
+`docs/release_checklist.md` item 10. Everything else is committed and ready:
+the missions, the GMAT scripts, the gravity-field COF inputs, the freeze
+driver `scripts/crosstool/run_gmat_phase8.py`, the lunar-excerpt generator
+`tests/golden/ephemeris/generate_lunar.py`, and the provenance manifests. Each
+of the five gates in `tests/python/test_crosstool_frozen_truth.py` skips with
+an explicit deferral message naming that checklist item until its truth CSV
+lands — never a vacuous pass. That the comparison machinery is correct despite
+the absent external truth is proven by
+`test_rms_machinery_is_correct_on_sim_own_states`, which feeds the sim's own
+re-propagated states through the identical CSV/grid/RMS path and measures a
+position RMS of ~5e-9 m (i.e. the RMS, grid-alignment, and CSV round-trip are
+sound; only the external tool is missing).

@@ -8,6 +8,14 @@ comparison independently). Each argument is either a frozen-truth CSV
 log, sampled at the 60 s epochs). Prints position/velocity RMS, the maximum
 position difference, and the radial/in-track/cross-track RMS decomposition.
 
+It serves the Phase 3 cases (leo-gravity-8x8 vs GMAT, leo-drag-hp vs Orekit)
+and the Phase 8 7-day position-RMS cases identically (Molniya, lunar orbiter,
+Mars orbiter vs GMAT), because all of them share the same 60 s grid and 7-day
+span; the tool is agnostic to the mission. The two single-point-at-arrival
+Phase 8 cases (trans-lunar < 1 km, Mars cruise < 100 km) are point
+comparisons rather than a 7-day RMS and are reported inline by their gates in
+``tests/python/test_crosstool_frozen_truth.py``.
+
 Usage (repo root, main Python with star_reacher installed):
 
     python scripts/crosstool/compare_rms.py <a.csv|a.srlog> <b.csv|b.srlog>

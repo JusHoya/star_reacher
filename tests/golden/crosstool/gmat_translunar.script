@@ -1,0 +1,85 @@
+%------------------------------------------------------------------------------
+% gmat_translunar.script -- frozen-truth generation run for the Phase 8
+% trans-lunar cross-tool case (exit criterion 1, D-15). Replicates the
+% BALLISTIC COAST of missions/tli.toml in GMAT R2026a. Full replication
+% specification: tests/golden/crosstool/README.md; provenance and command
+% line: manifest.toml.
+%
+% Why the coast, not the burn. The gate is "trans-lunar < 1 km at lunar
+% arrival": it measures the transfer TRAJECTORY, not the finite TLI burn. The
+% burn (t = 0..353 s, prograde_hold) is a simulator-internal maneuver; the
+% cross-tool comparison propagates both tools ballistically from the simulator's
+% exact post-burn cutoff (MECO) state and compares position where the coast
+% enters the Moon's sphere of influence. This isolates the coast dynamics both
+% tools model identically and removes the finite-burn replication as a source
+% of tool difference. The simulator side of the comparison is the tli truth log
+% sampled from t = 353 s (MECO) onward.
+%
+% Controlled-comparison configuration (documented in the manifest):
+%   * Central body Earth, EarthICRF (the mission's Earth-centred GCRF).
+%   * Force model: Earth point mass plus the Sun and Luna as point masses (the
+%     mission's central_body = "earth" with a point-mass Earth - no gravity
+%     table - and third_bodies = ["sun", "moon"]). No SRP, no drag: tli.toml
+%     configures none.
+%   * DE440 point-mass source: the DE-file set the zero-EOP startup file
+%     selects, the same DE440 family as the committed excerpt tli.toml reads.
+%   * EOP: run with --startup_file gmat_startup_zeroeop.txt (as the other
+%     Earth-regime cases), though at cislunar distances the Earth-orientation
+%     convention is immaterial to the < 1 km gate.
+%   * Fixed-step integration (ErrorControl = None, 60 s RK89 steps). The coast
+%     is 455755 - 353 = 455402 s; 455402 is not a multiple of 60, so the
+%     comparison samples both trajectories on the shared 60 s grid from MECO
+%     and additionally at the SOI-arrival epoch located by the simulator
+%     (the manifest records the arrival epoch and the compared state).
+%   * MECO Cartesian state (EarthICRF), the simulator's exact tli t = 353 s
+%     truth state, so both tools start from identical numbers. Epoch is the
+%     tli MECO epoch 2025-12-28T12:05:53Z (t0 2025-12-28T12:00:00Z + 353 s).
+%
+% This script contains maintainer-machine absolute paths by design: D-15 runs
+% the external tools offline on the maintainer machine only; CI never runs it.
+%------------------------------------------------------------------------------
+
+Create Spacecraft sat;
+GMAT sat.DateFormat = UTCGregorian;
+GMAT sat.Epoch = '28 Dec 2025 12:05:53.000';
+GMAT sat.CoordinateSystem = EarthICRF;
+GMAT sat.DisplayStateType = Cartesian;
+GMAT sat.X = 2924.891584486244;
+GMAT sat.Y = -5365.244555941103;
+GMAT sat.Z = -2784.572181633873;
+GMAT sat.VX = 10.21613418693073;
+GMAT sat.VY = 2.908044156868872;
+GMAT sat.VZ = 1.897305905409768;
+GMAT sat.DryMass = 1000;
+
+Create ForceModel fm;
+GMAT fm.CentralBody = Earth;
+GMAT fm.PointMasses = {Earth, Sun, Luna};
+GMAT fm.Drag = None;
+GMAT fm.SRP = Off;
+GMAT fm.RelativisticCorrection = Off;
+GMAT fm.ErrorControl = None;
+
+Create Propagator prop;
+GMAT prop.FM = fm;
+GMAT prop.Type = RungeKutta89;
+GMAT prop.InitialStepSize = 60;
+GMAT prop.MinStep = 0.001;
+GMAT prop.MaxStep = 60;
+GMAT prop.MaxStepAttempts = 50;
+
+Create ReportFile rpt;
+GMAT rpt.Filename = 'C:/Users/hoyer/WorkSpace/tools/crosstool-runs/gmat_translunar_report.txt';
+GMAT rpt.Precision = 16;
+GMAT rpt.WriteHeaders = true;
+GMAT rpt.LeftJustify = On;
+GMAT rpt.FixedWidth = true;
+GMAT rpt.WriteReport = true;
+GMAT rpt.Add = {sat.ElapsedSecs, sat.UTCModJulian, sat.EarthICRF.X, sat.EarthICRF.Y, sat.EarthICRF.Z, sat.EarthICRF.VX, sat.EarthICRF.VY, sat.EarthICRF.VZ};
+
+BeginMissionSequence;
+
+% Coast from MECO through lunar arrival. The stop time is the simulator's
+% SOI-transition elapsed-from-MECO span (455402 s); the manifest records the
+% arrival-epoch state used for the < 1 km comparison.
+Propagate prop(sat) {sat.ElapsedSecs = 455402.0};

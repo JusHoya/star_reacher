@@ -1,0 +1,78 @@
+%------------------------------------------------------------------------------
+% gmat_molniya.script -- frozen-truth generation run for the Phase 8 Molniya
+% cross-tool case (exit criterion 1, D-15): missions/molniya.toml replicated
+% in GMAT R2026a. Full replication specification:
+% tests/golden/crosstool/README.md; provenance and command line: manifest.toml.
+%
+% Controlled-comparison configuration (documented in the manifest, identical
+% in kind to gmat_leo_gravity_8x8.script):
+%   * Gravity field: earth_egm2008_8x8.cof, generated from the same committed
+%     coefficient excerpt the mission loads (identical GM/R/coefficients),
+%     degree/order 8x8, TideModel None.
+%   * Third bodies: the Sun and Luna as point masses (the mission's
+%     third_bodies = ["sun", "moon"], the Earth-regime pair). No SRP, no drag.
+%   * Point-mass ephemeris source: DE440 (fm.GravityField uses the .cof;
+%     PointMasses use the GMAT DE-file set the startup file selects, the same
+%     DE440 family as the committed excerpt the mission reads).
+%   * EOP: run with --startup_file gmat_startup_zeroeop.txt, whose EOP_FILE
+%     points at eopc04_zero.txt (polar motion, UT1-UTC, LOD, dPsi/dEps all
+%     zero), matching the simulator's no-EOP Earth-orientation convention.
+%   * Fixed-step integration (ErrorControl = None, 60 s RK89 steps) so report
+%     rows land exactly on the shared 60 s comparison grid; 604800/60 = 10080
+%     steps land the final row exactly on the stop epoch.
+%   * State input and report output in the built-in EarthICRF system, the
+%     GMAT equivalent of the mission's GCRF. The Cartesian state below is the
+%     simulator's exact t = 0 truth state (the keplerian element set
+%     sma 26554 km, ecc 0.74, inc 63.4 deg, argp 270 deg, ta 0 converted
+%     through the core GM_earth), so both tools start from identical numbers.
+%
+% This script contains maintainer-machine absolute paths by design: D-15 runs
+% the external tools offline on the maintainer machine only; CI never runs it.
+%------------------------------------------------------------------------------
+
+Create Spacecraft sat;
+GMAT sat.DateFormat = UTCGregorian;
+GMAT sat.Epoch = '01 Jan 2026 00:00:00.000';
+GMAT sat.CoordinateSystem = EarthICRF;
+GMAT sat.DisplayStateType = Cartesian;
+GMAT sat.X = -1.268251573077794e-12;
+GMAT sat.Y = -3091.34665280238;
+GMAT sat.Z = -6173.276617308472;
+GMAT sat.VX = 10.02286457911587;
+GMAT sat.VY = -8.244007581577114e-16;
+GMAT sat.VZ = -1.646290272562233e-15;
+GMAT sat.DryMass = 1000;
+
+Create ForceModel fm;
+GMAT fm.CentralBody = Earth;
+GMAT fm.PrimaryBodies = {Earth};
+GMAT fm.PointMasses = {Sun, Luna};
+GMAT fm.GravityField.Earth.PotentialFile = 'C:/Users/hoyer/WorkSpace/Projects/star_reacher/tests/golden/crosstool/earth_egm2008_8x8.cof';
+GMAT fm.GravityField.Earth.Degree = 8;
+GMAT fm.GravityField.Earth.Order = 8;
+GMAT fm.GravityField.Earth.TideModel = 'None';
+GMAT fm.Drag = None;
+GMAT fm.SRP = Off;
+GMAT fm.RelativisticCorrection = Off;
+GMAT fm.ErrorControl = None;
+
+Create Propagator prop;
+GMAT prop.FM = fm;
+GMAT prop.Type = RungeKutta89;
+GMAT prop.InitialStepSize = 60;
+GMAT prop.MinStep = 0.001;
+GMAT prop.MaxStep = 60;
+GMAT prop.MaxStepAttempts = 50;
+
+Create ReportFile rpt;
+GMAT rpt.Filename = 'C:/Users/hoyer/WorkSpace/tools/crosstool-runs/gmat_molniya_report.txt';
+GMAT rpt.Precision = 16;
+GMAT rpt.WriteHeaders = true;
+GMAT rpt.LeftJustify = On;
+GMAT rpt.FixedWidth = true;
+GMAT rpt.WriteReport = true;
+GMAT rpt.Add = {sat.ElapsedSecs, sat.UTCModJulian, sat.EarthICRF.X, sat.EarthICRF.Y, sat.EarthICRF.Z, sat.EarthICRF.VX, sat.EarthICRF.VY, sat.EarthICRF.VZ};
+
+BeginMissionSequence;
+
+Propagate prop(sat) {sat.ElapsedSecs = 604800.0};

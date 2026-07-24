@@ -428,7 +428,22 @@ def test_every_shipped_mission_still_validates(monkeypatch):
     monkeypatch.chdir(REPO_ROOT)
     missions = sorted((REPO_ROOT / "missions").glob("*.toml"))
     assert missions, "no shipped missions found"
+    # The Phase 8 lunar cross-tool missions require a DE440 excerpt carrying the
+    # moon_librations segment (tests/golden/ephemeris/excerpt_de440s_lunar.sreph)
+    # that is a maintainer-generated golden deferred through the PRD section 9
+    # valve (docs/release_checklist.md item 10: GMAT and the DE440 kernels were
+    # unavailable at the Phase 8 execution host). Their only validation error is
+    # the pending excerpt's absence -- everything else in them validates -- so
+    # they are excluded from this over-rejection gate exactly as [sweep] specs
+    # are, and asserted below to fail for that reason ALONE (not the sensor-key
+    # rules this test guards). When the excerpt lands they validate and the
+    # exclusion is removed with it.
+    ephemeris_deferred = {"lunar_orbiter.toml", "lro_illustrative.toml"}
+    lunar_excerpt = (
+        REPO_ROOT / "tests" / "golden" / "ephemeris" / "excerpt_de440s_lunar.sreph"
+    )
     failures = {}
+    deferred_seen = set()
     for mission in missions:
         # Phase 7 `star mc` sweep specs live in missions/ alongside real
         # missions but are inputs to the batch runner, not missions: a [sweep]
@@ -438,9 +453,24 @@ def test_every_shipped_mission_still_validates(monkeypatch):
         if "sweep" in tomllib.loads(mission.read_text(encoding="utf-8")):
             continue
         resolved, errors = validate_mission_file(mission)
+        if mission.name in ephemeris_deferred and not lunar_excerpt.is_file():
+            deferred_seen.add(mission.name)
+            # The one permitted error is the pending excerpt; any OTHER error is
+            # a real defect this gate must still catch.
+            other = [e for e in (errors or []) if "excerpt_de440s_lunar.sreph" not in e]
+            assert resolved is None and not other, (
+                f"{mission.name}: expected only the pending-lunar-excerpt error, "
+                f"got {errors}"
+            )
+            continue
         if resolved is None:
             failures[mission.name] = errors
     assert not failures, failures
+    if not lunar_excerpt.is_file():
+        assert deferred_seen == ephemeris_deferred, (
+            f"expected the deferred lunar missions {ephemeris_deferred}, saw "
+            f"{deferred_seen}"
+        )
 
 
 def test_sensors_without_gnc_rejected(tmp_path, monkeypatch):

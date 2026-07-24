@@ -1,0 +1,81 @@
+# Cross-tool case (Phase 8 exit criterion 1, D-15): 7-day Molniya
+# high-eccentricity orbit under Earth EGM2008 8x8 harmonic gravity plus the
+# Sun and Moon as point-mass third bodies - no SRP, no drag - so the frozen
+# GMAT truth isolates gravity-plus-third-body agreement over an orbit whose
+# apogee (~40,100 km) samples the third-body perturbation an LEO case cannot
+# (gate: position RMS < 100 m over 7 days). Every setting is exact and
+# round-numbered for external replication; the full replication specification
+# (frames, time, constants, field provenance) is
+# tests/golden/crosstool/README.md.
+#
+# The Molniya geometry is the classical one: semimajor axis 26,554 km (orbital
+# period ~11.97 h, the half-sidereal-day repeat), eccentricity 0.74 (perigee
+# altitude ~524 km, apogee altitude ~40,100 km), inclination 63.4 deg (the
+# critical inclination that freezes apsidal rotation, argument of perigee 270
+# deg placing apogee over the northern hemisphere). At i = 63.4 deg the J2
+# apsidal drift is nulled, so the third-body torque on the apogee is the
+# leading non-Keplerian signal - which is why the Sun and Moon are on and why
+# this case complements the LEO gravity-only case.
+#
+# Third bodies: the Earth regime requires the Sun and Moon together whenever
+# third-body perturbations are enabled (FR-6/FR-15), which is exactly the
+# physically correct pair for a Molniya. Their Sun/Moon positions come from
+# the committed continuous DE440 excerpt covering this window
+# (tests/golden/ephemeris/excerpt_de440s_crosstool.sreph, provenance in
+# tests/golden/ephemeris/manifest.toml), so the mission runs on a clean clone
+# and in CI with no fetched data.
+#
+# The gravity field is the committed EGM2008 20x20 excerpt truncated to 8x8 at
+# evaluation time (bit-identical to a load-time 8x8 truncation, doctest
+# gravity_truncation_consistency).
+#
+# provenance "representative": the elements are the textbook Molniya values,
+# not a real spacecraft's ephemeris.
+
+schema_version = 1
+
+[mission]
+name = "molniya"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 604800.0
+
+[run]
+seed = 20260101
+
+[integrator]
+type = "rkf78"
+rtol = 1e-11
+atol_pos_m = 1e-6
+atol_vel_mps = 1e-9
+h_init_s = 30.0
+# 60 s cap: bounds the dense-output interpolation error the 1 Hz truth log
+# samples (ch:integrators). The perigee pass is the fast arc; at ~7.6 km/s
+# perigee speed a 60 s span is ~460 km of arc, and the tolerance - not the
+# cap - controls the perigee accuracy, so the interpolation bound stays well
+# below the 100 m gate.
+h_max_s = 60.0
+
+[spacecraft]
+mass_kg = 1000.0
+
+[initial_state.keplerian]
+sma_m = 26554000.0
+ecc = 0.74
+inc_deg = 63.4
+raan_deg = 0.0
+argp_deg = 270.0
+ta_deg = 0.0
+
+[environment]
+central_body = "earth"
+third_bodies = ["sun", "moon"]
+ephemeris = "tests/golden/ephemeris/excerpt_de440s_crosstool.sreph"
+
+[environment.gravity]
+model = "harmonic"
+field = "tests/golden/gravity/earth_egm2008_n20.srgrav"
+degree = 8
+order = 8
+
+[logging]
+truth_rate_hz = 1

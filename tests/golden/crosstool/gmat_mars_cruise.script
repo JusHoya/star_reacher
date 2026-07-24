@@ -1,0 +1,91 @@
+%------------------------------------------------------------------------------
+% gmat_mars_cruise.script -- frozen-truth generation run for the Phase 8
+% Earth-Mars cruise cross-tool case (exit criterion 1, D-15). Replicates
+% missions/mars_cruise.toml in GMAT R2026a. Full replication specification:
+% tests/golden/crosstool/README.md; provenance and command line: manifest.toml.
+%
+% Controlled-comparison configuration (documented in the manifest):
+%   * Heliocentric: central body Sun, SunICRF coordinate system (Sun origin,
+%     ICRF axes - the GMAT equivalent of the mission's Sun-centred GCRF frame).
+%   * Force model: Sun point mass (heliocentric two-body) plus Earth, Luna,
+%     Venus, Mars, and Jupiter as point masses (the mission's third_bodies =
+%     ["earth", "moon", "venus", "mars", "jupiter"]). FR-5 defines no Sun
+%     harmonic field, so there is no PrimaryBodies gravity field here.
+%   * SRP: On, spherical (cannonball), Cr = 1.3 and SRPArea = 5 m^2 so
+%     Cr*A/m = 1.3*5/500 = 0.013 m^2/kg over the 500 kg mass (matching the
+%     mission's cr_a_over_m_m2pkg = 0.013). No occulter reaches deep cruise
+%     (the mission runs SRP with an empty occulter set, FR-7).
+%   * DE440 point-mass source: the DE-file set the startup file selects, the
+%     same DE440 family as the committed excerpt the mission reads.
+%   * Fixed-step integration (ErrorControl = None, 60 s RK89 steps) so report
+%     rows land exactly on the shared 60 s comparison grid (604800/60 = 10080).
+%   * The Cartesian state below is the mission's exact t = 0 patched-conic
+%     departure-handoff state (mars_cruise.toml header), in SunICRF, so both
+%     tools start from identical numbers.
+%
+% Scope of this committed run vs the "arrival SOI" gate. missions/mars_cruise.toml
+% is the committed 7-day report/example arc (a full 259-day cruise at the 1 Hz
+% SRLOG minimum writes ~2.7 GB; mars_cruise.toml header). This script therefore
+% replicates the same 7-day arc, and the frozen comparison gates the 3D
+% position difference over it. The PRD's "< 100 km at arrival SOI" wording is
+% the full-cruise accuracy: discharging it verbatim requires the maintainer to
+% additionally propagate BOTH tools to Mars-SOI arrival (duration_s extended to
+% the ~259-day transfer, or a coarser log rate once sub-hertz logging lands)
+% and compare the arrival position - a variant this script's force model and
+% start state carry unchanged (only Propagate's stop condition changes to the
+% Mars-SOI crossing). The manifest records both the committed-arc measurement
+% and the full-cruise procedure.
+%
+% This script contains maintainer-machine absolute paths by design: D-15 runs
+% the external tools offline on the maintainer machine only; CI never runs it.
+%------------------------------------------------------------------------------
+
+Create Spacecraft sat;
+GMAT sat.DateFormat = UTCGregorian;
+GMAT sat.Epoch = '05 Dec 2026 00:00:00.000';
+GMAT sat.CoordinateSystem = SunICRF;
+GMAT sat.DisplayStateType = Cartesian;
+GMAT sat.X = 43441832.98780341;
+GMAT sat.Y = 129269774.7549936;
+GMAT sat.Z = 56035879.78716031;
+GMAT sat.VX = -31.80334299812391;
+GMAT sat.VY = 8.954453323317971;
+GMAT sat.VZ = 3.882346813207067;
+GMAT sat.DryMass = 500;
+GMAT sat.Cr = 1.3;
+GMAT sat.SRPArea = 5;
+
+Create CoordinateSystem SunICRF;
+GMAT SunICRF.Origin = Sun;
+GMAT SunICRF.Axes = ICRF;
+
+Create ForceModel fm;
+GMAT fm.CentralBody = Sun;
+GMAT fm.PointMasses = {Sun, Earth, Luna, Venus, Mars, Jupiter};
+GMAT fm.Drag = None;
+GMAT fm.SRP = On;
+GMAT fm.SRP.Flux = 1367;
+GMAT fm.SRP.Nominal_Sun = 149597870.691;
+GMAT fm.RelativisticCorrection = Off;
+GMAT fm.ErrorControl = None;
+
+Create Propagator prop;
+GMAT prop.FM = fm;
+GMAT prop.Type = RungeKutta89;
+GMAT prop.InitialStepSize = 60;
+GMAT prop.MinStep = 0.001;
+GMAT prop.MaxStep = 60;
+GMAT prop.MaxStepAttempts = 50;
+
+Create ReportFile rpt;
+GMAT rpt.Filename = 'C:/Users/hoyer/WorkSpace/tools/crosstool-runs/gmat_mars_cruise_report.txt';
+GMAT rpt.Precision = 16;
+GMAT rpt.WriteHeaders = true;
+GMAT rpt.LeftJustify = On;
+GMAT rpt.FixedWidth = true;
+GMAT rpt.WriteReport = true;
+GMAT rpt.Add = {sat.ElapsedSecs, sat.UTCModJulian, sat.SunICRF.X, sat.SunICRF.Y, sat.SunICRF.Z, sat.SunICRF.VX, sat.SunICRF.VY, sat.SunICRF.VZ};
+
+BeginMissionSequence;
+
+Propagate prop(sat) {sat.ElapsedSecs = 604800.0};

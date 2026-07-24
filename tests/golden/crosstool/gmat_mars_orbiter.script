@@ -1,0 +1,89 @@
+%------------------------------------------------------------------------------
+% gmat_mars_orbiter.script -- frozen-truth generation run for the Phase 8
+% Mars-orbiter cross-tool case (exit criterion 1, D-15):
+% missions/mars_orbiter.toml replicated in GMAT R2026a. Full replication
+% specification: tests/golden/crosstool/README.md; provenance and command
+% line: manifest.toml.
+%
+% Controlled-comparison configuration (documented in the manifest):
+%   * Central body Mars, MarsICRF coordinate system (Mars origin, ICRF axes -
+%     the GMAT equivalent of the mission's Mars-centred GCRF frame).
+%   * Gravity field: mars_mro120f_20x20.cof, generated from the same committed
+%     MRO120F coefficient excerpt the mission loads (identical GM/R/
+%     coefficients), degree/order 20x20, TideModel None.
+%   * Third body: the Sun as a point mass (the mission's third_bodies =
+%     ["sun"]).
+%   * SRP: On, spherical (cannonball) model, Cr and area matched to the
+%     mission's Cr*A/m = 0.02 m^2/kg over the 1000 kg mass (Cr = 1.5,
+%     SRPArea = 13.3333... m^2 so Cr*A/m = 1.5*13.3333.../1000 = 0.02); the
+%     GMAT SRP flux and AU are its defaults, matched to the simulator's SRP
+%     constants in the manifest. Mars is the sole occulter (GMAT casts the
+%     central body's shadow).
+%   * Mars body-fixed orientation: GMAT's IAU-FK5 Mars rotation. The
+%     simulator uses the analytic IAU 2015 Mars rotational elements; the small
+%     residual difference is an irreducible tool difference recorded in the
+%     manifest, far below the 100 m gate.
+%   * Fixed-step integration (ErrorControl = None, 60 s RK89 steps) so report
+%     rows land exactly on the shared 60 s comparison grid (604800/60 = 10080).
+%   * The Cartesian state below is the simulator's exact t = 0 truth state
+%     (sma 3796 km, ecc 0.01, inc 93 deg, ta 0 through the core GM_mars), in
+%     MarsICRF, so both tools start from identical numbers.
+%
+% This script contains maintainer-machine absolute paths by design: D-15 runs
+% the external tools offline on the maintainer machine only; CI never runs it.
+%------------------------------------------------------------------------------
+
+Create Spacecraft sat;
+GMAT sat.DateFormat = UTCGregorian;
+GMAT sat.Epoch = '05 Dec 2026 00:00:00.000';
+GMAT sat.CoordinateSystem = MarsICRF;
+GMAT sat.DisplayStateType = Cartesian;
+GMAT sat.X = 3758.04;
+GMAT sat.Y = 0;
+GMAT sat.Z = 0;
+GMAT sat.VX = 0;
+GMAT sat.VY = -0.1775603342325313;
+GMAT sat.VZ = 3.388053007809636;
+GMAT sat.DryMass = 1000;
+GMAT sat.Cr = 1.5;
+GMAT sat.SRPArea = 13.33333333333333;
+
+Create CoordinateSystem MarsICRF;
+GMAT MarsICRF.Origin = Mars;
+GMAT MarsICRF.Axes = ICRF;
+
+Create ForceModel fm;
+GMAT fm.CentralBody = Mars;
+GMAT fm.PrimaryBodies = {Mars};
+GMAT fm.PointMasses = {Sun};
+GMAT fm.GravityField.Mars.PotentialFile = 'C:/Users/hoyer/WorkSpace/Projects/star_reacher/tests/golden/crosstool/mars_mro120f_20x20.cof';
+GMAT fm.GravityField.Mars.Degree = 20;
+GMAT fm.GravityField.Mars.Order = 20;
+GMAT fm.GravityField.Mars.TideModel = 'None';
+GMAT fm.Drag = None;
+GMAT fm.SRP = On;
+GMAT fm.SRP.Flux = 1367;
+GMAT fm.SRP.Nominal_Sun = 149597870.691;
+GMAT fm.RelativisticCorrection = Off;
+GMAT fm.ErrorControl = None;
+
+Create Propagator prop;
+GMAT prop.FM = fm;
+GMAT prop.Type = RungeKutta89;
+GMAT prop.InitialStepSize = 60;
+GMAT prop.MinStep = 0.001;
+GMAT prop.MaxStep = 60;
+GMAT prop.MaxStepAttempts = 50;
+
+Create ReportFile rpt;
+GMAT rpt.Filename = 'C:/Users/hoyer/WorkSpace/tools/crosstool-runs/gmat_mars_orbiter_report.txt';
+GMAT rpt.Precision = 16;
+GMAT rpt.WriteHeaders = true;
+GMAT rpt.LeftJustify = On;
+GMAT rpt.FixedWidth = true;
+GMAT rpt.WriteReport = true;
+GMAT rpt.Add = {sat.ElapsedSecs, sat.UTCModJulian, sat.MarsICRF.X, sat.MarsICRF.Y, sat.MarsICRF.Z, sat.MarsICRF.VX, sat.MarsICRF.VY, sat.MarsICRF.VZ};
+
+BeginMissionSequence;
+
+Propagate prop(sat) {sat.ElapsedSecs = 604800.0};
