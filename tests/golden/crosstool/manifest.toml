@@ -336,47 +336,55 @@ generation = "committed as-run (maintainer-machine absolute paths by design, D-1
 date = "2026-07-24"
 tolerance = "not applicable (configuration evidence). Replicates the committed 7-day report arc; the full 'arrival SOI' variant (Propagate to the Mars-SOI crossing) is the maintainer extension noted in the .script header"
 
-# ---- Phase 8 frozen truth (PENDING: GMAT not available; deferred to
-#      docs/release_checklist.md item 10). Each entry states the mission it
-#      replicates, the exact GMAT configuration, and the PRD gate verbatim;
-#      only the CSV bytes and the measured RMS are what the maintainer produces.
+# ---- Phase 8 frozen truth. The five GMAT truth CSVs below were FROZEN
+#      2026-07-24 on the maintainer laptop (LAPTOP-HOYA) from the committed
+#      .script files with GMAT R2026a; the same portable install was
+#      canary-verified byte-identical to the frozen Phase 3 truth
+#      (truth_gmat_leo_gravity_8x8.csv, SHA-256 181627b0...) immediately before
+#      this run. Each entry states the mission it replicates, the exact GMAT
+#      configuration, and the PRD gate verbatim. The one element still pending
+#      is the star-vs-truth position RMS: it requires the 0.8.0 build to
+#      re-propagate each mission and compare (docs/release_checklist.md item 10
+#      step 4). Once these CSVs are present the five gates in
+#      test_crosstool_frozen_truth.py stop skipping and measure that RMS
+#      themselves, so they must run on a 0.8.0 host, not the 0.6.0 laptop.
 
 [[file]]
 name = "truth_gmat_molniya.csv"
-source = "PENDING -- GMAT R2026a fixed-step RK89 propagation of gmat_molniya.script under gmat_startup_zeroeop.txt; report converted km -> m on the exact 60 s grid (10081 rows). Not committed at Phase 8 execution: GMAT is not installed on the execution host (docs/release_checklist.md item 10)"
+source = "GMAT R2026a fixed-step RK89 propagation of gmat_molniya.script under gmat_startup_zeroeop.txt; report converted km -> m on the exact 60 s grid (10081 rows). Frozen 2026-07-24 on the maintainer laptop (LAPTOP-HOYA); grid deviation max |ElapsedSecs - 60k| = 1.537e-07 s"
 citation = "GMAT R2026a (pinned above); force model: earth_egm2008_8x8.cof 8x8 TideModel None, Sun+Luna point masses, no SRP/drag"
-generation = "scripts/crosstool/run_gmat_phase8.py --case molniya (the maintainer freeze driver, committed; PENDING run). SHA-256 pending"
-date = "pending"
-tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-MOLNIYA-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim. Frozen-baseline measurement: pending GMAT run"
+generation = "scripts/crosstool/run_gmat_phase8.py --case molniya (the maintainer freeze driver, committed). SHA-256 5341e53e5bac59ad9170240ef849315e1a23932325cbde8c2f895effe4643b4d"
+date = "2026-07-24"
+tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-MOLNIYA-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim. Frozen-baseline measurement: pending the 0.8.0-build star-vs-truth RMS (docs/release_checklist.md item 10 step 4)"
 
 [[file]]
 name = "truth_gmat_lunar_orbiter.csv"
-source = "PENDING -- GMAT R2026a fixed-step RK89 propagation of gmat_lunar_orbiter.script; report converted km -> m on the exact 60 s grid (10081 rows). Not committed: GMAT unavailable AND the mission's moon_librations excerpt (tests/golden/ephemeris/excerpt_de440s_lunar.sreph) is itself pending (docs/release_checklist.md item 10)"
+source = "GMAT R2026a fixed-step RK89 propagation of gmat_lunar_orbiter.script; report converted km -> m on the exact 60 s grid (10081 rows). Frozen 2026-07-24 on the maintainer laptop (LAPTOP-HOYA); grid deviation max |ElapsedSecs - 60k| = 1.537e-07 s. GMAT supplies its own lunar ephemeris; the moon_librations excerpt (tests/golden/ephemeris/excerpt_de440s_lunar.sreph) the simulator side needs is already committed (item 10 lunar sub-blocker lifted)"
 citation = "GMAT R2026a (pinned above); force model: moon_grgm1200a_50x50.cof 50x50 TideModel None in the Moon PA frame, Sun+Earth point masses, spherical SRP Cr*A/m = 0.02"
-generation = "scripts/crosstool/run_gmat_phase8.py --case lunar_orbiter (committed; PENDING run). SHA-256 pending"
-date = "pending"
-tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-LUNAR-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (lunar orbiter, degree-matched GRGM field, SRP on). Frozen-baseline measurement: pending GMAT run"
+generation = "scripts/crosstool/run_gmat_phase8.py --case lunar_orbiter (committed). SHA-256 ba82f0491fbb9e7afdaa44c6b21d5a7608537e02ed40fbfa312d9156478f1624"
+date = "2026-07-24"
+tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-LUNAR-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (lunar orbiter, degree-matched GRGM field, SRP on). Frozen-baseline measurement: pending the 0.8.0-build star-vs-truth RMS (docs/release_checklist.md item 10 step 4)"
 
 [[file]]
 name = "truth_gmat_mars_orbiter.csv"
-source = "PENDING -- GMAT R2026a fixed-step RK89 propagation of gmat_mars_orbiter.script; report converted km -> m on the exact 60 s grid (10081 rows). Not committed: GMAT unavailable (docs/release_checklist.md item 10)"
+source = "GMAT R2026a fixed-step RK89 propagation of gmat_mars_orbiter.script; report converted km -> m on the exact 60 s grid (10081 rows). Frozen 2026-07-24 on the maintainer laptop (LAPTOP-HOYA); grid deviation max |ElapsedSecs - 60k| = 1.537e-07 s"
 citation = "GMAT R2026a (pinned above); force model: mars_mro120f_20x20.cof 20x20 TideModel None in the Mars IAU body-fixed frame, Sun point mass, spherical SRP Cr*A/m = 0.02"
-generation = "scripts/crosstool/run_gmat_phase8.py --case mars_orbiter (committed; PENDING run). SHA-256 pending"
-date = "pending"
-tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-MARS-ORBITER-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (Mars orbiter, MRO-class, harmonics + SRP). Frozen-baseline measurement: pending GMAT run"
+generation = "scripts/crosstool/run_gmat_phase8.py --case mars_orbiter (committed). SHA-256 3f986bde67ec2ee525f4d2c3dd987aa056deede8bce42b42fd81ecfda5058218"
+date = "2026-07-24"
+tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-MARS-ORBITER-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (Mars orbiter, MRO-class, harmonics + SRP). Frozen-baseline measurement: pending the 0.8.0-build star-vs-truth RMS (docs/release_checklist.md item 10 step 4)"
 
 [[file]]
 name = "truth_gmat_translunar.csv"
-source = "PENDING -- GMAT R2026a fixed-step RK89 coast propagation of gmat_translunar.script from the tli MECO state; the arrival-epoch state (single row) converted km -> m. Not committed: GMAT unavailable (docs/release_checklist.md item 10)"
+source = "GMAT R2026a fixed-step RK89 coast propagation of gmat_translunar.script from the tli MECO state; the single arrival-epoch state at elapsed-from-MECO 455402 s converted km -> m. Frozen 2026-07-24 on the maintainer laptop (LAPTOP-HOYA). NOTE: 455402 s is the committed default arrival span; re-confirm it against the 0.8.0 tli.toml soi_transition epoch on the build host and re-freeze with --arrival-s if it differs (a single ~3 s GMAT run)"
 citation = "GMAT R2026a (pinned above); force model: Earth+Sun+Luna point masses, no SRP/drag (the tli.toml coast force set)"
-generation = "scripts/crosstool/run_gmat_phase8.py --case translunar (committed; PENDING run). SHA-256 pending"
-date = "pending"
-tolerance = "gate: 3D position difference at lunar-SOI arrival < 1 km (XTOOL-TRANSLUNAR-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (trans-lunar < 1 km at lunar arrival). Frozen-baseline measurement: pending GMAT run"
+generation = "scripts/crosstool/run_gmat_phase8.py --case translunar (committed). SHA-256 298a8cb57c556c68ac8eecadcae89a4f4f4323c226240396841f7e2f0fddd0a5"
+date = "2026-07-24"
+tolerance = "gate: 3D position difference at lunar-SOI arrival < 1 km (XTOOL-TRANSLUNAR-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (trans-lunar < 1 km at lunar arrival). Frozen-baseline measurement: pending the 0.8.0-build star-vs-truth comparison (docs/release_checklist.md item 10 step 4)"
 
 [[file]]
 name = "truth_gmat_mars_cruise.csv"
-source = "PENDING -- GMAT R2026a fixed-step RK89 propagation of gmat_mars_cruise.script over the committed 7-day arc; report converted km -> m on the exact 60 s grid (10081 rows). Not committed: GMAT unavailable (docs/release_checklist.md item 10)"
+source = "GMAT R2026a fixed-step RK89 propagation of gmat_mars_cruise.script over the committed 7-day arc; report converted km -> m on the exact 60 s grid (10081 rows). Frozen 2026-07-24 on the maintainer laptop (LAPTOP-HOYA); grid deviation max |ElapsedSecs - 60k| = 1.537e-07 s"
 citation = "GMAT R2026a (pinned above); force model: heliocentric Sun two-body plus Earth/Luna/Venus/Mars/Jupiter point masses, spherical SRP Cr*A/m = 0.013 no occulter"
-generation = "scripts/crosstool/run_gmat_phase8.py --case mars_cruise (committed; PENDING run). SHA-256 pending"
-date = "pending"
-tolerance = "gate: 3D position difference at arrival < 100 km (XTOOL-MARS-CRUISE-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (Mars cruise < 100 km at arrival SOI); the committed gate applies it at the end of the 7-day report arc, the full-cruise 'arrival SOI' variant per the .script header. Frozen-baseline measurement: pending GMAT run"
+generation = "scripts/crosstool/run_gmat_phase8.py --case mars_cruise (committed). SHA-256 9892f24de644a83abd1aca8e0f0ef5df8f80d2d7eebfdac178ab6d65f4d259b8"
+date = "2026-07-24"
+tolerance = "gate: 3D position difference at arrival < 100 km (XTOOL-MARS-CRUISE-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (Mars cruise < 100 km at arrival SOI); the committed gate applies it at the end of the 7-day report arc, the full-cruise 'arrival SOI' variant per the .script header. Frozen-baseline measurement: pending the 0.8.0-build star-vs-truth comparison (docs/release_checklist.md item 10 step 4)"
