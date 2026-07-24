@@ -6,6 +6,11 @@ message: "If you use this software, please cite it using the metadata from this 
 type: software
 title: star_reacher
 version: 0.8.0
+# date-released is the v0.8.0 phase-close stamp (the prepared version), not a
+# claim that the public release has shipped: the CFF schema requires a date and
+# scripts/check_citation.py consumes only its year. The v0.8.0 tag is pushed
+# only after the release handoff's definition of done is met (docs/release_handoff.md,
+# Handoff C); set this to the actual tag-push date at that point.
 date-released: 2026-07-24
 license: Apache-2.0
 repository-code: "https://github.com/JusHoya/star_reacher"
