@@ -31,7 +31,8 @@ From the repository root, with the project's Python:
 ```
 python scripts/figures/casestudy_figures.py            # render PNGs from committed .npz
 python scripts/figures/casestudy_figures.py --extract  # re-run missions, rewrite .npz
-python scripts/figures/casestudy_figures.py --verify-repro  # crit-3 gate
+python scripts/figures/casestudy_figures.py --verify-repro     # portable determinism gate (CI)
+python scripts/figures/casestudy_figures.py --check-committed  # pinned-toolchain equality gate
 ```
 
 - `--render` (the default) needs only the committed `.npz` and matplotlib.
@@ -42,8 +43,19 @@ python scripts/figures/casestudy_figures.py --verify-repro  # crit-3 gate
   the x--y projection), and rewrites the `.npz` set and the manifest. Run it
   only when a mission or a model changes; commit the regenerated `.npz`,
   `manifest.json`, and PNGs together.
-- `--verify-repro` renders twice to fresh temporary directories and asserts
-  every output PNG is byte-identical by SHA-256.
+- Two gates carry criterion 3, and they are complementary:
+  - `--verify-repro` renders twice to fresh temporary directories and asserts
+    every output PNG is byte-identical by SHA-256. This proves *regeneration is
+    deterministic* and holds on any runner regardless of the toolchain, so it is
+    the gate wired into CI (`report-figures` job).
+  - `--check-committed` renders once and asserts each PNG byte-matches the
+    committed `docs/report/figures/*.png`. This is the literal criterion-3
+    clause ("reproduces *the committed figures* bit-for-bit") and additionally
+    catches a script edit that silently stales the committed PNGs, which
+    `--verify-repro` cannot. Its equality is scoped to the pinned toolchain
+    below (a different matplotlib/FreeType rasterizes different bytes by
+    design), so it is the maintainer's on-toolchain gate rather than a
+    cross-platform CI gate; run it before committing regenerated figures.
 
 ## Determinism requirements (Phase 8 criterion 3)
 

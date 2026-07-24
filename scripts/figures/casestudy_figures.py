@@ -397,6 +397,45 @@ def verify_repro() -> int:
     return 1
 
 
+def check_committed() -> int:
+    """Render fresh and assert each PNG byte-matches its committed figure.
+
+    Phase 8 exit criterion 3 is worded as "regenerating all report figures from
+    committed seeds reproduces *the committed figures* bit-for-bit". This is the
+    literal check of that clause: render to a fresh directory and compare each
+    PNG's SHA-256 against the committed docs/report/figures/*.png. It also guards
+    against a figure script edit silently staling the committed PNGs, which
+    --verify-repro (render-vs-render) cannot catch. The equality is scoped to the
+    pinned toolchain the figures were committed under (matplotlib and its bundled
+    FreeType, recorded in scripts/figures/README.md); a different toolchain
+    rasterizes different bytes by design, so this is the maintainer's
+    pinned-toolchain gate rather than the cross-platform CI gate. Exit code.
+    """
+    os.environ.setdefault("SOURCE_DATE_EPOCH", _FIXED_EPOCH)
+    with tempfile.TemporaryDirectory() as d:
+        fresh = render(Path(d))
+        ok = True
+        for p in fresh:
+            committed = _FIG_DIR / p.name
+            if not committed.is_file():
+                print(f"MISSING  committed figure {committed}", file=sys.stderr)
+                ok = False
+                continue
+            h_fresh, h_committed = _sha256(p), _sha256(committed)
+            match = h_fresh == h_committed
+            ok = ok and match
+            print(f"{'MATCH' if match else 'MISMATCH'}  {p.name}  {h_committed}")
+            if not match:
+                print(f"                    fresh render  {h_fresh}", file=sys.stderr)
+    if ok:
+        print("crit-3: committed figures match a fresh render bit-for-bit "
+              "(pinned toolchain)")
+        return 0
+    print("crit-3: FAILED --- a committed figure is stale vs a fresh render",
+          file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     g = ap.add_mutually_exclusive_group()
@@ -404,12 +443,17 @@ def main(argv: list[str] | None = None) -> int:
                    help="re-run the missions and rewrite the committed .npz inputs")
     g.add_argument("--verify-repro", action="store_true",
                    help="render twice and assert the PNGs are byte-identical")
+    g.add_argument("--check-committed", action="store_true",
+                   help="render fresh and assert each PNG matches its committed "
+                        "figure bit-for-bit (pinned-toolchain gate)")
     args = ap.parse_args(argv)
     if args.extract:
         extract()
         return 0
     if args.verify_repro:
         return verify_repro()
+    if args.check_committed:
+        return check_committed()
     render()
     return 0
 
