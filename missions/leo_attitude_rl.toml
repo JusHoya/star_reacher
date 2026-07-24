@@ -1,0 +1,83 @@
+# External-torque LEO attitude mission for the FR-28 RL adapter
+# (star_reacher.gym.SpaceEnv). Identical vehicle and attitude setup to
+# missions/leo_attitude_gnc.toml, with two deliberate differences:
+#
+#   * [gnc.control] component = "external" -- the control torque is supplied
+#     per cycle from outside the core (Sim.step({"torque_b_nm": ...})), which
+#     is the stepping seam an RL agent's action drives. A batch `star run`
+#     with no driver holds zero torque (the documented initial hold), so this
+#     file both propagates on its own and steps under an agent.
+#   * duration_s = 3.0 -- 3 s at the 10 Hz control rate is 30 control cycles,
+#     short enough that gymnasium.utils.env_checker.check_env and the seeding
+#     tests finish quickly, while still opening on a real 10-degree attitude
+#     error so a controller has something to do.
+#
+# The vehicle is the attitude-only smallsat under point-mass Earth gravity
+# with no third bodies, SRP, or drag, so no ephemeris fetch (`star data
+# fetch`) is needed to run it.
+#
+# provenance "representative": orbit, attitude, and estimate values are
+# inherited unchanged from the reference GNC mission; see its header for the
+# rationale.
+
+schema_version = 1
+vehicle = "vehicles/smallsat.toml"
+
+[mission]
+name = "leo-attitude-rl"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 3.0
+
+[run]
+seed = 20260601
+
+[integrator]
+type = "rk4"
+# One control cycle per step (D-5): dt_s = 1 / control_rate_hz exactly.
+dt_s = 0.1
+
+[environment]
+central_body = "earth"
+
+[logging]
+# truth_rate_hz equal to the control rate logs truth every cycle.
+truth_rate_hz = 10
+
+[initial_state.cartesian]
+# Clean-axis LEO state: r along +X, v along +Y (speed ~ circular at 7000 km
+# radius). The Phase 4 initial-attitude rule points body +X prograde (+Y
+# inertial) with body +Y toward +X inertial, giving the exact initial
+# attitude quaternion q0 = [0, sqrt(1/2), sqrt(1/2), 0] (Hamilton
+# scalar-first, D-7).
+r_m = [7.0e6, 0.0, 0.0]
+v_mps = [0.0, 7546.0, 0.0]
+frame = "GCRF"
+
+[gnc]
+control_rate_hz = 10
+latency_cycles = 0
+
+[gnc.nav]
+component = "dead_reckoning"
+# The initial attitude estimate, stated explicitly per the dead-reckoning
+# contract (no implicit truth access). Set to the true initial attitude:
+# exactly [0, sqrt(1/2), sqrt(1/2), 0] by the derivation above.
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+
+[gnc.guidance]
+component = "attitude_hold"
+# The initial attitude rotated 10 degrees about body +Z, so the run opens
+# with a pure 10-degree body-Z tracking error -- the setpoint an RL agent's
+# torque is rewarded for driving to zero.
+q_cmd = [0.0, 0.7660444431189781, 0.6427876096865393, 0.0]
+
+[gnc.control]
+# External control: the torque is supplied per control cycle from outside the
+# core through Sim.step, which is what SpaceEnv maps an action onto. The core
+# holds the last commanded torque (D-5 zero-order hold) between commands and
+# holds zero when no driver ever commands (a bare `star run`).
+component = "external"
+
+[sensors.imu]
+# Ideal IMU sampled at the control rate: one accumulation interval per cycle.
+sample_rate_hz = 10
