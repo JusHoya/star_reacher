@@ -463,3 +463,155 @@ failure to validation time with a message that names the offending key.
 
 **Exit-criterion impact: none.** Every criterion's `p0_m` is a real orbital
 position.
+
+## KNOWN-ISSUE-P6-8 — camera landmark aberration uses the barycentric velocity for a co-moving source
+
+**Scheduled for Phase 7.** Found in a post-close independent review; the fix is a
+core change plus a specification correction and is deferred to Phase 7.
+
+The camera hook aberrates its body-fixed landmark lines of sight with the
+barycentric velocity, which is the wrong frame for a source that co-moves with
+the central body. `aberration_beta`
+(`cpp/src/sensors/optical.cpp:110-114`) returns `beta = (v_sc + v_cb/SSB) / c`
+(eq:optical:beta), and `CameraHook::sample` forms that beta from the vehicle
+velocity and the central body's barycentric velocity
+(`cpp/src/sensors/camera.cpp:131-132`) and applies it to every landmark's
+apparent direction (`:155-156`). But a landmark is a body-fixed point rotated
+into inertial axes (`camera.cpp:145-147`), so it co-moves with the central
+body.
+
+Classical stellar aberration shifts an apparent direction by the observer's
+velocity relative to the *rest frame of the source*. A star or the Sun is
+effectively at rest in the solar-system barycentric (SSB) frame, so its relevant
+velocity is the vehicle's full barycentric velocity `v_sc + v_cb/SSB`, and
+eq:optical:beta is correct for those sources. A body-fixed landmark's rest frame
+translates at `v_cb/SSB`, so the observer's velocity relative to it is
+`(v_sc + v_cb/SSB) - v_cb/SSB = v_sc` alone. Applying the barycentric beta to a
+co-moving landmark over-includes `v_cb/SSB`. The spurious term is
+`|v_cb/SSB| / c ~ 2.978e4 / 2.998e8 ~ 9.9e-5 rad ~ 20.5 arcsec` at Earth orbital
+speed, of order `0.08 px` at the criterion-7 fixture's focal length, applied as
+a systematic tilt to the logged landmark pixels.
+
+This is a specification-level choice, not a code slip:
+`docs/mathlib/chapters/camera.tex` eq:camera:apparent prescribes "the same
+barycentric velocity" as the star tracker, so the fix must correct the chapter
+as well as the code. The same barycentric beta also feeds the star tracker's
+central-body *exclusion-cone* bearing (`cpp/src/sensors/optical.cpp:216-221`,
+the co-moving direction `-r`), shifting that cone boundary by the same
+~20.5 arcsec; that consequence is far smaller, confined to the validity flag near
+the cone edge, but it is the same frame error and should move with the fix. The
+Sun-sensor and star-field aberration are correct — both sources are at rest in
+SSB — and must not change.
+
+The criterion-7 pixel gate is blind to this. `tests/python/test_p6_optical_gates.py`
+builds its independent NumPy pinhole reference with the same barycentric beta,
+so code and reference agree to `< 1e-6 px` and the gate cannot see the tilt.
+
+The defect is dormant on what ships. The only shipped camera mission,
+`missions/leo_optical_nav.toml`, enables no ephemeris, so `v_cb/SSB = 0` and the
+error is identically zero. Any camera mission that also enables third bodies —
+including the criterion-7 gate fixture — carries the full ~20.5 arcsec tilt in
+its logged landmark pixels.
+
+The Phase 7 remedy is to pass a landmark-appropriate observer velocity (`v_sc`
+alone for a co-moving body-fixed point) to `aberrate()` for landmarks and for the
+central-body exclusion bearing; correct eq:camera:apparent to distinguish a
+source at rest in SSB from a co-moving source; and rebuild the criterion-7
+reference to compute its beta independently, so the gate stops replicating the
+code's frame choice. If the barycentric choice is ever judged intentional, it
+must be justified in the chapter and the ~20.5 arcsec disclosed as a modelling
+limit.
+
+**Exit-criterion impact: none in verdict.** Criterion 7's pose channels are
+copied truth and remain bit-exact regardless of aberration, and its pixel gate
+passes because the independent reference replicates the same beta. The verdict
+stands, but the gate cannot detect this frame error, and any ephemeris-backed
+camera run — the gate fixture included — carries the ~20.5 arcsec tilt in its
+truth pixels undetected. No shipped mission is affected today.
+
+## KNOWN-ISSUE-P6-9 — configured reaction wheels are built but never actuated
+
+**Scheduled for Phase 7.** Found in a post-close independent review; the fix is a
+core change and is deferred to Phase 7.
+
+The vehicle runtime parses, validates, and builds every configured reaction wheel
+but never actuates one. `run_vehicle` builds a `WheelRt` per `[[stage.wheel]]`
+block into `rt.wheels` (`cpp/src/vehicle_cycle.cpp:167-173`); that vector is
+declared at `:114` and never read again anywhere in the cycle, and
+`models::wheel_step` (`cpp/src/models/actuators.cpp:103`) — the routine that
+clamps commanded torque at `max_torque_Nm`, accumulates per-wheel momentum, and
+applies the FR-1 reaction and saturation — has no call site in `cpp/src`. The
+GNC controller's commanded torque is applied directly to the rigid body: the
+`GncOutput` torque becomes `tau_applied` (`cpp/src/vehicle_cycle.cpp:1075`) and
+enters `rigidbody_rhs` (`:1538-1541`) as an ideal body torque with no wheel model
+in between.
+
+The shipped reference GNC mission exercises the gap in its own transient.
+`missions/leo_attitude_gnc.toml` flies `vehicles/smallsat.toml`, whose three
+orthogonal wheels are rated `max_torque_Nm = 0.02` and `max_momentum_Nms = 0.4`.
+The PD law is saturated at `tau_max_nm = 0.05`, and the opening 10-degree slew
+commands ~0.035 N*m; the mission comment notes this is inside the controller
+limit, but it is 1.75x the wheel's 0.02 N*m torque authority and is applied to
+the body unclamped. Wheel torque saturation, momentum accumulation, and RCS
+desaturation — all named in FR-1 and golden-tested in isolation — are therefore
+never exercised on any shipped run.
+
+The consequence is a silent fidelity gap, not a crash or a determinism break: the
+run completes and its bytes are reproducible; the modelled attitude response is
+simply that of an ideal-torque actuator rather than a wheel-limited one. Nothing
+in the log signals that the configured wheel authority was ignored.
+
+The Phase 7 remedy is to route the commanded control torque through
+`models::wheel_step` (clamp, accumulate momentum, apply the FR-1 reaction and
+saturation) before `rigidbody_rhs`. Alternatively, if wheel-in-loop actuation is
+deliberately deferred past Phase 7, reject a `[[stage.wheel]]` block on a GNC
+mission at validation time so a configured wheel cannot silently no-op, and scope
+the ideal-actuator assumption in `docs/formats/srlog_v1.md`.
+
+**Exit-criterion impact: none.** No Phase 6 criterion gates wheel actuation —
+criterion 2 checks the PD torque law in isolation and criterion 10 measures the
+ascent real-time factor — so the bypass does not affect any criterion's verdict.
+It does mean no reaction-wheel dynamics claim can be made until the actuator is in
+the loop.
+
+## KNOWN-ISSUE-P6-10 — an IMU bias_instability without bias_tau_s silently disables the in-run bias
+
+**Scheduled for Phase 7.** Found in a post-close independent review; the fix is a
+validator check plus a specification correction and is deferred to Phase 7.
+
+Setting a gyro or accelerometer `bias_instability` without also setting the
+matching `bias_tau_s` silently disables the entire in-run Gauss-Markov bias for
+that triad. The setup gate is `if (c.bias_tau_s > 0.0 && sigma_gm > 0.0)`
+(`cpp/src/sensors/imu.cpp:170`), and `bias_tau_s` defaults to `0.0`
+(`cpp/include/star/sensors/imu.hpp:63`), so a configuration with
+`bias_instability > 0` but `bias_tau_s` omitted leaves the discrete transition
+`phi` at zero and never sets the drive sigma `w_sigma`. The stationary
+initialization draw is then multiplied by zero as well
+(`init = phi > 0 ? sigma_gm : 0`, `cpp/src/sensors/imu.cpp:185-186`). The
+configured bias-instability contribution is dropped for the whole run — a
+plausible-looking but wrong result, not a crash; the ARW, turn-on-bias, and
+quantizer paths are unaffected.
+
+The mission validator does not catch it. `python/star_reacher/mission.py`
+range-checks the IMU keys individually but carries no cross-field rule tying
+`bias_instability > 0` to `bias_tau_s > 0`, and an omitted key is not
+range-checked, so the configuration validates clean. The mathlib chapter is worse
+than silent: `docs/mathlib/chapters/sensors_imu.tex:82-85` states that
+non-positive `tau_c` is "rejected by the FR-15 configuration validator before the
+run starts", which is false precisely when `bias_instability > 0`.
+
+Reaching the defect requires a specific authoring mistake — configuring a
+bias-instability coefficient and forgetting its correlation time. Every shipped
+mission pairs the two keys, and the core is a total function behaving exactly as
+its header documents (`cpp/include/star/sensors/imu.hpp:60-63`); this is a missing
+cross-field FR-15 check plus a chapter that over-promises.
+
+The Phase 7 remedy is to add the cross-field FR-15 check in `mission.py` — if
+`gyro_bias_instability_radps > 0` then `gyro_bias_tau_s` must be `> 0`, and the
+accelerometer analog — rejecting the configuration (or at minimum warning); then
+either the chapter's rejection promise becomes true or
+`sensors_imu.tex:82-85` must be corrected to match.
+
+**Exit-criterion impact: none.** Criterion 1's Allan-recovery mission configures
+both keys, so the bias-instability coefficient it recovers within +-10% is the one
+actually driven.
