@@ -1,0 +1,25 @@
+{
+  "note": "Figure-input data for the scientific-report case studies (scripts/figures/casestudy_figures.py). Regenerate with 'python scripts/figures/casestudy_figures.py --extract'.",
+  "cases": {
+    "translunar": {
+      "mission": "missions/tli.toml",
+      "central_body": "earth",
+      "config_sha256": "4345078cfee20f7f2530c4ffc5243b1f2aa40055aa8f739a1f55d8659b739071",
+      "run_srlog_sha256": "cae24a0dd4917bf778879dbb4df7a8380c1b6e7c9d795f07b593a1ba864e273b",
+      "truth_records": 455756,
+      "decimated_samples": 2000,
+      "npz": "translunar_transfer.npz",
+      "npz_sha256": "fd63904d45c67b3bee9e1b155d697f6372aa933e3f32708695ddf45c0bdf7650"
+    },
+    "mars_transfer": {
+      "mission": "missions/mars_cruise.toml",
+      "central_body": "sun",
+      "config_sha256": "41819e7c4224421935d2cc7116701f8f3423a9642a772cdf921988b825aaf70d",
+      "run_srlog_sha256": "f9090fd7701aaedcc8c134b3f284200484dc065b05b812aab453c2c8201ac8e6",
+      "truth_records": 604801,
+      "decimated_samples": 1998,
+      "npz": "mars_transfer.npz",
+      "npz_sha256": "9cc8e67f19b6dfdf82d938a7723c12007ff99959881f963a730ef2038e118983"
+    }
+  }
+}

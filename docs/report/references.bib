@@ -1,7 +1,13 @@
 % Bibliography for the star_reacher scientific report.
 % Same discipline as the math library: only verifiable standard works; never
-% invent bibliographic data — anything unverifiable is marked "reference TBD"
-% inline in the text instead.
+% invent bibliographic data -- anything unverifiable is marked "reference TBD"
+% inline in the text instead. The allowed set is fixed by the PRD (FR-30 and
+% its "References relied on" list): Vallado; Montenbruck and Gill; Markley and
+% Crassidis; Battin; U.S. Standard Atmosphere 1976; IERS Conventions 2010;
+% Fehlberg NASA TR R-287; Hairer, Norsett, and Wanner; Groves; Titterton and
+% Weston; DE440 (Park et al. 2021); plus the two cross-tool baselines already
+% cited in tests/golden/crosstool/manifest.toml (GMAT, AIAA 2014-4151; Orekit,
+% ICATT 2010).
 
 @book{vallado2013,
   author    = {Vallado, David A.},
@@ -10,6 +16,46 @@
   publisher = {Microcosm Press},
   address   = {Hawthorne, CA},
   year      = {2013},
+}
+
+@book{montenbruck2000,
+  author    = {Montenbruck, Oliver and Gill, Eberhard},
+  title     = {Satellite Orbits: Models, Methods and Applications},
+  publisher = {Springer},
+  address   = {Berlin},
+  year      = {2000},
+  isbn      = {978-3-540-67280-7},
+}
+
+@book{markley2014,
+  author    = {Markley, F. Landis and Crassidis, John L.},
+  title     = {Fundamentals of Spacecraft Attitude Determination and Control},
+  publisher = {Springer},
+  address   = {New York},
+  year      = {2014},
+}
+
+@book{battin1999,
+  author    = {Battin, Richard H.},
+  title     = {An Introduction to the Mathematics and Methods of
+               Astrodynamics},
+  edition   = {Revised},
+  series    = {AIAA Education Series},
+  publisher = {American Institute of Aeronautics and Astronautics},
+  address   = {Reston, VA},
+  year      = {1999},
+}
+
+@techreport{ussa1976,
+  author      = {{National Oceanic and Atmospheric Administration} and
+                 {National Aeronautics and Space Administration} and
+                 {United States Air Force}},
+  title       = {{U.S.} Standard Atmosphere, 1976},
+  type        = {Report},
+  number      = {NOAA-S/T 76-1562 (NASA-TM-X-74335)},
+  institution = {U.S. Government Printing Office},
+  address     = {Washington, D.C.},
+  year        = {1976},
 }
 
 @techreport{iers2010,
@@ -21,4 +67,80 @@
   publisher   = {Verlag des Bundesamts f{\"u}r Kartographie und Geod{\"a}sie},
   address     = {Frankfurt am Main},
   year        = {2010},
+}
+
+@techreport{fehlberg1968,
+  author      = {Fehlberg, Erwin},
+  title       = {Classical Fifth-, Sixth-, Seventh-, and Eighth-Order
+                 {Runge-Kutta} Formulas with Stepsize Control},
+  type        = {{NASA} Technical Report},
+  number      = {R-287},
+  institution = {National Aeronautics and Space Administration},
+  address     = {Washington, D.C.},
+  year        = {1968},
+}
+
+@book{hairer1993,
+  author    = {Hairer, Ernst and N{\o}rsett, Syvert P. and Wanner, Gerhard},
+  title     = {Solving Ordinary Differential Equations {I}: Nonstiff Problems},
+  edition   = {2},
+  series    = {Springer Series in Computational Mathematics},
+  volume    = {8},
+  publisher = {Springer},
+  address   = {Berlin},
+  year      = {1993},
+}
+
+@book{groves2013,
+  author    = {Groves, Paul D.},
+  title     = {Principles of {GNSS}, Inertial, and Multisensor Integrated
+               Navigation Systems},
+  edition   = {2},
+  publisher = {Artech House},
+  address   = {Boston},
+  year      = {2013},
+}
+
+@book{titterton2004,
+  author    = {Titterton, David H. and Weston, John L.},
+  title     = {Strapdown Inertial Navigation Technology},
+  edition   = {2},
+  publisher = {The Institution of Electrical Engineers},
+  address   = {Stevenage, UK},
+  year      = {2004},
+}
+
+@article{park2021,
+  author  = {Park, Ryan S. and Folkner, William M. and Williams, James G. and
+             Boggs, Dale H.},
+  title   = {The {JPL} Planetary and Lunar Ephemerides {DE440} and {DE441}},
+  journal = {The Astronomical Journal},
+  volume  = {161},
+  number  = {3},
+  pages   = {105},
+  year    = {2021},
+}
+
+% Cross-tool baselines (D-15). Both entries reproduce the citations frozen in
+% tests/golden/crosstool/manifest.toml, where the external tools were run
+% offline by the maintainer.
+@inproceedings{hughes2014,
+  author    = {Hughes, Steven P. and Qureshi, Rizwan H. and Cooley, D. Steven
+               and Parker, Joel J. K.},
+  title     = {Verification and Validation of the {General} {Mission}
+               {Analysis} {Tool} ({GMAT})},
+  booktitle = {AIAA/AAS Astrodynamics Specialist Conference},
+  series    = {AIAA 2014-4151},
+  publisher = {American Institute of Aeronautics and Astronautics},
+  year      = {2014},
+  doi       = {10.2514/6.2014-4151},
+}
+
+@inproceedings{maisonobe2010,
+  author    = {Maisonobe, Luc and Pommier, V{\'e}ronique and Parraud, Pascal},
+  title     = {Orekit: An open source library for operational flight dynamics
+               applications},
+  booktitle = {4th International Conference on Astrodynamics Tools and
+               Techniques (ICATT)},
+  year      = {2010},
 }
