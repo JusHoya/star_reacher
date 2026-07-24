@@ -4,7 +4,7 @@ Maintainer-side only: drives the portable GMAT R2026a console install at
 C:/Users/hoyer/WorkSpace/tools/gmat/ against a committed Phase 8 script under
 ``tests/golden/crosstool/`` and converts the 16-significant-digit report into
 the committed frozen truth CSV. CI never runs this; CI consumes only the
-committed CSVs, and until they exist the five Phase 8 gates skip (deferred to
+committed CSVs, and a gate whose CSV does not exist skips (deferred to
 docs/release_checklist.md item 10). This is the Phase 8 sibling of
 run_gmat_case1.py, parameterized over the five cases.
 
@@ -18,8 +18,11 @@ Cases (``--case``):
 
 The 7-day cases emit the full 10081-row 60 s grid exactly as case 1 does; the
 trans-lunar case emits a single arrival row at the simulator's SOI-transition
-epoch (passed as ``--arrival-s``, the elapsed-from-MECO span 455402 s by
-default - the elapsed seconds of the tli SOI event minus the 353 s MECO time).
+epoch (passed as ``--arrival-s``, the elapsed-from-burnout span 455401 s by
+default - the elapsed seconds of the tli SOI event, 455755 s, minus the 354 s
+ballistic-burnout time; the cutoff is commanded at 353 s and the delivered
+thrust level is zero from 354 s under the per-step spool discipline, so the
+GMAT coast starts at the t = 354 s truth state).
 
 Zero-EOP: the Earth-regime cases (molniya, translunar) reuse the committed
 gmat_startup_zeroeop.txt override (the controlled-comparison configuration
@@ -51,7 +54,7 @@ N_ROWS = int(DURATION_S / STEP_S) + 1  # 10081, t = 0 included
 GRID_TOL_S = 5e-6  # as run_gmat_case1.py: ~cm-level along-track, negligible
 
 # Per case: (script, truth CSV, zero-EOP?, single arrival row?). The arrival
-# case's default stop span is the tli SOI-transition elapsed-from-MECO time.
+# case's default stop span is the tli SOI-transition elapsed-from-burnout time.
 CASES = {
     "molniya": ("gmat_molniya.script", "truth_gmat_molniya.csv", True, False),
     "lunar_orbiter": (
@@ -80,11 +83,13 @@ CASES = {
     ),
 }
 
-# Default trans-lunar arrival span (elapsed from the MECO epoch the script
-# starts at): the tli SOI-transition event at 455755 s minus the 353 s MECO
-# time. The maintainer overrides it with --arrival-s if the frozen simulator
-# run locates a different arrival epoch.
-DEFAULT_ARRIVAL_S = 455402.0
+# Default trans-lunar arrival span (elapsed from the ballistic-burnout epoch
+# the script starts at): the tli SOI-transition event at 455755 s minus the
+# 354 s burnout time (cutoff commanded at 353 s; delivered thrust level zero
+# from 354 s under the per-step spool discipline). The maintainer overrides it
+# with --arrival-s if the frozen simulator run locates a different arrival
+# epoch.
+DEFAULT_ARRIVAL_S = 455401.0
 
 
 def write_startup() -> None:
@@ -173,8 +178,10 @@ def convert_arrival(report: Path, truth_out: Path, arrival_s: float) -> None:
     out = [
         "# Frozen GMAT R2026a truth for the Phase 8 trans-lunar cross-tool case",
         "# (exit criterion 1, D-15): the single arrival-epoch EarthICRF Cartesian",
-        f"# state at elapsed-from-MECO {arrival_s} s (lunar-SOI arrival). The gate",
-        "# is the position difference vs the tli truth log at this epoch < 1 km.",
+        f"# state at elapsed-from-burnout {arrival_s} s (lunar-SOI arrival; the",
+        "# coast starts at the tli t = 354 s ballistic-burnout state, so mission",
+        f"# time is {arrival_s} + 354 s). The gate is the position difference vs",
+        "# the tli truth log at this epoch < 1 km.",
         "t_s,x_m,y_m,z_m,vx_mps,vy_mps,vz_mps",
         "%r,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e" % (arrival_s, *xyz),
     ]
@@ -196,8 +203,8 @@ def main() -> None:
         "--arrival-s",
         type=float,
         default=DEFAULT_ARRIVAL_S,
-        help="trans-lunar arrival span (elapsed from MECO); ignored for the "
-        "grid cases",
+        help="trans-lunar arrival span (elapsed from the t = 354 s ballistic "
+        "burnout the script's coast starts at); ignored for the grid cases",
     )
     args = ap.parse_args()
 

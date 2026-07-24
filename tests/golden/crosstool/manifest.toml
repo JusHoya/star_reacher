@@ -234,13 +234,15 @@ tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 1
 
 # ===========================================================================
 # Phase 8 cross-tool cases (exit criterion 1, D-15). GMAT is not installed on
-# the Phase 8 execution host, so the five truth CSVs below are DEFERRED through
-# the PRD section 9 valve: everything except the truth CSV bytes and the
-# measured RMS is committed and ready here, and generating the truth is
-# docs/release_checklist.md item 10. The five gates skip (never pass vacuously)
-# in tests/python/test_crosstool_frozen_truth.py until their CSVs land. The
+# the Phase 8 execution host, so the truth CSVs below are generated offline on
+# the maintainer GMAT machine through the PRD section 9 valve
+# (docs/release_checklist.md item 10). Four of the five were frozen 2026-07-24
+# and their gates measure below; the trans-lunar case is PENDING A RE-FREEZE
+# (its first freeze was invalidated by a mid-burn initial state -- see the
+# deferral note at the end of this file). A gate whose CSV is absent skips
+# (never passes vacuously) in tests/python/test_crosstool_frozen_truth.py. The
 # comparison machinery those gates use is proven correct independent of the
-# absent external truth by test_rms_machinery_is_correct_on_sim_own_states
+# external truth by test_rms_machinery_is_correct_on_sim_own_states
 # (sim-own states as pseudo-truth, position RMS ~5e-9 m).
 #
 # Cases, missions, and gates (PRD Phase 8 exit criterion 1 verbatim):
@@ -322,11 +324,11 @@ tolerance = "not applicable (configuration evidence)"
 
 [[file]]
 name = "gmat_translunar.script"
-source = "hand-written replication of the missions/tli.toml BALLISTIC COAST per README.md; Cartesian state (the simulator's exact tli t = 353 s MECO truth state) and output in EarthICRF; Earth, Sun, and Luna point masses (tli.toml's point-mass Earth with the Sun and Moon third bodies); no SRP/drag"
+source = "hand-written replication of the missions/tli.toml BALLISTIC COAST per README.md; Cartesian state (the simulator's exact tli t = 354 s ballistic-burnout truth state: the meco cutoff is commanded at t = 353 s, and the delivered thrust level reaches exactly zero one 1 s integrator step later under the per-step spool discipline, so 354 s is the first ballistic epoch) and output in EarthICRF; Earth, Sun, and Luna point masses (tli.toml's point-mass Earth with the Sun and Moon third bodies); no SRP/drag"
 citation = "GMAT R2026a (pinned above; AIAA 2014-4151 as above)"
-generation = "committed as-run (maintainer-machine absolute paths by design, D-15). SHA-256 83cdf2eff10935dc2c740b8a85b4e538d184a803119889aaacbbd060bc7ea2ca"
+generation = "committed as-run (maintainer-machine absolute paths by design, D-15). SHA-256 7b2ae9a5b89746b65eb49d81571c818785fbe3471a26c9055c0ff03680ad376b"
 date = "2026-07-24"
-tolerance = "not applicable (configuration evidence). The gate is a single-point arrival comparison, not a 7-day RMS: position < 1 km at the lunar-SOI arrival epoch the simulator locates"
+tolerance = "not applicable (configuration evidence). The gate is a single-point arrival comparison, not a 7-day RMS: position < 1 km at the lunar-SOI arrival epoch the simulator locates (elapsed-from-burnout span 455401 s)"
 
 [[file]]
 name = "gmat_mars_cruise.script"
@@ -336,18 +338,17 @@ generation = "committed as-run (maintainer-machine absolute paths by design, D-1
 date = "2026-07-24"
 tolerance = "not applicable (configuration evidence). Replicates the committed 7-day report arc; the full 'arrival SOI' variant (Propagate to the Mars-SOI crossing) is the maintainer extension noted in the .script header"
 
-# ---- Phase 8 frozen truth. The five GMAT truth CSVs below were FROZEN
+# ---- Phase 8 frozen truth. The four GMAT truth CSVs below were FROZEN
 #      2026-07-24 on the maintainer laptop (LAPTOP-HOYA) from the committed
 #      .script files with GMAT R2026a; the same portable install was
 #      canary-verified byte-identical to the frozen Phase 3 truth
 #      (truth_gmat_leo_gravity_8x8.csv, SHA-256 181627b0...) immediately before
 #      this run. Each entry states the mission it replicates, the exact GMAT
-#      configuration, and the PRD gate verbatim. The one element still pending
-#      is the star-vs-truth position RMS: it requires the 0.8.0 build to
-#      re-propagate each mission and compare (docs/release_checklist.md item 10
-#      step 4). Once these CSVs are present the five gates in
-#      test_crosstool_frozen_truth.py stop skipping and measure that RMS
-#      themselves, so they must run on a 0.8.0 host, not the 0.6.0 laptop.
+#      configuration, the PRD gate verbatim, and the star-vs-truth measurement
+#      taken on the 0.8.0 build host 2026-07-24 by
+#      tests/python/test_crosstool_frozen_truth.py (docs/release_checklist.md
+#      item 10 step 4). The fifth case (trans-lunar) is pending a re-freeze;
+#      its deferral note is at the end of this file.
 
 [[file]]
 name = "truth_gmat_molniya.csv"
@@ -355,7 +356,7 @@ source = "GMAT R2026a fixed-step RK89 propagation of gmat_molniya.script under g
 citation = "GMAT R2026a (pinned above); force model: earth_egm2008_8x8.cof 8x8 TideModel None, Sun+Luna point masses, no SRP/drag"
 generation = "scripts/crosstool/run_gmat_phase8.py --case molniya (the maintainer freeze driver, committed). SHA-256 5341e53e5bac59ad9170240ef849315e1a23932325cbde8c2f895effe4643b4d"
 date = "2026-07-24"
-tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-MOLNIYA-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim. Frozen-baseline measurement: pending the 0.8.0-build star-vs-truth RMS (docs/release_checklist.md item 10 step 4)"
+tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-MOLNIYA-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim. Frozen-baseline measurement (2026-07-24, 0.8.0 build host): position RMS 0.160317 m (gate MET, margin ~624x), velocity RMS 4.253e-4 m/s"
 
 [[file]]
 name = "truth_gmat_lunar_orbiter.csv"
@@ -363,7 +364,7 @@ source = "GMAT R2026a fixed-step RK89 propagation of gmat_lunar_orbiter.script; 
 citation = "GMAT R2026a (pinned above); force model: moon_grgm1200a_50x50.cof 50x50 TideModel None in the Moon PA frame, Sun+Earth point masses, spherical SRP Cr*A/m = 0.02"
 generation = "scripts/crosstool/run_gmat_phase8.py --case lunar_orbiter (committed). SHA-256 ba82f0491fbb9e7afdaa44c6b21d5a7608537e02ed40fbfa312d9156478f1624"
 date = "2026-07-24"
-tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-LUNAR-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (lunar orbiter, degree-matched GRGM field, SRP on). Frozen-baseline measurement: pending the 0.8.0-build star-vs-truth RMS (docs/release_checklist.md item 10 step 4)"
+tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-LUNAR-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (lunar orbiter, degree-matched GRGM field, SRP on). Frozen-baseline measurement (2026-07-24, 0.8.0 build host): position RMS 7.232688 m (gate MET, margin ~13.8x), velocity RMS 6.376e-3 m/s"
 
 [[file]]
 name = "truth_gmat_mars_orbiter.csv"
@@ -371,15 +372,7 @@ source = "GMAT R2026a fixed-step RK89 propagation of gmat_mars_orbiter.script; r
 citation = "GMAT R2026a (pinned above); force model: mars_mro120f_20x20.cof 20x20 TideModel None in the Mars IAU body-fixed frame, Sun point mass, spherical SRP Cr*A/m = 0.02"
 generation = "scripts/crosstool/run_gmat_phase8.py --case mars_orbiter (committed). SHA-256 3f986bde67ec2ee525f4d2c3dd987aa056deede8bce42b42fd81ecfda5058218"
 date = "2026-07-24"
-tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-MARS-ORBITER-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (Mars orbiter, MRO-class, harmonics + SRP). Frozen-baseline measurement: pending the 0.8.0-build star-vs-truth RMS (docs/release_checklist.md item 10 step 4)"
-
-[[file]]
-name = "truth_gmat_translunar.csv"
-source = "GMAT R2026a fixed-step RK89 coast propagation of gmat_translunar.script from the tli MECO state; the single arrival-epoch state at elapsed-from-MECO 455402 s converted km -> m. Frozen 2026-07-24 on the maintainer laptop (LAPTOP-HOYA). NOTE: 455402 s is the committed default arrival span; re-confirm it against the 0.8.0 tli.toml soi_transition epoch on the build host and re-freeze with --arrival-s if it differs (a single ~3 s GMAT run)"
-citation = "GMAT R2026a (pinned above); force model: Earth+Sun+Luna point masses, no SRP/drag (the tli.toml coast force set)"
-generation = "scripts/crosstool/run_gmat_phase8.py --case translunar (committed). SHA-256 298a8cb57c556c68ac8eecadcae89a4f4f4323c226240396841f7e2f0fddd0a5"
-date = "2026-07-24"
-tolerance = "gate: 3D position difference at lunar-SOI arrival < 1 km (XTOOL-TRANSLUNAR-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (trans-lunar < 1 km at lunar arrival). Frozen-baseline measurement: pending the 0.8.0-build star-vs-truth comparison (docs/release_checklist.md item 10 step 4)"
+tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 100 m over 7 days (XTOOL-MARS-ORBITER-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (Mars orbiter, MRO-class, harmonics + SRP). Frozen-baseline measurement (2026-07-24, 0.8.0 build host): position RMS 79.478630 m (gate MET, margin ~1.26x -- the thinnest of the set), velocity RMS 7.042e-2 m/s"
 
 [[file]]
 name = "truth_gmat_mars_cruise.csv"
@@ -387,4 +380,36 @@ source = "GMAT R2026a fixed-step RK89 propagation of gmat_mars_cruise.script ove
 citation = "GMAT R2026a (pinned above); force model: heliocentric Sun two-body plus Earth/Luna/Venus/Mars/Jupiter point masses, spherical SRP Cr*A/m = 0.013 no occulter"
 generation = "scripts/crosstool/run_gmat_phase8.py --case mars_cruise (committed). SHA-256 9892f24de644a83abd1aca8e0f0ef5df8f80d2d7eebfdac178ab6d65f4d259b8"
 date = "2026-07-24"
-tolerance = "gate: 3D position difference at arrival < 100 km (XTOOL-MARS-CRUISE-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (Mars cruise < 100 km at arrival SOI); the committed gate applies it at the end of the 7-day report arc, the full-cruise 'arrival SOI' variant per the .script header. Frozen-baseline measurement: pending the 0.8.0-build star-vs-truth comparison (docs/release_checklist.md item 10 step 4)"
+tolerance = "gate: 3D position difference at arrival < 100 km (XTOOL-MARS-CRUISE-GMAT). The bound is PRD Phase 8 exit criterion 1 verbatim (Mars cruise < 100 km at arrival SOI); the committed gate applies it at the end of the 7-day report arc, the full-cruise 'arrival SOI' variant per the .script header. Frozen-baseline measurement (2026-07-24, 0.8.0 build host): position difference at end of the committed arc 952.550 m (gate MET, margin ~105x)"
+
+# ---- truth_gmat_translunar.csv: PENDING RE-FREEZE (the gate skips until it
+#      lands; docs/release_checklist.md item 10). The 2026-07-24 first freeze
+#      (LAPTOP-HOYA, CSV SHA-256 298a8cb5...) was measured against the 0.8.0
+#      build at |dr| = 75,212 km at arrival (gate < 1 km) and was REMOVED as
+#      invalid. Root cause: its gmat_translunar.script initial state was the
+#      tli t = 353 s truth state, which is MID-BURN -- the meco cutoff is
+#      commanded at t = 353 s, but the delivered thrust level follows the
+#      per-step spool discipline on the mission's 1 s integrator grid and
+#      reaches exactly zero at t = 354 s, so the tli log gains +15.3 m/s
+#      equivalent prograde delta-v over [353, 354) that the replicated coast
+#      lacked, and the near-capture lunar approach amplified the energy
+#      deficit into a 75,189 km matched-epoch arrival miss. (The gate's
+#      75,212 km readout additionally contained ~23 km from a second defect
+#      fixed alongside: the superseded test sampled the simulator log at the
+#      CSV's elapsed stamp without the 353 s MECO offset, a comparison-epoch
+#      misalignment worth ~45 km on its own that would have failed the < 1 km
+#      gate even against a perfect freeze; the corrected test maps CSV time to
+#      mission time explicitly and asserts the epoch.) The GMAT propagation itself
+#      was sound: the simulator's own ballistic coast of the same mid-burn
+#      state reproduced the removed CSV's arrival state to 0.022 km, which
+#      simultaneously localized the fault to the initial state and measured
+#      the two tools' agreement on this coast at the ~20 m level; and the
+#      simulator's ballistic coast of the corrected t = 354 s burnout state
+#      reproduces the tli truth log's arrival state bit-exactly (|dr| = 0).
+#      The script is corrected (t = 354 s state, epoch 12:05:54, span
+#      455401 s; SHA-256 7b2ae9a5...) and the re-freeze is a single ~3 s GMAT
+#      run on the maintainer machine:
+#          python scripts/crosstool/run_gmat_phase8.py --case translunar
+#      then re-run tests/python/test_crosstool_frozen_truth.py on a 0.8.0
+#      host and add a fresh [[file]] entry here (CSV SHA-256, measured
+#      arrival |dr|). Expected result: ~0.02 km against the 1 km gate.

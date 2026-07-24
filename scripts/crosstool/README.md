@@ -45,11 +45,15 @@ Five additional GMAT cases: Molniya, lunar orbiter, Mars orbiter, trans-lunar
 coast, and Earth-Mars cruise (the Molniya, lunar-orbiter, and Mars-orbiter
 gates are 7-day position RMS < 100 m; trans-lunar is < 1 km at lunar arrival;
 Mars cruise is < 100 km at arrival). Their missions, GMAT `.script` files, and
-gravity-field COF inputs are committed; the frozen truth is **deferred**
-(`docs/release_checklist.md` item 10) because GMAT was not installed on the
-Phase 8 execution host. The five gates in
-`tests/python/test_crosstool_frozen_truth.py` skip with an explicit deferral
-message until their truth CSVs land.
+gravity-field COF inputs are committed; the frozen truth is generated offline
+on the maintainer GMAT machine (`docs/release_checklist.md` item 10) because
+GMAT was not installed on the Phase 8 execution host. Status 2026-07-24: four
+of the five truth CSVs are frozen and their gates measure (values in
+`tests/golden/crosstool/manifest.toml`); the trans-lunar CSV is pending a
+re-freeze (its first freeze started from the mid-burn t = 353 s state and was
+invalidated -- the manifest's deferral note has the history). A gate in
+`tests/python/test_crosstool_frozen_truth.py` whose truth CSV is absent skips
+with an explicit deferral message until the CSV lands.
 
 Phase 8 regeneration order (repo root; maintainer with GMAT R2026a):
 
@@ -64,7 +68,8 @@ Phase 8 regeneration order (repo root; maintainer with GMAT R2026a):
    `lunar_orbiter`, `mars_orbiter`, `translunar`, `mars_cruise`) — run GMAT on
    each committed script and freeze the truth CSV. For `translunar`, pass
    `--arrival-s <span>` if the frozen simulator run locates a different lunar
-   arrival epoch than the default 455402 s.
+   arrival epoch than the default 455401 s (elapsed from the t = 354 s
+   ballistic burnout the script's coast starts at).
 4. `python scripts/crosstool/compare_rms.py <mission run.srlog> <truth.csv>` —
    report the 7-day RMS numbers for the manifest (the trans-lunar and
    Mars-cruise arrival-point numbers are reported by their gates directly).

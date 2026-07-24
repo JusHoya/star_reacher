@@ -20,14 +20,15 @@ Phase 8 (fully prepared; frozen truth deferred to the pre-release checklist):
 - XTOOL-TRANSLUNAR-GMAT    missions/tli.toml coast, position < 1 km at lunar arrival;
 - XTOOL-MARS-CRUISE-GMAT   missions/mars_cruise.toml, position < 100 km at arrival.
 
-The Phase 8 truth CSVs are not committed: GMAT is not installed on the Phase 8
-execution host (D-15 freezes truth offline on a maintainer machine), so those
-five cases SKIP with an explicit deferral message naming
-``docs/release_checklist.md`` item 10 rather than pass vacuously or read a
-fabricated CSV. Their missions, GMAT scripts, gravity-field COF inputs, and
-provenance manifests are committed and ready; freezing the truth and flipping
-these to gates is the checklist item. That the comparison machinery is correct
-independent of the absent external truth is proven by
+The Phase 8 truth CSVs are frozen offline on the maintainer GMAT machine
+(D-15; ``docs/release_checklist.md`` item 10). Four of the five are committed
+and their gates measure (values recorded in the crosstool manifest); the
+trans-lunar CSV is pending a re-freeze (its first freeze started from a
+mid-burn state and was invalidated -- the manifest's deferral note has the
+history). A case whose truth CSV is absent SKIPS with an explicit deferral
+message naming the checklist item rather than pass vacuously or read a
+fabricated CSV. That the comparison machinery is correct independent of the
+external truth is proven by
 ``test_rms_machinery_is_correct_on_sim_own_states`` below, which feeds the
 sim's own re-propagated states through the identical CSV/grid/RMS path and
 asserts the position RMS is ~0.
@@ -136,9 +137,10 @@ def test_xtool_leo_drag_orekit(tmp_path):
 
 # ---------------------------------------------------------------------------
 # Phase 8 cross-tool cases (exit criterion 1). Each carries the mission it
-# re-propagates, the frozen-truth CSV it WILL compare against, and the PRD
-# gate verbatim. The truth CSV is absent (GMAT not installed here), so each is
-# a real gate that skips with an explicit deferral rather than a vacuous pass.
+# re-propagates, the frozen-truth CSV it compares against, and the PRD gate
+# verbatim. A case whose truth CSV is absent (trans-lunar, pending re-freeze)
+# is a real gate that skips with an explicit deferral rather than a vacuous
+# pass; the committed cases measure.
 # ---------------------------------------------------------------------------
 
 # 7-day position-RMS cases: (test id, mission file, frozen-truth CSV, gate m).
@@ -182,13 +184,25 @@ def test_xtool_phase8_rms_case(case_id, mission, truth_csv, gate_m, tmp_path):
     )
 
 
+# The tli ballistic-burnout epoch the trans-lunar frozen CSV's elapsed times
+# are measured from. The cutoff is COMMANDED at the meco event (t = 353 s), but
+# the delivered thrust level follows the per-step spool discipline on the 1 s
+# integrator grid and reaches exactly zero one step later, so t = 354 s is the
+# first ballistic epoch (measured: the truth log's specific orbital energy is
+# constant from 354 s on, and gains a full-thrust step over [353, 354)). The
+# GMAT replication coasts from the t = 354 s truth state, so its elapsed time
+# t maps to mission time t + 354.
+_TLI_BURNOUT_T_S = 354.0
+
+
 def test_xtool_translunar_gmat(tmp_path):
     """XTOOL-TRANSLUNAR-GMAT: position < 1 km at lunar arrival vs frozen GMAT.
 
     The gate compares the position at lunar-SOI arrival: the trans-lunar coast
-    (missions/tli.toml from MECO) propagated in both tools, differenced at the
-    arrival epoch the simulator locates (the frozen CSV carries the GMAT
-    arrival-epoch state). Deferred until GMAT freezes the coast.
+    (missions/tli.toml from ballistic burnout) propagated in both tools,
+    differenced at the arrival epoch the simulator locates (the frozen CSV
+    carries the GMAT arrival-epoch state, stamped in elapsed-from-burnout
+    time). Deferred until GMAT freezes the coast.
     """
     truth_path = CROSSTOOL / "truth_gmat_translunar.csv"
     if not truth_path.is_file():
@@ -197,12 +211,21 @@ def test_xtool_translunar_gmat(tmp_path):
             f"pending (GMAT not available at Phase 8 execution) -- deferred to "
             f"{_CHECKLIST_ITEM}"
         )
-    # The frozen CSV's single arrival row is [t_s, x..z (m), vx..vz]; the gate
-    # differences it against the tli truth log at the same arrival epoch.
+    # The frozen CSV's single arrival row is [t_s, x..z (m), vx..vz] with t_s
+    # elapsed from the ballistic burnout state the GMAT coast starts at; the
+    # gate differences it against the tli truth log at the same absolute epoch
+    # (mission time t_s + 354, exact on the 1 Hz integer-second truth grid).
     row = _load_arrival_csv("truth_gmat_translunar.csv")
     result = run_mission(REPO_ROOT / "missions" / "tli.toml", tmp_path / "run")
     truth = star_reacher.load(result.srlog_path).groups["truth"]
-    idx = int(np.searchsorted(truth["t_s"], row[0]))
+    t_arrival = row[0] + _TLI_BURNOUT_T_S
+    idx = int(np.searchsorted(truth["t_s"], t_arrival))
+    assert idx < len(truth["t_s"]) and truth["t_s"][idx] == t_arrival, (
+        f"the tli truth log has no row at the arrival epoch {t_arrival} s "
+        f"(log ends at {truth['t_s'][-1]} s); the frozen arrival span no "
+        f"longer matches this build's SOI-transition epoch -- re-freeze with "
+        f"run_gmat_phase8.py --arrival-s"
+    )
     dr = truth["r_m"][idx] - row[1:4]
     dist = float(np.linalg.norm(dr))
     print(f"XTOOL-TRANSLUNAR-GMAT: |dr| at lunar arrival {dist:.3f} m")
@@ -269,9 +292,9 @@ def test_rms_machinery_is_correct_on_sim_own_states(tmp_path):
     grid alignment, position RMS) against a fresh re-propagation of the same
     mission. Because the run is bit-deterministic (D-10), the RMS must be
     exactly 0; the assertion allows a sub-micrometre band so it tests the
-    machinery, not floating-point identity. This is what lets the five Phase 8
-    gates skip honestly: the comparison path they will use is proven correct
-    here without any external tool.
+    machinery, not floating-point identity. This is what lets a Phase 8 gate
+    whose truth CSV is absent skip honestly: the comparison path it will use
+    is proven correct here without any external tool.
     """
     # A short, fast, self-contained mission with a 1 Hz truth log on exact
     # integer seconds. molniya runs in ~1 s and needs only committed data.

@@ -43,7 +43,9 @@ Tag and announce only when all of these hold:
 - [ ] **Handoff A** — the five new cross-tool cases are frozen against GMAT and
       their five gates in `tests/python/test_crosstool_frozen_truth.py` pass
       (no longer skip), each measured RMS within its PRD tolerance and recorded
-      in `tests/golden/crosstool/manifest.toml`.
+      in `tests/golden/crosstool/manifest.toml`. Status 2026-07-24: four of
+      five are DONE (measured and recorded); the trans-lunar case needs one
+      re-freeze run — see the updated Handoff A below.
 - [ ] **Handoff B** — the Pi 5 checklist is run and `star verify` completes in
       `< 10 min` on real Pi 5 silicon (plus the Phase 5/6 Pi 5 performance
       clauses that share item 1).
@@ -85,30 +87,47 @@ RMS.
    python tests/golden/ephemeris/generate_lunar.py      # the lunar excerpt (already committed)
    ```
 
-2. For each case, run GMAT on the committed script and freeze its truth CSV:
+2. **Status 2026-07-24 — four of the five cases are DONE.** The 2026-07-24
+   laptop freeze plus the 0.8.0-build-host measurement closed Molniya
+   (position RMS 0.160317 m), lunar orbiter (7.232688 m), Mars orbiter
+   (79.478630 m, the thinnest margin at ~1.26x), and Mars cruise (arrival
+   |dr| 952.550 m) — all recorded in the manifest `tolerance` fields, gates
+   green in CI. **Only the trans-lunar case remains**, because its first
+   freeze was invalidated: the original `.script` started from the tli
+   t = 353 s truth state, which is mid-burn (the cutoff is commanded at
+   353 s, but the delivered thrust level is zero only from 354 s under the
+   per-step spool discipline on the 1 s grid), so the replicated coast was
+   ~15.3 m/s low in energy and missed lunar arrival by 75,189 km at matched
+   epochs (the gate printed 75,212 km; the extra ~23 km came from a second
+   defect fixed alongside — the superseded test compared at an epoch 353 s
+   off, worth ~45 km by itself). The
+   simulator's own ballistic coast of that same mid-burn state reproduced the
+   invalidated GMAT arrival state to 0.022 km — the tools agree; the initial
+   state was the fault. The corrected script (t = 354 s burnout state, epoch
+   12:05:54Z, arrival span 455401 s) is committed. Run the one remaining
+   freeze:
 
    ```sh
-   python scripts/crosstool/run_gmat_phase8.py --case molniya
-   python scripts/crosstool/run_gmat_phase8.py --case lunar_orbiter
-   python scripts/crosstool/run_gmat_phase8.py --case mars_orbiter
-   python scripts/crosstool/run_gmat_phase8.py --case translunar    # pass --arrival-s if the sim locates a different lunar-arrival epoch than the 455402 s default
-   python scripts/crosstool/run_gmat_phase8.py --case mars_cruise
+   python scripts/crosstool/run_gmat_phase8.py --case translunar    # pass --arrival-s if the sim locates a different lunar-arrival epoch than the 455401 s default
    ```
 
-3. Confirm the five gates flip from skip to pass and record each measured RMS
-   in the manifest's `pending` fields:
+3. Confirm the trans-lunar gate flips from skip to pass:
 
    ```sh
    python -m pytest tests/python/test_crosstool_frozen_truth.py -q
    ```
 
-   Edit `tests/golden/crosstool/manifest.toml`, replacing each case's
-   `date="pending"` / `SHA-256 pending` / measured-RMS placeholders with the
-   frozen CSV's real values.
+   (The gate itself must run on a 0.8.0 host.) Then add the fresh
+   `truth_gmat_translunar.csv` `[[file]]` entry to
+   `tests/golden/crosstool/manifest.toml` — CSV SHA-256, date, and the
+   measured arrival `|dr|` — replacing the pending-re-freeze deferral note at
+   the end of that file (the note carries the full first-freeze history).
 
 **Acceptance:** all five gates pass with position RMS inside the PRD tolerance —
 trans-lunar `< 1 km` at lunar arrival; Mars cruise `< 100 km` at arrival SOI;
-Molniya, lunar orbiter, Mars orbiter `< 100 m` over 7 days. The comparison
+Molniya, lunar orbiter, Mars orbiter `< 100 m` over 7 days. Four are already
+measured and green; the trans-lunar expectation is ~0.02 km against the 1 km
+gate (the measured tool-agreement level on this coast). The comparison
 machinery those gates use is already proven correct independent of GMAT by
 `test_rms_machinery_is_correct_on_sim_own_states` (the sim's own states as
 pseudo-truth, RMS ≈ 5e-9 m), so a failure here is a real physics or

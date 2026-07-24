@@ -187,7 +187,7 @@ zero-EOP startup override as Phase 3.
   ~40,100 km where the third-body torque is the leading non-Keplerian signal.
 - **Lunar orbiter** (Moon): GRGM1200A 50x50 harmonic gravity in the Moon
   principal-axis frame (built from the DE440 lunar librations — this is the
-  case that needs the `moon_librations` excerpt segment, i.e. the deferred
+  case that needs the `moon_librations` excerpt segment, i.e. the committed
   `excerpt_de440s_lunar.sreph`), plus the Sun and Earth point masses (the
   lunar-regime pair) and cannonball SRP (Moon occulter). ~100 km circular
   polar mapping orbit, stable unmaneuvered over 7 days.
@@ -196,10 +196,16 @@ zero-EOP startup override as Phase 3.
   the Sun point mass and cannonball SRP (Mars occulter). ~400 km near-polar
   MRO-class science orbit.
 - **Trans-lunar** (Earth coast): the ballistic coast of `tli.toml` from its
-  exact MECO state under Earth+Sun+Luna point masses (the tli coast force
-  set), compared at the lunar-SOI arrival epoch. The finite TLI burn is a
-  simulator-internal maneuver and is not replicated; the gate measures the
-  transfer trajectory.
+  exact t = 354 s ballistic-burnout state under Earth+Sun+Luna point masses
+  (the tli coast force set), compared at the lunar-SOI arrival epoch. The
+  finite TLI burn is a simulator-internal maneuver and is not replicated; the
+  gate measures the transfer trajectory. Burnout is t = 354 s, not the meco
+  event time 353 s: the cutoff is commanded at 353 s, but the delivered
+  thrust level follows the per-step spool discipline on the 1 s integrator
+  grid and reaches exactly zero one step later, so the truth log gains
+  +15.3 m/s of equivalent prograde delta-v over [353, 354) and 354 s is the
+  first ballistic epoch (a first freeze from the 353 s state was invalidated
+  by exactly this; see the manifest's deferral note).
 - **Earth-Mars cruise** (heliocentric): Sun two-body plus Earth/Luna/Venus/
   Mars/Jupiter point masses and cannonball SRP (no occulter), over the
   committed 7-day report arc. The full 259-day "arrival SOI" propagation is
@@ -208,16 +214,17 @@ zero-EOP startup override as Phase 3.
 ## Phase 8 deferral (frozen truth pending)
 
 GMAT is not installed on the Phase 8 execution host (the same class of blocker
-as the Phase 3 maintainer boundary, D-15), so the five Phase 8 truth CSVs and
-the lunar libration excerpt are **deferred through the PRD section 9 valve** to
-`docs/release_checklist.md` item 10. Everything else is committed and ready:
-the missions, the GMAT scripts, the gravity-field COF inputs, the freeze
-driver `scripts/crosstool/run_gmat_phase8.py`, the lunar-excerpt generator
-`tests/golden/ephemeris/generate_lunar.py`, and the provenance manifests. Each
-of the five gates in `tests/python/test_crosstool_frozen_truth.py` skips with
-an explicit deferral message naming that checklist item until its truth CSV
-lands — never a vacuous pass. That the comparison machinery is correct despite
-the absent external truth is proven by
+as the Phase 3 maintainer boundary, D-15), so the Phase 8 truth CSVs and the
+lunar libration excerpt were **deferred through the PRD section 9 valve** to
+`docs/release_checklist.md` item 10. Status 2026-07-24: the lunar excerpt is
+committed, four of the five truth CSVs (Molniya, lunar orbiter, Mars orbiter,
+Mars cruise) are frozen and their gates measure — the values are recorded in
+`manifest.toml` — and the trans-lunar case is pending a single re-freeze (its
+first freeze started from the mid-burn t = 353 s state and was invalidated;
+root cause and the corrected-script details are in the manifest's deferral
+note). A gate whose truth CSV is absent skips with an explicit deferral
+message naming that checklist item — never a vacuous pass. That the
+comparison machinery is correct despite absent external truth is proven by
 `test_rms_machinery_is_correct_on_sim_own_states`, which feeds the sim's own
 re-propagated states through the identical CSV/grid/RMS path and measures a
 position RMS of ~5e-9 m (i.e. the RMS, grid-alignment, and CSV round-trip are

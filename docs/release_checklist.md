@@ -347,7 +347,7 @@ hardening and coverage work, tracked here to completion.
      <molniya|lunar_orbiter|mars_orbiter|translunar|mars_cruise>` — run GMAT on
      the committed `.script` and freeze the truth CSV (for `translunar`, pass
      `--arrival-s` if the frozen simulator run locates a different lunar arrival
-     epoch than the 455402 s default). The gravity fields, GMAT scripts,
+     epoch than the 455401 s default). The gravity fields, GMAT scripts,
      coordinate systems, and exact initial states are already committed and
      documented per case in the manifest; only the truth CSV bytes and the
      measured RMS are produced here.
@@ -386,6 +386,32 @@ hardening and coverage work, tracked here to completion.
   excerpt is committed and its manifest entry finalized). Still not waived: every
   input is committed as-run, and the gates measure real RMS — they do not pass
   blind.
+
+  **Step-4 update (2026-07-24, 0.8.0 build host):** residual (b) is discharged
+  for four of the five cases — the gates measured position RMS 0.160317 m
+  (Molniya), 7.232688 m (lunar orbiter), 79.478630 m (Mars orbiter, the
+  thinnest margin at ~1.26x), and arrival |dr| 952.550 m (Mars cruise), all
+  inside their PRD bounds and recorded in the manifest `tolerance` fields.
+  Residual (a) uncovered more than an arrival-span change: the trans-lunar
+  first freeze was **invalidated and removed** because its `.script` initial
+  state was the tli t = 353 s truth state, which is mid-burn — the meco cutoff
+  is commanded at 353 s but the delivered thrust level is zero only from 354 s
+  under the per-step spool discipline on the 1 s grid, so the replicated coast
+  was ~15.3 m/s low in energy and missed arrival by 75,189 km at matched
+  epochs (the simulator's own ballistic coast of the same mid-burn state
+  reproduced the removed GMAT arrival state to 0.022 km, proving the tools
+  agree and isolating the initial state as the fault). The gate's 75,212 km
+  readout also contained ~23 km from a second, independent defect fixed
+  alongside: the superseded test sampled the simulator log at the CSV's
+  elapsed stamp without the 353 s MECO offset — a comparison-epoch
+  misalignment worth ~45 km on its own, which would have failed the < 1 km
+  gate even against a perfect freeze; the corrected test maps CSV time to
+  mission time explicitly and asserts the epoch. The corrected script (t = 354 s burnout state, epoch
+  12:05:54Z, arrival span 455401 s) is committed. **What remains:** one ~3 s
+  GMAT run on the laptop — `python scripts/crosstool/run_gmat_phase8.py --case
+  translunar` — then re-run the gate on a 0.8.0 host and add the fresh
+  manifest entry (expected result ~0.02 km against the 1 km gate; full history
+  in the manifest's deferral note).
 
 ## 11. Phase 8 criterion 5 — release-wheel build and smoke on all four platforms
 
