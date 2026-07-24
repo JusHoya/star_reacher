@@ -89,8 +89,20 @@ date = "2026-07-02"
 # ---------------------------------------------------------------------------
 
 [channels]
-status = "pending-first-measurement"
+status = "measured"
 tolerance_rel = 3.2557641192199413e-10
+# First CI measurement (commit status "determinism/cross-platform-channels"
+# on 16f3f27, run 30: "channel_max_rel=1.347e-10 (tol 3.256e-10, 5 missions,
+# 4 legs)"). Worst channel: nav.innov.y of leo_ekf_consistency, macos-15 vs
+# ubuntu-24.04, 1.347e-10; next: gnc.cmd.w_cmd_b_radps of ascent_leo_gnc,
+# macos-15 vs windows-2022, 1.059e-10 (the same channel as the derivation's
+# maintainer-host input, at the same magnitude); twobody_leo measures exactly
+# 0 on all pairs. The derivation's headroom argument is borne out: the
+# previously unmeasured macos-15 leg produced the new worst value, a factor
+# 1.27 above the two-leg derivation input and 2.42 below the tolerance.
+measured_max_rel = 1.347e-10
+ci_run_url = "https://github.com/JusHoya/star_reacher/actions/runs/30120188873"
+date = "2026-07-24"
 missions = [
   "ascent_leo_gnc",
   "leo_attitude_gnc",
