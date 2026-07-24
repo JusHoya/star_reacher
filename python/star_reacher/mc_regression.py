@@ -162,6 +162,14 @@ def summarize_metric(metric: np.ndarray, *, mission: str) -> GoldenStats:
     unbiased estimator of the population sigma the chi-square and A-D gates
     standardize by. Raises :class:`McRegressionError` for fewer than two runs
     (a standard deviation is undefined) or a degenerate zero spread.
+
+    Both reductions run through ``math.fsum``, the exactly-rounded sum, not
+    ``np.mean``/``np.std``: numpy reduces in a SIMD-lane order that differs by
+    platform and CPU generation, so its results differ at the ulp level across
+    the CI legs, while the golden pins the statistics to exact bits. fsum is a
+    pure function of the input values, and the per-run metric values are
+    bit-identical on every leg (D-10 plus the criterion-8 cross-platform
+    gates), so the frozen statistics are platform-exact.
     """
     metric = np.asarray(metric, dtype=np.float64)
     n = int(metric.shape[0])
@@ -169,7 +177,9 @@ def summarize_metric(metric: np.ndarray, *, mission: str) -> GoldenStats:
         raise McRegressionError(
             f"a regression ensemble needs at least two runs, got {n}"
         )
-    std = float(metric.std(ddof=1))
+    mean = math.fsum(metric) / n
+    var = math.fsum((x - mean) ** 2 for x in metric.tolist()) / (n - 1)
+    std = math.sqrt(var)
     if not (std > 0.0 and math.isfinite(std)):
         raise McRegressionError(
             f"the metric has a non-positive or non-finite spread ({std!r}); the "
@@ -177,7 +187,7 @@ def summarize_metric(metric: np.ndarray, *, mission: str) -> GoldenStats:
         )
     return GoldenStats(
         n=n,
-        mean=float(metric.mean()),
+        mean=mean,
         std=std,
         metric=GOLDEN_METRIC,
         mission=mission,

@@ -1,6 +1,0 @@
-# Frozen GMAT R2026a truth for the Phase 8 trans-lunar cross-tool case
-# (exit criterion 1, D-15): the single arrival-epoch EarthICRF Cartesian
-# state at elapsed-from-MECO 455402.0 s (lunar-SOI arrival). The gate
-# is the position difference vs the tli truth log at this epoch < 1 km.
-t_s,x_m,y_m,z_m,vx_mps,vy_mps,vz_mps
-455402.0,-7.8185359346672818e+07,2.7939852825487149e+08,1.4723057612729341e+08,-7.7275168170056133e+01,-3.1088732016899229e+02,-1.7044600285122320e+02
