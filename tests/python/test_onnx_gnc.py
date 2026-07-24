@@ -136,9 +136,14 @@ def test_committed_model_and_plugin_exist():
     assert ONNX_PLUGIN.is_file()
     assert ONNX_MISSION.is_file()
     # The plugin points at the committed model (path resolved relative to the
-    # plugin file, so this is the model a run actually loads).
-    import examples.onnx_gnc_plugin as plugin  # noqa: PLC0415
+    # plugin file, so this is the model a run actually loads). Loaded through
+    # the runner's own file-path loader rather than `import examples...`: the
+    # assertion then covers the exact module a run loads, and it holds under a
+    # bare `pytest tests/python` (as CI runs it), which puts nothing on
+    # sys.path that would make the repo root importable as a package.
+    from star_reacher.plugin import _load_module  # noqa: PLC0415
 
+    plugin = _load_module(ONNX_PLUGIN)
     assert Path(plugin.MODEL_PATH).resolve() == ONNX_MODEL.resolve()
     assert "onnx_gnc" in plugin.STAR_GNC_COMPONENTS
 
