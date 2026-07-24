@@ -33,14 +33,17 @@ jobs:
           python-version: '3.12'
       - name: Install package (builds the native core)
         run: pip install .
-      - name: Install the pandas/parquet extras (one leg only)
-        # Phase 5 exit criterion 3 is "CI-gated": the Parquet/pandas suites
-        # are importorskip-gated and would otherwise never execute, so
-        # exactly one leg installs the documented extras to run them; the
-        # other three legs stay extras-free so the bare-install path (loader
-        # and CSV/NPZ export with no optional dependencies) keeps coverage.
+      - name: Install the pandas/parquet/rl/ml extras (one leg only)
+        # Phase 5 exit criterion 3 and Phase 7 exit criteria 3-4 are all
+        # "CI-gated" the same way: the pandas/parquet, gymnasium (rl), and
+        # onnxruntime (ml) suites are importorskip-gated and would otherwise
+        # never execute, so exactly one leg installs the documented extras to
+        # run them (test_space_env.py needs gymnasium; test_onnx_gnc.py needs
+        # onnxruntime). The other three legs stay extras-free so the
+        # bare-install path (loader and CSV/NPZ export, and the mc/regression
+        # layer, all with no optional dependencies) keeps coverage.
         if: matrix.os == 'ubuntu-24.04'
-        run: pip install '.[pandas,parquet]'
+        run: pip install '.[pandas,parquet,rl,ml]'
       - name: Install test dependencies
         run: pip install pytest
       - name: Run Python test suite
@@ -73,6 +76,65 @@ jobs:
               sys.exit(f"star verify --quick took {elapsed:.1f} s (gate: < 60 s)")
           if "VERIFY: PASS" not in output:
               sys.exit("output does not contain 'VERIFY: PASS'")
+      # Phase 7 exit criterion 1, literal clause: the 256-run LHS sweep on 8
+      # workers finishes 256/256 `status: success`, and re-executing one
+      # manifest entry via `star run` with its recorded seed and overrides
+      # reproduces its logged SHA-256. The mc engine, its per-run seeding, and
+      # the worker-count-independence of the result are unit-checked by the
+      # pytest suite on every leg (test_mc.py, test_run_overrides.py); this one
+      # leg gates the literal 8-worker/256-run number and the CLI re-execution
+      # round trip. The sweep runs on committed gravity data (no fetched
+      # ephemeris) in a couple of seconds.
+      - name: star mc 256-run/8-worker sweep + re-execution (criterion 1)
+        if: matrix.os == 'ubuntu-24.04'
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import subprocess
+          import sys
+
+          out = "mc-c1"
+          proc = subprocess.run(
+              ["star", "mc", "missions/leo_gravity_8x8_sweep.toml",
+               "--workers", "8", "--outdir", out, "--force"],
+              capture_output=True, text=True,
+          )
+          print(proc.stdout + proc.stderr)
+          if proc.returncode != 0:
+              sys.exit(f"star mc exited {proc.returncode}")
+          manifest = json.load(open(f"{out}/manifest.json"))
+          runs = manifest["runs"]
+          n_ok = sum(r["status"] == "success" for r in runs)
+          if len(runs) != 256 or n_ok != 256:
+              sys.exit(f"expected 256/256 success, got {n_ok}/{len(runs)}")
+          entry = runs[42]
+          base = "missions/" + manifest["sweep"]["mission"]
+          sets = []
+          for key, value in entry["overrides"].items():
+              literal = repr(value) if isinstance(value, float) else str(value)
+              sets += ["--set", f"{key}={literal}"]
+          rerun = subprocess.run(
+              ["star", "run", base, "--seed", str(entry["seed"]), *sets,
+               "-o", "mc-c1-reexec", "--force"],
+              capture_output=True, text=True,
+          )
+          print(rerun.stdout[-400:] + rerun.stderr[-400:])
+          if rerun.returncode != 0:
+              sys.exit(f"re-execution star run exited {rerun.returncode}")
+          digest = hashlib.sha256(open("mc-c1-reexec/run.srlog", "rb").read()).hexdigest()
+          if digest != entry["log_sha256"]:
+              sys.exit(f"re-execution hash {digest} != manifest {entry['log_sha256']}")
+          print(f"criterion 1 OK: 256/256 success; run 42 re-execution matches {digest}")
+      # Phase 7 exit criterion 2, two-key half: the CI gate that rejects a
+      # golden change not carried through the diff-summary tooling. It
+      # recomputes each hash-gated golden file's SHA-256 and fails if it
+      # differs from the value the manifest records, so a hand-edited golden
+      # (or one regenerated without updating its manifest) is a red build.
+      # Stdlib-only and platform-independent, so it runs on one leg.
+      - name: Golden-manifest integrity gate (criterion 2 two-key path)
+        if: matrix.os == 'ubuntu-24.04'
+        run: python scripts/check_golden_manifests.py
       # Phase 2 exit criterion 8, per-leg half: propagate the reference
       # mission and publish this leg's final truth state at full precision
       # (float.hex()) for the cross-platform-divergence job below.

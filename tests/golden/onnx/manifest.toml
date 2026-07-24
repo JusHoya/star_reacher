@@ -1,0 +1,51 @@
+# Provenance manifest for the Phase 7 in-the-loop ONNX MLP in this directory
+# (FR-28; Phase 7 exit criterion 4: "an ONNX MLP exported from an external
+# framework closes the loop for a full scenario"). Schema documented in
+# tests/golden/README.md.
+
+schema_version = 1
+
+[golden]
+directory = "onnx"
+date = "2026-07-23"
+generation = """
+pd_mlp.onnx is written by tests/golden/onnx/generate.py, a standalone script
+(not a pytest) run manually with a Python that has the generation-time
+frameworks installed. The script (1) draws 40,000 training samples over the
+controller's reachable operating region: the attitude-error features are the
+vector part of a unit error quaternion for a random axis and an error angle
+uniform in [0, 60] degrees (so dq1^2 + dq2^2 + dq3^2 <= 1, the manifold the
+closed loop actually feeds the model), and the body-rate error is uniform in
+[-0.30, 0.30] rad/s; (2) labels each with the built-in pd_attitude control
+law's torque, tau = -kp*(s*dq) - kd*we with the reference mission's gains
+kp = 0.4, kd = 3.6 per axis; (3) standardizes inputs and outputs and fits a
+multi-layer perceptron (two hidden layers of sixteen ReLU units, sklearn
+MLPRegressor, solver adam, learning_rate_init 3e-3, alpha 0, max_iter 12000,
+random_state 20260723) on the standardized pairs; (4) FOLDS the input and
+output standardization back into the first and last layer weights, so the
+exported graph maps RAW features to RAW torque with no normalization node;
+(5) writes the folded per-layer weights and biases into a genuine ONNX graph
+(Gemm -> Relu -> Gemm -> Relu -> Gemm) built with onnx.helper, IR version 9,
+opset 18; and (6) runs the exported model through onnxruntime (single
+sequential thread) on a HELD-OUT sample (seed 20260724, 30,000 points from the
+same reachable region) and fails unless the worst-case torque error against
+the PD law is below 1e-2 N*m. Only the ONNX serialization is hand-built;
+skl2onnx is not required. Regenerating is `python tests/golden/onnx/generate.py`;
+the output is byte-deterministic given the pinned framework versions below
+(verified: two runs produced the identical sha256). The runtime
+(star_reacher.ml.OnnxGnc, tests/python/test_onnx_gnc.py) loads this committed
+model through onnxruntime alone and imports neither onnx nor any training
+framework.
+
+Framework versions the committed bytes were produced with (CPython 3.12.1 on
+Windows x86-64): numpy 2.5.1, scikit-learn 1.9.0 (scipy 1.18.0), onnx 1.22.0,
+onnxruntime 1.27.0.
+"""
+
+[[file]]
+name = "pd_mlp.onnx"
+source = "generate.py: scikit-learn 1.9.0 MLPRegressor fit, exported to ONNX with onnx 1.22.0 helper API"
+citation = "N/A: representative fitted controller (a multi-layer perceptron approximating the built-in pd_attitude law), full provenance in the [golden] generation recipe. ONNX graph conforms to the ONNX operator spec (Gemm, Relu; onnx.github.io/onnx), opset 18, IR version 9."
+generation = "python tests/golden/onnx/generate.py, seed 20260723; two hidden layers of 16 ReLU units with standardization folded into the weights; worst held-out |tau_pred - tau_pd| = 4.770e-03 N*m over 30,000 samples at generation time"
+date = "2026-07-23"
+tolerance = "semantic, not bit-exact across onnx library versions: the committed bytes are reproducible run-to-run on the recorded framework versions (sha256-stable), but the protobuf field layout is onnx's, so a different onnx version may reserialize identical weights to different bytes. The invariant the consuming tests hold is behavioural: (1) onnxruntime single-thread inference on a fixed input is bit-identical call-to-call; (2) the model's torque tracks the pd_attitude law over the reachable operating region closely enough (worst-case held-out < 1e-2 N*m, ~5x below the reference mission's 0.05 N*m saturation) that the closed loop settles; (3) two full closed-loop runs are sha256-identical (D-10)."

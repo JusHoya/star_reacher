@@ -20,7 +20,7 @@ from star_reacher.srlog import (
 # Kept in sync manually with pyproject.toml [project] version and the CMake
 # project() VERSION; single-source versioning is deferred until a release
 # process earns it (Phase 1 contract).
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "Run",

@@ -7,6 +7,7 @@ registry's built-in set, so a component added on one side cannot silently
 diverge from the other.
 """
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -429,6 +430,13 @@ def test_every_shipped_mission_still_validates(monkeypatch):
     assert missions, "no shipped missions found"
     failures = {}
     for mission in missions:
+        # Phase 7 `star mc` sweep specs live in missions/ alongside real
+        # missions but are inputs to the batch runner, not missions: a [sweep]
+        # table names a base mission and dispersion parameters. They are
+        # validated by the sweep-spec validator (test_mc.py), so they are
+        # excluded here rather than asserted to parse under the mission schema.
+        if "sweep" in tomllib.loads(mission.read_text(encoding="utf-8")):
+            continue
         resolved, errors = validate_mission_file(mission)
         if resolved is None:
             failures[mission.name] = errors

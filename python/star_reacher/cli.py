@@ -34,7 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{run,verify,export,view,plot,consistency,docs,data}",
+        metavar="{run,verify,export,view,plot,mc,consistency,docs,data}",
     )
 
     p_run = sub.add_parser(
@@ -52,6 +52,29 @@ def _build_parser() -> argparse.ArgumentParser:
         "--outdir",
         default=None,
         help="output directory (default: out/<mission-name>/)",
+    )
+    p_run.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        metavar="INT",
+        help="replace the mission master seed (applied as the override "
+        "run.seed before the config is hashed, so the run is individually "
+        "reproducible). This is the seed a Monte Carlo manifest records "
+        "per run (FR-27); re-running with it and --set reproduces the "
+        "manifest entry's logged SHA-256.",
+    )
+    p_run.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        metavar="DOTTED.PATH=VALUE",
+        dest="overrides",
+        help="override one numeric leaf of the resolved mission before "
+        "hashing (FR-24/FR-27 vocabulary). VALUE is a number (12, 5.4e3) or "
+        "a JSON array of numbers ([0.5,0.5,0.5]). Repeatable. The path must "
+        "already exist and hold a number or array of numbers; a bad path or "
+        "kind is a validation error (exit 2).",
     )
     p_run.add_argument(
         "--force",
@@ -84,7 +107,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_verify = sub.add_parser(
         "verify",
-        help="run the acceptance check suite (V001-V027)",
+        help="run the acceptance check suite (V001-V029)",
         description=(
             "Self-contained acceptance runner: a tier line, then one line per "
             "check, ending in 'VERIFY: PASS (N/N)' or 'VERIFY: FAIL (k/N)' plus "
@@ -192,6 +215,42 @@ def _build_parser() -> argparse.ArgumentParser:
         help="comma-separated subset of plot names (default: all)",
     )
 
+    p_mc = sub.add_parser(
+        "mc",
+        help="expand a TOML sweep spec into N reproducible runs (FR-27)",
+        description=(
+            "Expand a Monte Carlo sweep spec (grid, list, or Latin hypercube) "
+            "into N independent single-run processes and write manifest.json. "
+            "Per-run seed = SplitMix64(master_seed)[index]; per-run overrides "
+            "are recorded verbatim, so re-running any manifest entry via "
+            "'star run --seed <seed> --set <path>=<value>' reproduces its "
+            "logged SHA-256. Parallelism is process-level only; the core time "
+            "loop stays single-threaded (D-10). Exits nonzero if any run "
+            "failed. NPZ export (star export --npz) is the training-data "
+            "pipeline for a completed sweep."
+        ),
+    )
+    p_mc.add_argument("sweep", help="path to the sweep-spec TOML file")
+    p_mc.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        metavar="N",
+        help="number of worker processes (default: 8)",
+    )
+    p_mc.add_argument(
+        "-o",
+        "--outdir",
+        default=None,
+        help="output directory (default: out/mc/); each run writes "
+        "run_<index>/",
+    )
+    p_mc.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing manifest.json in the output directory",
+    )
+
     p_docs = sub.add_parser(
         "docs",
         help="build the math library and report PDFs with latexmk",
@@ -250,9 +309,76 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_set_value(raw: str):
+    """Parse a --set VALUE: a number or a JSON array of numbers.
+
+    JSON rather than a bespoke grammar because the override value is the same
+    numeric leaf the mission file holds, and JSON's number/array forms are
+    exactly the two shapes an override may take. A string, an object, a
+    boolean, or a nested/mixed array is rejected here so the error names the
+    value the user typed rather than surfacing later as an override kind
+    mismatch. Raises ValueError with an actionable message.
+    """
+    import json
+
+    text = raw.strip()
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{raw!r} is not a number or a JSON array of numbers "
+            f"(e.g. 12, 5.4e3, or [0.5,0.5,0.5]): {exc}"
+        ) from exc
+
+    def _is_number(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    if _is_number(value):
+        return value
+    if isinstance(value, list) and value and all(_is_number(v) for v in value):
+        return value
+    raise ValueError(
+        f"{raw!r} must be a number or a non-empty JSON array of numbers "
+        f"(e.g. 12, 5.4e3, or [0.5,0.5,0.5]); got {value!r}"
+    )
+
+
+def _parse_overrides(entries):
+    """Turn --set DOTTED.PATH=VALUE strings into an {path: value} dict.
+
+    Raises ValueError (reported as a validation error, exit 2) on a missing
+    '=', an empty path, a duplicate path, or an unparseable value.
+    """
+    overrides: dict = {}
+    for entry in entries or ():
+        if "=" not in entry:
+            raise ValueError(
+                f"--set {entry!r}: expected DOTTED.PATH=VALUE (an '=' is "
+                f"required), e.g. --set mission.duration_s=120"
+            )
+        path, _, value_text = entry.partition("=")
+        path = path.strip()
+        if not path:
+            raise ValueError(f"--set {entry!r}: the path before '=' is empty")
+        if path in overrides:
+            raise ValueError(
+                f"--set {path!r}: given more than once; a path may be set only "
+                f"once per run"
+            )
+        overrides[path] = _parse_set_value(value_text)
+    return overrides
+
+
 def _cmd_run(args: argparse.Namespace, argv: list[str]) -> int:
+    from star_reacher.overrides import OverrideError
     from star_reacher.plugin import DETERMINISM_NOTICE, PluginError
     from star_reacher.runner import RunnerError, run_mission
+
+    try:
+        overrides = _parse_overrides(args.overrides)
+    except ValueError as exc:
+        print(f"star run: {exc}", file=sys.stderr)
+        return _EXIT_VALIDATION
 
     if args.gnc_plugin:
         # Printed before the run, not buried in a docstring: someone loading a
@@ -270,6 +396,8 @@ def _cmd_run(args: argparse.Namespace, argv: list[str]) -> int:
             command_line=["star", *argv],
             strict=args.strict,
             gnc_plugins=args.gnc_plugin,
+            seed=args.seed,
+            overrides=overrides,
         )
     except MissionValidationError as exc:
         for line in exc.errors:
@@ -279,6 +407,11 @@ def _cmd_run(args: argparse.Namespace, argv: list[str]) -> int:
             f"all are listed above.",
             file=sys.stderr,
         )
+        return _EXIT_VALIDATION
+    except OverrideError as exc:
+        # A bad --seed/--set is a validation-shaped input error: the mission
+        # may be perfectly valid and the override the thing that is wrong.
+        print(f"star run: {exc}", file=sys.stderr)
         return _EXIT_VALIDATION
     except CoreMissingError as exc:
         print(f"star run: {exc}", file=sys.stderr)
@@ -425,6 +558,14 @@ def _cmd_plot(args: argparse.Namespace) -> int:
     return _EXIT_OK
 
 
+def _cmd_mc(args: argparse.Namespace) -> int:
+    from star_reacher.mc import cli_mc
+
+    return cli_mc(
+        args.sweep, workers=args.workers, outdir=args.outdir, force=args.force
+    )
+
+
 def _cmd_docs(args: argparse.Namespace) -> int:
     from star_reacher.docsbuild import build_docs
 
@@ -453,6 +594,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_view(args)
     if args.command == "plot":
         return _cmd_plot(args)
+    if args.command == "mc":
+        return _cmd_mc(args)
     if args.command == "consistency":
         from star_reacher.consistency_cli import cmd_consistency
 

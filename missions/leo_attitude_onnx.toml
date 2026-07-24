@@ -1,0 +1,92 @@
+# The FR-28 learned-model variant of missions/leo_attitude_gnc.toml: identical
+# in every respect except that the control slot is flown by an ONNX multi-layer
+# perceptron, loaded from a committed model file and run through onnxruntime on
+# the CPU inside the deterministic time loop.
+#
+#   star run missions/leo_attitude_onnx.toml \
+#       --gnc-plugin examples/onnx_gnc_plugin.py
+#
+# The model (tests/golden/onnx/pd_mlp.onnx) was fitted to the built-in
+# pd_attitude law by an external ML framework, so this mission closes the same
+# 10-degree body-Z acquisition transient as the reference mission and settles
+# inside the 60 s window -- which is what makes it Phase 7 exit criterion 4's
+# "ONNX MLP ... closes the loop for a full scenario". Running it WITHOUT
+# --gnc-plugin is an error naming the control slot: the mission declares its
+# dependency in the component name.
+#
+# Offline by construction: point-mass Earth gravity, no third bodies, no SRP,
+# no drag, no fetched ephemeris. The attitude loop is the whole scenario, so it
+# runs on any host with no network access -- the property the Pi 5 leg needs.
+#
+# provenance "representative": inherited unchanged from the reference mission;
+# see its header for the orbit and gain rationale.
+
+schema_version = 1
+vehicle = "vehicles/smallsat.toml"
+
+[mission]
+name = "leo-attitude-onnx"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 60.0
+
+[run]
+seed = 20260601
+
+[integrator]
+type = "rk4"
+# One control cycle per step (D-5): dt_s = 1 / control_rate_hz exactly.
+dt_s = 0.1
+
+[environment]
+central_body = "earth"
+
+[logging]
+# truth_rate_hz equal to the control rate logs truth every cycle, so the
+# closed-loop transient is fully resolved for the settling check.
+truth_rate_hz = 10
+
+[initial_state.cartesian]
+# Clean-axis LEO state: r along +X, v along +Y (speed ~ circular at 7000 km
+# radius). The Phase 4 initial-attitude rule points body +X prograde (+Y
+# inertial) with body +Y toward +X inertial, giving the exact initial
+# attitude quaternion q0 = [0, sqrt(1/2), sqrt(1/2), 0] (Hamilton
+# scalar-first, D-7).
+r_m = [7.0e6, 0.0, 0.0]
+v_mps = [0.0, 7546.0, 0.0]
+frame = "GCRF"
+
+[gnc]
+control_rate_hz = 10
+latency_cycles = 0
+
+[gnc.nav]
+component = "dead_reckoning"
+# The initial attitude estimate, stated explicitly per the dead-reckoning
+# contract (no implicit truth access). Set to the true initial attitude:
+# exactly [0, sqrt(1/2), sqrt(1/2), 0] by the derivation above.
+q0 = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+
+[gnc.guidance]
+component = "attitude_hold"
+# The initial attitude rotated 10 degrees about body +Z:
+# q_cmd = q0 (x) [cos 5 deg, 0, 0, sin 5 deg]
+#       = [0, a(c + s), a(c - s), 0],  a = sqrt(1/2), c = cos 5 deg,
+#         s = sin 5 deg
+# so the run opens with a pure 10-degree body-Z tracking error and a clean
+# second-order closed-loop transient.
+q_cmd = [0.0, 0.7660444431189781, 0.6427876096865393, 0.0]
+
+[gnc.control]
+component = "python:onnx_gnc"
+# The learned controller reads no per-axis gains -- the PD map is baked into
+# the ONNX weights -- but it does read the saturation, exactly as the built-in
+# does (eq:gnc:sat), so tau_max_nm is the one control parameter the mission
+# still states. The opening 10-degree error commands ~0.035 N*m, inside this
+# reaction-wheel-class limit, so the reference transient is linear.
+tau_max_nm = [0.05, 0.05, 0.05]
+
+[sensors.imu]
+# Ideal IMU sampled at the control rate: every cycle contributes exactly one
+# accumulation interval, so the dead-reckoning estimate tracks truth and the
+# learned loop sees a clean attitude error.
+sample_rate_hz = 10

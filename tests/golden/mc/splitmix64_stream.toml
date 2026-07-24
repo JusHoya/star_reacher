@@ -1,0 +1,37 @@
+# SplitMix64 stream golden vectors for the FR-27 Monte Carlo per-run seed
+# derivation. core.splitmix64_stream(seed, n) returns the first n outputs of a
+# SplitMix64 seeded with `seed` (Vigna reference splitmix64.c); the per-run
+# seed for run index i is element i of the stream. 8 consecutive outputs per
+# seed. Unsigned 64-bit integers as "0x..." hex strings (TOML integers are
+# signed 64-bit). seed_0's values are bit-identical to tests/golden/rng/
+# splitmix64.toml case seed_0, which anchors this file to the same reference.
+
+[[case]]
+name = "seed_0"
+seed = "0x0000000000000000"
+values = [
+  "0xE220A8397B1DCDAF",
+  "0x6E789E6AA1B965F4",
+  "0x06C45D188009454F",
+  "0xF88BB8A8724C81EC",
+  "0x1B39896A51A8749B",
+  "0x53CB9F0C747EA2EA",
+  "0x2C829ABE1F4532E1",
+  "0xC584133AC916AB3C",
+]
+
+[[case]]
+# The master seed of missions/leo_gravity_8x8_sweep.toml, so this file also
+# pins the per-run seeds the shipped example sweep derives.
+name = "master_20260723"
+seed = "0x0000000001352773"
+values = [
+  "0x6B866EEB5861B68F",
+  "0xF170A40718AB919E",
+  "0x7B503E707A986F62",
+  "0x0235500CB06E7442",
+  "0x5CC06E36D1C1AB2A",
+  "0x8480A4FA27479BFC",
+  "0x506E3AC19BABD44C",
+  "0x3D1014E42BCF3967",
+]

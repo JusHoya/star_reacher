@@ -1,0 +1,50 @@
+# Monte Carlo regression sweep for the Phase 7 exit-criterion-2 gate
+# (FR-22 layer 6). It disperses the initial in-plane velocity of the committed
+# EGM2008 8x8 LEO mission (missions/leo_gravity_8x8.toml) across a Latin
+# hypercube, so each run flies a different orbit and yields one scalar outcome
+# metric -- the final osculating specific mechanical energy. The frozen golden
+# statistics of that ensemble (tests/golden/mc_regression/) are gated against a
+# re-run's statistics with chi-square and Anderson-Darling 99 % bounds.
+#
+# The base mission runs on committed gravity data with no fetched ephemeris, so
+# this sweep runs on a clean clone. The propagation window is overridden down
+# from the base mission's 7-day cross-tool duration to a single ~90 min LEO
+# orbit (5400 s), and N is held to 128, so the whole ensemble runs in about a
+# second on 8 workers -- well inside the `star verify` quick budget.
+#
+# WHY 128 RUNS. The chi-square gate on the standardized sum-of-squares has dof N
+# and the Anderson-Darling p-value's finite-sample correction is O(1/N); both
+# tighten as N grows. At N = 128 the chi-square 99 % interval half-width is
+# about +-29 % of the golden variance and the A-D test resolves a distribution
+# shift of a fraction of a standard deviation, which the mutation tests in
+# tests/python/test_mc_regression.py confirm both gates catch. A larger N buys
+# resolution the gate does not need and costs quick-tier budget.
+
+schema_version = 1
+
+[sweep]
+mission = "leo_gravity_8x8.toml"
+master_seed = 20260723
+method = "lhs"
+n_runs = 128
+
+[[sweep.parameter]]
+# A single ~90 min LEO orbit, sampled to whole seconds because the base mission
+# logs truth at 1 Hz (duration_s * truth_rate_hz must be integral for the
+# uniform-rate dense-output sampler). The one-second band keeps the window
+# effectively fixed at 5400 s while satisfying the sweep grammar's requirement
+# that an LHS range have max > min; the dispersion the metric responds to is the
+# initial velocity below.
+path = "mission.duration_s"
+min = 5400.0
+max = 5401.0
+integer = true
+
+[[sweep.parameter]]
+# The in-plane (+Y) component of the initial velocity, dispersed +-50 m/s about
+# the base mission's 6900 m/s. Each value flies a distinct orbit whose final
+# specific energy is the run's outcome metric; the range keeps every orbit bound
+# and clear of re-entry over the window.
+path = "initial_state.cartesian.v_mps.1"
+min = 6850.0
+max = 6950.0
