@@ -18,12 +18,12 @@ measurement. The three obligations are identical for both — committed fully
 prepared, registered here, recorded inline beside the criterion — and only
 the **Procedure:** line differs in character.
 
-The register covers the phases closed so far (through Phase 6). Later phases
-re-gate on Pi 5 hardware — Phase 7 exit criterion 4 and Phase 8 exit
-criterion 4 — and add items here at their phase closes if the hardware is
-still unavailable. Once Pi 5 hardware is available, attaching it as the
-pinned self-hosted runner (PRD section 9) supersedes the manual route for
-the performance clauses.
+The register covers the phases closed so far (through Phase 7). Phase 7 exit
+criterion 4 re-gates on Pi 5 hardware and is registered as item 9 at its phase
+close; Phase 8 exit criterion 4 will add its own item if the hardware is still
+unavailable. Once Pi 5 hardware is available, attaching it as the pinned
+self-hosted runner (PRD section 9) supersedes the manual route for the
+performance clauses.
 
 Each item names the clause it carries, its prepared procedure, and where the
 result is recorded. When an item is discharged, commit its evidence as its
@@ -256,3 +256,42 @@ hardening and coverage work, tracked here to completion.
   phase-close or release blocker: criterion 10 is measured correctly by the
   nightly job on the named mission; this pins against silent default drift. The
   Pi 5 hardware clause of criterion 10 is carried separately by item 1.
+
+## Phase 7 deferred items (Pi 5 hardware clause)
+
+## 9. Phase 7 criterion 4 — ONNX loop closure on Pi 5 and the ARM cross-platform final state
+
+- **Carries:** the Pi 5 hardware and cross-platform clauses of **Phase 7 exit
+  criterion 4** ("an ONNX MLP exported from an external framework closes the
+  loop for a full scenario on x86-64 and Pi 5, with cross-platform final states
+  within the published bound"). The x86-64 clause is **met and gated in CI**:
+  `tests/python/test_onnx_gnc.py` runs the committed closed-loop scenario
+  (`missions/leo_attitude_onnx.toml` with `examples/onnx_gnc_plugin.py` and the
+  committed MLP `tests/golden/onnx/pd_mlp.onnx`) on the `ubuntu-24.04` extras
+  leg, proving the loop settles (10° → 0.171°, no NaN, `run_end` reached) and is
+  bit-deterministic across reruns. What is deferred is the literal **Pi 5**
+  half and the **x86-64-versus-aarch64 final-state** comparison, neither
+  runnable without aarch64 hardware.
+- **Procedure:** on real Raspberry Pi 5 silicon (aarch64): (a) `pip install
+  'star_reacher[ml]'` and confirm the onnxruntime aarch64 wheel installs;
+  (b) `star run missions/leo_attitude_onnx.toml --gnc-plugin
+  examples/onnx_gnc_plugin.py` and confirm it reaches `run_end` with final
+  attitude error < 1° and no NaN; (c) `python
+  scripts/cross_platform_divergence.py extract` on both the x86-64 and the Pi 5
+  `run.srlog` (distinct `--leg` labels), then `measure --bound 1e-9` and `gate
+  --bound 1e-9`, confirming the ONNX mission's cross-platform final-state
+  divergence is within the D-10 bound. The extract/measure/gate format is
+  already exercised by `test_onnx_gnc.py`'s
+  `test_final_state_is_capturable_for_cross_platform_comparison`, so the item
+  ships fully prepared: the mission, the model, the plugin, and the comparison
+  script are all committed, and discharging the clause is running the same
+  scripted steps on aarch64. Until Pi 5 hardware is available, extending the
+  extras install and this mission run to the `ubuntu-24.04-arm` CI leg is the
+  committed aarch64 proxy (it is never reported as a Pi 5 measurement).
+- **Records to:** `docs/perf/results/` (the Pi 5 run) and a cross-platform
+  measurement JSON alongside the Phase 2 record, per the divergence script.
+- **Status:** pending — no Pi 5 or other aarch64 hardware is available to the
+  maintainer. Deferred at Phase 7 close (2026-07-23) on the same provision as
+  items 1 and 2. Whether onnxruntime CPU inference is bit-reproducible across
+  x86-64 and aarch64 within the D-10 bound is the open empirical question this
+  item resolves; the x86-64 leg alone cannot answer it.

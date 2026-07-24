@@ -12,7 +12,7 @@ build-backend = "scikit_build_core.build"
 name = "star-reacher"
 # Version is kept in sync with CMakeLists.txt project(VERSION) manually
 # (Phase 1 contract: both files carry this note).
-version = "0.6.0"
+version = "0.7.0"
 description = "Deterministic six-degree-of-freedom space-mission simulator: C++17/Eigen core, Python analysis frontend"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -49,6 +49,15 @@ dev = ["pytest>=8"]
 # with the unbounded numpy>=1.26 requirement above.
 pandas = ["pandas>=2.2.2"]
 parquet = ["pyarrow>=16.1"]
+# Phase 7 AI/ML extras (FR-28), optional exactly like pandas/parquet and never
+# in [project].dependencies. rl backs star_reacher.gym.SpaceEnv (the core has
+# zero Gym knowledge); ml backs star_reacher.ml.OnnxGnc. Floors: gymnasium 1.0
+# is the first release with the reset(seed=,options=)/5-tuple-step API the
+# adapter targets; onnxruntime 1.18 is a release whose CPU wheels cover both
+# x86-64 and the aarch64 (Pi 5) hardware floor. Model-authoring tools (onnx,
+# scikit-learn) are development-time only and stay out of both extras.
+rl = ["gymnasium>=1.0"]
+ml = ["onnxruntime>=1.18"]
 
 [tool.scikit-build]
 # Pin settings semantics to the declared build requirement so a newer
