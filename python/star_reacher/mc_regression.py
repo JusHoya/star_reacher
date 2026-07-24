@@ -12,10 +12,16 @@ The reference ensemble is ``missions/mc_regression_sweep.toml``: a 128-run Latin
 hypercube that disperses the initial in-plane velocity of the committed
 EGM2008 8x8 LEO mission, each run flying a distinct bound orbit. The per-run
 OUTCOME METRIC is the final osculating specific mechanical energy
-E = |v|^2 / 2 - GM / |r| of the truth trajectory (``run.elements()``'s
-``energy_m2ps2`` at the last epoch) -- a physically meaningful, conservative
-quantity dispersed across the ensemble by the initial-velocity dispersion,
-computable from the committed gravity data with no fetched ephemeris.
+E = |v|^2 / 2 - GM / |r| of the truth trajectory at the last epoch -- a
+physically meaningful, conservative quantity dispersed across the ensemble by
+the initial-velocity dispersion, computable from the committed gravity data
+with no fetched ephemeris. It is computed here from the final truth state
+with fixed-order Python scalar arithmetic rather than through
+``run.elements()``: the arrays are identical (D-10 logs), but numpy's
+reductions (``einsum`` dot products in the elements path) round in a
+SIMD-lane order that differs by platform, and the golden below pins the
+statistics to exact bits. The scalar form equals ``energy_m2ps2`` to within
+that reduction rounding (~1e-15 relative).
 
 The golden (``tests/golden/mc_regression/energy_stats.toml``) freezes the
 ensemble size n, the metric mean mu_g, and the sample standard deviation
@@ -127,12 +133,23 @@ def ensemble_metric(manifest: dict, manifest_dir) -> np.ndarray:
 
     ``manifest`` is a parsed ``manifest.json`` and ``manifest_dir`` the
     directory holding it (so each run's ``outdir``/``run.srlog`` resolves). The
-    metric is the final ``GOLDEN_METRIC`` of every successful run's truth
-    trajectory, in run-index order, as a float64 array.
+    metric is the final-epoch specific mechanical energy of every successful
+    run's truth trajectory, in run-index order, as a float64 array.
+
+    The energy is computed with fixed-order Python scalar arithmetic
+    (v.v/2 - GM/sqrt(r.r), left-to-right) instead of
+    ``run.elements()[GOLDEN_METRIC]``: every operation is then an
+    IEEE-defined elementary op or a correctly-rounded ``math.sqrt``, so the
+    value is a pure function of the logged state bytes and identical on
+    every platform -- the property the bit-exact frozen golden requires,
+    which numpy's platform-dispatched ``einsum`` reduction in the elements
+    path does not provide. GM comes from the same
+    ``derived.central_body_gm`` the loader's elements path uses.
 
     Raises :class:`McRegressionError` if any run failed (a regression ensemble
     must be complete to be comparable) or if the manifest has no runs.
     """
+    from star_reacher.derived import central_body_gm
     from star_reacher.srlog import load
 
     manifest_dir = Path(manifest_dir)
@@ -149,9 +166,14 @@ def ensemble_metric(manifest: dict, manifest_dir) -> np.ndarray:
     for entry in sorted(runs, key=lambda r: r["index"]):
         log_path = manifest_dir / entry["outdir"] / "run.srlog"
         run = load(log_path)
-        # elements() derives the osculating set in the loader (FR-16); the
-        # final epoch's specific energy is the run's scalar outcome.
-        values.append(float(run.elements("truth")[GOLDEN_METRIC][-1]))
+        gm = central_body_gm(run.header.get("central_body"))
+        truth = run.groups["truth"]
+        x, y, z = (float(c) for c in truth["r_m"][-1])
+        vx, vy, vz = (float(c) for c in truth["v_mps"][-1])
+        energy = 0.5 * (vx * vx + vy * vy + vz * vz) - gm / math.sqrt(
+            x * x + y * y + z * z
+        )
+        values.append(energy)
     return np.asarray(values, dtype=np.float64)
 
 

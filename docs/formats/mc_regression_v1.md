@@ -27,13 +27,19 @@ energy of the truth trajectory,
 
     E = |v|^2 / 2 - GM / |r|   [m^2/s^2]
 
-read as `run.elements("truth")["energy_m2ps2"][-1]` through the SRLOG loader
-(the osculating set is derived in the loader, not logged; FR-16). It is a
+computed by `star_reacher.mc_regression.ensemble_metric` from the truth
+trajectory's final logged state with fixed-order Python scalar arithmetic
+(each operation an IEEE-defined elementary op or a correctly rounded
+`math.sqrt`), so the value is a pure, platform-independent function of the
+logged bytes. It equals the loader-derived
+`run.elements("truth")["energy_m2ps2"][-1]` to within numpy's
+platform-dispatched reduction rounding (~1e-15 relative), which is why the
+scalar form — not the numpy form — is the frozen definition. It is a
 physically meaningful, conservative quantity, monotone in the dispersed initial
 velocity, so the ensemble carries a genuine spread to test. Because the ensemble
 is bit-reproducible (same master seed → same per-run seeds → same logged bytes →
 same metric), the metric vector, and hence every statistic below, is an exact
-function of the frozen seed.
+function of the frozen seed on every platform.
 
 ## The golden file
 
@@ -45,9 +51,9 @@ metric = "energy_m2ps2"
 mission = "leo_gravity_8x8.toml"
 n = 128
 mean_hex = "-0x1.b5003aedbc07ap+24"   # metric mean, exact binary64
-std_hex = "0x1.857d1c2e64849p+17"     # sample std (ddof=1), exact binary64
+std_hex = "0x1.857d1c2e64844p+17"     # sample std (ddof=1), exact binary64
 mean_readable = -28639290.928650357    # decimal echo, never read back
-std_readable = 199418.22016579125      # decimal echo, never read back
+std_readable = 199418.2201657911       # decimal echo, never read back
 ```
 
 `mean`/`std` ride as `float.hex()` literals because the statistics are exact, not

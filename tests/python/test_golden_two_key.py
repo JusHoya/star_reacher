@@ -18,6 +18,7 @@ when the core is absent.
 """
 
 import hashlib
+import re
 import shutil
 import subprocess
 import sys
@@ -155,11 +156,15 @@ def test_dry_run_detects_a_pending_change_and_emits_a_diff():
     run against the real tree; the backup/restore keeps the tree unchanged.
     """
     _core_or_fail()
-    tampered_value = VALUE_FILE.read_bytes().replace(
-        b'std_hex = "0x1.857d1c2e64849p+17"',
-        b'std_hex = "0x1.0000000000000p+18"',
-    )
     backup = VALUE_FILE.read_bytes()
+    # Tamper the std_hex line whatever its current frozen value is, so this
+    # test survives legitimate refreezes of the golden through --apply.
+    tampered_value = re.sub(
+        rb'std_hex = "[^"]+"',
+        b'std_hex = "0x1.0000000000000p+18"',
+        backup,
+        count=1,
+    )
     assert tampered_value != backup, "the tamper did not change any bytes"
     try:
         VALUE_FILE.write_bytes(tampered_value)
