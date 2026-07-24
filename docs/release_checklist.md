@@ -18,12 +18,14 @@ measurement. The three obligations are identical for both — committed fully
 prepared, registered here, recorded inline beside the criterion — and only
 the **Procedure:** line differs in character.
 
-The register covers the phases closed so far (through Phase 7). Phase 7 exit
+The register covers the phases closed so far (through Phase 8). Phase 7 exit
 criterion 4 re-gates on Pi 5 hardware and is registered as item 9 at its phase
-close; Phase 8 exit criterion 4 will add its own item if the hardware is still
-unavailable. Once Pi 5 hardware is available, attaching it as the pinned
-self-hosted runner (PRD section 9) supersedes the manual route for the
-performance clauses.
+close; Phase 8 exit criterion 1 (the five new cross-tool cases vs frozen GMAT
+truth) is registered as item 10 at the Phase 8 close, GMAT being unavailable to
+the maintainer on the execution host; Phase 8 exit criterion 4 (the fresh-machine
+Pi 5 `star verify` walkthrough) is carried by item 1's Pi 5 hardware register.
+Once Pi 5 hardware is available, attaching it as the pinned self-hosted runner
+(PRD section 9) supersedes the manual route for the performance clauses.
 
 Each item names the clause it carries, its prepared procedure, and where the
 result is recorded. When an item is discharged, commit its evidence as its
@@ -38,7 +40,14 @@ register always states what has and has not been done.
   hardware clause of **Phase 6 exit criterion 10** (the FR-32 ascent target
   holding with the built-in C++ GNC stack in the loop). Criterion 10 adds no
   new step: it is a fourth metric, `ascent_gnc_rt_factor`, measured by the
-  same harness invocation in step 4 and gated at the same >= 100x.
+  same harness invocation in step 4 and gated at the same >= 100x. It also
+  carries the Pi 5 timing clause of **Phase 8 exit criterion 4** (`star verify`
+  prints `VERIFY: PASS` in `< 10 min` on a Pi 5): this is exactly the
+  `star verify` run in the bring-up procedure below (step 3), timed on Pi 5
+  silicon. The x86-64 measurement — full-tier `star verify` at ~9 s, 65x inside
+  the 10-minute budget — is recorded in the README and the fresh-machine
+  walkthrough, but an x86-64 number is not a Pi 5 number and does not discharge
+  this clause.
 - **Procedure:** [`docs/perf/pi5_checklist.md`](perf/pi5_checklist.md). Steps
   1–3 of that document double as the generic Pi 5 bring-up procedure
   (toolchain, source build into a fresh venv, `star verify --quick`) for any
@@ -295,3 +304,92 @@ hardening and coverage work, tracked here to completion.
   items 1 and 2. Whether onnxruntime CPU inference is bit-reproducible across
   x86-64 and aarch64 within the D-10 bound is the open empirical question this
   item resolves; the x86-64 leg alone cannot answer it.
+
+## Phase 8 deferred items (external-tool clause)
+
+## 10. Phase 8 criterion 1 — frozen GMAT truth for the five new cross-tool cases
+
+- **Carries:** the frozen-GMAT-truth generation for Phase 8 exit criterion 1's
+  five new cross-tool cases, recorded inline against **Phase 8 exit criterion 1**
+  in `PRD.md`: Molniya (`missions/molniya.toml`), lunar orbiter with the
+  degree-matched GRGM field and SRP on (`missions/lunar_orbiter.toml`), and Mars
+  orbiter, MRO-class, harmonics + SRP (`missions/mars_orbiter.toml`), each gated
+  at position RMS < 100 m over 7 days; trans-lunar (the ballistic coast of
+  `missions/tli.toml`) gated at < 1 km at lunar arrival; and Earth-Mars cruise
+  (`missions/mars_cruise.toml`) gated at < 100 km at arrival. The two Phase 3
+  cross-tool cases (GMAT LEO gravity, Orekit LEO drag) are already frozen and
+  gated and are **not** part of this item. The illustrative LRO-ephemeris
+  comparison (`missions/lro_illustrative.toml`) is **report-only, not a gate**
+  (the real LRO's maneuvers and SRP/attitude history are unmodeled), so it
+  carries no tolerance and appears here only as a note. What is deferred is the
+  external truth: GMAT is not installed on the Phase 8 execution host, exactly
+  the D-15 maintainer-boundary/unavailable-tool blocker the section 9 valve
+  covers (the analogue of item 2's MATLAB clause). Coupled to it, the lunar
+  cases additionally need the maintainer-generated DE440 excerpt carrying the
+  `moon_librations` segment (`tests/golden/ephemeris/excerpt_de440s_lunar.sreph`),
+  which the Phase 8 host could not cut because the DE440 kernels were not
+  fetched there; that excerpt is registered under this same item.
+- **Procedure:** this is a tool-and-fixture item, so what is prepared is a
+  scripted measurement waiting for the resource. On a maintainer host with GMAT
+  R2026a (pinned in `tests/golden/crosstool/manifest.toml`) and the fetched
+  DE440 kernels:
+  1. `python tests/golden/ephemeris/generate_lunar.py` — cut and commit
+     `excerpt_de440s_lunar.sreph` (the five-segment excerpt with librations);
+     the generator asserts bit-identity of the excerpt against the full repack.
+  2. `python scripts/crosstool/gen_field_files_phase8.py` — confirm the
+     committed `moon_grgm1200a_50x50.cof` and `mars_mro120f_20x20.cof` (already
+     committed and deterministic; re-run only if the source excerpts changed).
+  3. For each case, `python scripts/crosstool/run_gmat_phase8.py --case
+     <molniya|lunar_orbiter|mars_orbiter|translunar|mars_cruise>` — run GMAT on
+     the committed `.script` and freeze the truth CSV (for `translunar`, pass
+     `--arrival-s` if the frozen simulator run locates a different lunar arrival
+     epoch than the 455402 s default). The gravity fields, GMAT scripts,
+     coordinate systems, and exact initial states are already committed and
+     documented per case in the manifest; only the truth CSV bytes and the
+     measured RMS are produced here.
+  4. Confirm the five gates in
+     `tests/python/test_crosstool_frozen_truth.py` flip from skip to pass, and
+     record each measured RMS in `tests/golden/crosstool/manifest.toml` (the
+     `date`/`generation`/`tolerance` fields currently marked `pending`).
+  The comparison machinery those gates use is already proven correct
+  independent of GMAT by `test_rms_machinery_is_correct_on_sim_own_states`
+  (the sim's own states as pseudo-truth, measured position RMS ~5e-9 m), so the
+  only thing missing is the external truth.
+- **Records to:** `tests/golden/crosstool/` (the five truth CSVs and the lunar
+  excerpt, replacing the `pending` manifest entries with measured values and
+  SHA-256 pins) and `tests/golden/ephemeris/manifest.toml` (the lunar excerpt's
+  `date`).
+- **Status:** pending — GMAT is not available to the maintainer at Phase 8
+  execution (and the DE440 kernels are not fetched on the execution host, so the
+  lunar libration excerpt is unbuilt). Deferred at Phase 8 close on the same
+  provision as items 1, 2, and 9. It is not waived: the missions run (or, for
+  the lunar cases, validate up to the pending excerpt), the GMAT scripts and
+  gravity-field inputs are committed as-would-be-run, the freeze driver and
+  excerpt generator are committed and deterministic, and the five gates skip
+  loudly with the deferral naming this item rather than passing blind.
+
+## 11. Phase 8 criterion 5 — release-wheel build and smoke on all four platforms
+
+- **Carries:** Phase 8 exit criterion 5 in its release-time form — the
+  four-platform wheels install and pass `verify --quick`. Unlike items 1, 2, 9,
+  and 10, this is not blocked on an unavailable resource: it is a
+  confirmation that can only be produced after the release tag is pushed
+  (GitHub runs a tag-triggered workflow only once the tag exists), so it is
+  registered here in the same spirit as item 3's first-nightly confirmation.
+  The per-push `wheel-budget` and `dep-minimality` jobs already build and
+  audit the wheel on all four legs, and the per-push `build-test` job already
+  installs from source and runs `star verify --quick` on all four legs, so the
+  capability is continuously exercised; what the tag adds is the distributable
+  cibuildwheel artifacts and their isolated-venv `verify --quick` smoke.
+- **Procedure:** after the phase merge, push the annotated `v0.8.0` tag and
+  confirm the `release` job in `.github/workflows/ci.yml` goes green on all
+  four legs (ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2022): each
+  builds its native wheel with cibuildwheel and runs `star verify --quick` in a
+  fresh venv containing only the built wheel and its declared runtime
+  dependencies. The wheels upload as `wheels-<os>` artifacts for attachment to
+  the GitHub release.
+- **Records to:** the `release` workflow run history and its uploaded wheel
+  artifacts (self-recording).
+- **Status:** pending first post-tag run. The release job and its tag trigger
+  are committed; the tag is a maintainer action (a public disclosure event,
+  D-19) and is not pushed as part of the phase merge.

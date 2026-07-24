@@ -9,6 +9,9 @@ on:
     # gates each phase merge on green CI, so waiting for a PR event would
     # serialize verification behind PR plumbing.
     branches: [main, 'phase-*']
+    # Version tags drive the Phase 8 exit-criterion-5 release job (four-platform
+    # wheels built and verify-smoked). Tags never touch main's branch matrix.
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -428,3 +431,68 @@ jobs:
           if [ -x fresh/bin/python ]; then VPY=fresh/bin/python; else VPY=fresh/Scripts/python; fi
           "$VPY" -m pip install --quiet dist/*.whl
           "$VPY" scripts/check_min_deps.py --expected tests/golden/packaging/runtime_deps.toml
+
+  # Phase 8 exit criterion 3: the report case-study figures regenerate
+  # bit-for-bit under the pinned matplotlib. verify_repro() renders each figure
+  # twice to fresh temp dirs and asserts the two renders are byte-identical, so
+  # the gate proves regeneration determinism on the runner without depending on
+  # cross-platform PNG byte identity (matplotlib bundles a platform-specific
+  # FreeType, so committed PNG bytes are toolchain- and platform-scoped by
+  # design, exactly as the criterion's "pinned matplotlib" clause states).
+  report-figures:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install package and pin the figure toolchain
+        # The bit-for-bit guarantee is against the matplotlib pinned in
+        # scripts/figures/README.md; pin it explicitly so the gate measures that
+        # toolchain rather than whatever floats in from the >= 3.8 floor.
+        run: |
+          pip install .
+          pip install 'matplotlib==3.11.1'
+      - name: Regenerate report figures and assert bit-for-bit reproducibility
+        run: python scripts/figures/casestudy_figures.py --verify-repro
+
+  # Phase 8 exit criterion 5: on a version tag, the four-platform wheels build
+  # and each installs and passes `verify --quick`. cibuildwheel builds the
+  # native wheel on each runner (manylinux x86-64 / aarch64, macOS arm64,
+  # Windows x64 -- FR-32's four targets) and runs the smoke command in an
+  # isolated venv per wheel; the wheels upload as release artifacts. Tag-only,
+  # so ordinary branch pushes never pay the cibuildwheel cost.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      # All legs report even when one fails, so a platform-specific wheel or
+      # smoke failure is visible in a single release round-trip.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and smoke-verify the wheels
+        run: |
+          pip install 'cibuildwheel>=2.16'
+          python -m cibuildwheel --output-dir wheelhouse
+        env:
+          # 3.11 is the requires-python floor (A-1: tomllib); build through 3.13.
+          CIBW_BUILD: "cp311-* cp312-* cp313-*"
+          # FR-32 names manylinux; skip the musllinux variants to keep the
+          # release set to the four stated targets.
+          CIBW_SKIP: "*-musllinux*"
+          # Bare-install smoke (criterion 5): `star verify --quick` uses inlined
+          # fixtures and needs no repo checkout, so it runs from cibuildwheel's
+          # isolated test venv with only the wheel and its declared runtime
+          # dependencies installed -- exactly a user's `pip install`.
+          CIBW_TEST_COMMAND: "star verify --quick"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
