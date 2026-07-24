@@ -9,6 +9,11 @@
 # (committed golden excerpts under tests/golden/gravity/).
 *.srgrav binary
 
+# ONNX model containers are serialized protobuf; never normalize or diff as
+# text (the committed FR-28 golden tests/golden/onnx/pd_mlp.onnx and its
+# SHA-256 provenance in that directory's manifest.toml depend on it).
+*.onnx binary
+
 # Cross-tool frozen truth and external-tool input files check out with LF on
 # every platform so the SHA-256 pins recorded in
 # tests/golden/crosstool/manifest.toml stay verifiable against working-tree
