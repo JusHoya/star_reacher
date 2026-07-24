@@ -60,34 +60,32 @@ a release.
 ## Handoff A — the GMAT machine (criterion 1, checklist item 10)
 
 **You need:** a host with **GMAT R2026a** (the exact build pinned in
-`tests/golden/crosstool/manifest.toml`'s toolchain-provenance block) and the
-**DE440 kernels fetched** (`star data fetch de440s`), plus this branch checked
-out and the package installed (`pip install .`).
+`tests/golden/crosstool/manifest.toml`'s toolchain-provenance block), this
+branch checked out, and the package installed (`pip install .`). You do **not**
+need to fetch DE440 or generate any fixture: the DE440 lunar excerpt was
+fetchable and was generated and committed on the Phase 8 host, so the lunar
+cases run out of the box, and GMAT supplies its own ephemeris.
 
 Everything else is already committed and committed *as-would-be-run*: the five
 missions, the hand-authored GMAT `.script` replications, the degree-matched
-GRGM/MRO `.cof` field inputs, the deterministic field/excerpt generators, the
-freeze driver, and the per-case provenance manifest entries carrying each PRD
-tolerance verbatim. You produce only the truth-CSV bytes and the measured RMS.
+GRGM/MRO `.cof` field inputs, the committed DE440 lunar excerpt
+(`tests/golden/ephemeris/excerpt_de440s_lunar.sreph`, carrying the
+`moon_librations` segment the lunar cases need), the deterministic generators,
+the freeze driver, and the per-case provenance manifest entries carrying each
+PRD tolerance verbatim. You produce only the truth-CSV bytes and the measured
+RMS.
 
 **Run, from the repository root:**
 
-1. Cut and commit the DE440 lunar excerpt that carries the `moon_librations`
-   segment (needed by the two lunar cases; the generator asserts bit-identity
-   against the full repack):
+1. (Optional) Confirm the committed inputs are intact — both regenerate
+   byte-identically and change nothing unless a source excerpt changed:
 
    ```sh
-   python tests/golden/ephemeris/generate_lunar.py
+   python scripts/crosstool/gen_field_files_phase8.py   # Moon/Mars .cof fields
+   python tests/golden/ephemeris/generate_lunar.py      # the lunar excerpt (already committed)
    ```
 
-2. Confirm the committed Moon/Mars gravity `.cof` inputs (already committed and
-   deterministic; re-run only if the source excerpts changed):
-
-   ```sh
-   python scripts/crosstool/gen_field_files_phase8.py
-   ```
-
-3. For each case, run GMAT on the committed script and freeze its truth CSV:
+2. For each case, run GMAT on the committed script and freeze its truth CSV:
 
    ```sh
    python scripts/crosstool/run_gmat_phase8.py --case molniya
@@ -97,7 +95,7 @@ tolerance verbatim. You produce only the truth-CSV bytes and the measured RMS.
    python scripts/crosstool/run_gmat_phase8.py --case mars_cruise
    ```
 
-4. Confirm the five gates flip from skip to pass and record each measured RMS
+3. Confirm the five gates flip from skip to pass and record each measured RMS
    in the manifest's `pending` fields:
 
    ```sh

@@ -324,18 +324,22 @@ hardening and coverage work, tracked here to completion.
   carries no tolerance and appears here only as a note. What is deferred is the
   external truth: GMAT is not installed on the Phase 8 execution host, exactly
   the D-15 maintainer-boundary/unavailable-tool blocker the section 9 valve
-  covers (the analogue of item 2's MATLAB clause). Coupled to it, the lunar
-  cases additionally need the maintainer-generated DE440 excerpt carrying the
-  `moon_librations` segment (`tests/golden/ephemeris/excerpt_de440s_lunar.sreph`),
-  which the Phase 8 host could not cut because the DE440 kernels were not
-  fetched there; that excerpt is registered under this same item.
-- **Procedure:** this is a tool-and-fixture item, so what is prepared is a
-  scripted measurement waiting for the resource. On a maintainer host with GMAT
-  R2026a (pinned in `tests/golden/crosstool/manifest.toml`) and the fetched
-  DE440 kernels:
-  1. `python tests/golden/ephemeris/generate_lunar.py` — cut and commit
-     `excerpt_de440s_lunar.sreph` (the five-segment excerpt with librations);
-     the generator asserts bit-identity of the excerpt against the full repack.
+  covers (the analogue of item 2's MATLAB clause). The DE440 lunar excerpt
+  carrying the `moon_librations` segment
+  (`tests/golden/ephemeris/excerpt_de440s_lunar.sreph`) that the lunar cases
+  need was originally coupled to this item, but the DE440 kernels turned out to
+  be fetchable on the Phase 8 host, so the excerpt was generated and **committed**
+  there (deterministic, bit-identity-verified against the full repack); the
+  lunar missions now run out of the box. Only the **GMAT frozen truth** remains
+  deferred under this item, for all five cases equally.
+- **Procedure:** this is a tool item, so what is prepared is a scripted
+  measurement waiting for the resource. On a maintainer host with GMAT R2026a
+  (pinned in `tests/golden/crosstool/manifest.toml`):
+  1. (Optional) `python tests/golden/ephemeris/generate_lunar.py` — the lunar
+     excerpt is already committed; the generator regenerates it byte-identically
+     and asserts bit-identity against the full repack, so this only re-confirms
+     it. No DE440 fetch is required for GMAT itself (GMAT supplies its own
+     ephemeris).
   2. `python scripts/crosstool/gen_field_files_phase8.py` — confirm the
      committed `moon_grgm1200a_50x50.cof` and `mars_mro120f_20x20.cof` (already
      committed and deterministic; re-run only if the source excerpts changed).
@@ -355,18 +359,19 @@ hardening and coverage work, tracked here to completion.
   independent of GMAT by `test_rms_machinery_is_correct_on_sim_own_states`
   (the sim's own states as pseudo-truth, measured position RMS ~5e-9 m), so the
   only thing missing is the external truth.
-- **Records to:** `tests/golden/crosstool/` (the five truth CSVs and the lunar
-  excerpt, replacing the `pending` manifest entries with measured values and
-  SHA-256 pins) and `tests/golden/ephemeris/manifest.toml` (the lunar excerpt's
-  `date`).
+- **Records to:** `tests/golden/crosstool/` (the five truth CSVs, replacing the
+  `pending` manifest entries with measured values and SHA-256 pins). The lunar
+  excerpt and its `tests/golden/ephemeris/manifest.toml` entry are already
+  committed and no longer pending.
 - **Status:** pending — GMAT is not available to the maintainer at Phase 8
-  execution (and the DE440 kernels are not fetched on the execution host, so the
-  lunar libration excerpt is unbuilt). Deferred at Phase 8 close on the same
-  provision as items 1, 2, and 9. It is not waived: the missions run (or, for
-  the lunar cases, validate up to the pending excerpt), the GMAT scripts and
-  gravity-field inputs are committed as-would-be-run, the freeze driver and
-  excerpt generator are committed and deterministic, and the five gates skip
-  loudly with the deferral naming this item rather than passing blind.
+  execution. Deferred at Phase 8 close on the same provision as items 1, 2, and
+  9. The DE440 lunar excerpt sub-blocker has been **lifted**: the kernels were
+  fetchable on the execution host, so the excerpt is generated, committed, and
+  its manifest entry finalized, and all five missions (lunar cases included) run
+  and validate. It is not waived: the GMAT scripts and gravity-field inputs are
+  committed as-would-be-run, the freeze driver is committed and deterministic,
+  and the five gates skip loudly with the deferral naming this item rather than
+  passing blind.
 
 ## 11. Phase 8 criterion 5 — release-wheel build and smoke on all four platforms
 
