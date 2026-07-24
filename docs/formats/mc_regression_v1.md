@@ -50,11 +50,39 @@ metric's first two moments:
 metric = "energy_m2ps2"
 mission = "leo_gravity_8x8.toml"
 n = 128
+platform = "win32-amd64"               # freeze platform: bit-exactness scope
 mean_hex = "-0x1.b5003aedbc07ap+24"   # metric mean, exact binary64
 std_hex = "0x1.857d1c2e64844p+17"     # sample std (ddof=1), exact binary64
 mean_readable = -28639290.928650357    # decimal echo, never read back
 std_readable = 199418.2201657911       # decimal echo, never read back
 ```
+
+### Platform scoping
+
+The sweep is bit-reproducible run after run **on a given platform**, but
+across platforms the logged truth states legitimately differ within the
+Phase 6 criterion-8 divergence model (libm and instruction-set differences;
+derived channel tolerance `tolerance_rel = 3.2557641192199413e-10` in
+`tests/golden/determinism/cross_platform.toml`). A bit-exact cross-platform
+golden would contradict that model, so the golden records the
+`platform` (`sys.platform` plus machine, e.g. `win32-amd64`) that froze it:
+
+- **On the freeze platform** a re-run must reproduce `mean_hex`/`std_hex`
+  to the bit, and `golden_update.py`'s dry run demands byte equality.
+- **On any other platform** the statistics must agree within
+  `CROSS_PLATFORM_BAND_M2PS2 = 0.05` m²/s², the channel tolerance propagated
+  through E = v²/2 − GM/r at the sweep's LEO scale (v² + GM/r ≈ 1.2e8 m²/s²
+  gives ≈ 0.039; the mean is bounded by the same figure and the sample std
+  by ~√(n/(n−1)) times it, so 0.05 bounds both). The sweep mission is not in
+  the measured criterion-8 set, so this extends the documented divergence
+  model to its force-model class rather than a per-mission measurement; the
+  cross-leg differences observed in CI are ~1e-7 m²/s², five orders inside
+  the band. The dry run reports byte differences inside this band as a
+  platform-scoped match, not a pending change.
+
+The distributional regression gates below standardize by the frozen std and
+are unaffected by platform at these scales; they run identically on every
+leg.
 
 `mean`/`std` ride as `float.hex()` literals because the statistics are exact, not
 rounded (the same discipline the rng/box_muller golden uses). The `*_readable`

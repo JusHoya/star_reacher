@@ -3,10 +3,14 @@
 # --apply; provenance and the values_sha256 gate live in manifest.toml.
 # The mean/std are exact binary64 hex literals (float.hex()); the
 # *_readable decimals are for the eye only and are never read back.
+# Bit-exact reproduction of mean/std is scoped to the recorded freeze
+# platform; other platforms compare within the criterion-8-derived
+# band (docs/formats/mc_regression_v1.md).
 
 metric = "energy_m2ps2"
 mission = "leo_gravity_8x8.toml"
 n = 128
+platform = "win32-amd64"
 mean_hex = "-0x1.b5003aedbc07ap+24"
 std_hex = "0x1.857d1c2e64844p+17"
 mean_readable = -28639290.928650357

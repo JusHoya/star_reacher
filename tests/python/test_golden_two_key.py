@@ -139,11 +139,19 @@ def test_checker_fails_on_unmanifested_value_file(tmp_path):
 
 
 def test_dry_run_reports_no_pending_change():
-    """On an unchanged binary the committed golden matches a fresh sweep."""
+    """On an unchanged binary the committed golden matches a fresh sweep.
+
+    On the golden's freeze platform the match is byte-exact ("no change"); on
+    any other platform the regenerated bits legitimately differ within the
+    criterion-8 band and the dry run reports a platform-scoped match. Both
+    are exit 0 with nothing pending.
+    """
     _core_or_fail()
     result = _run(UPDATE)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "no change" in result.stdout
+    assert (
+        "no change" in result.stdout or "platform-scoped match" in result.stdout
+    ), result.stdout
 
 
 def test_dry_run_detects_a_pending_change_and_emits_a_diff():
@@ -200,10 +208,36 @@ def test_apply_updates_value_and_manifest_together(tmp_path):
         result = _run(UPDATE, "--apply")
         assert result.returncode == 0, result.stdout + result.stderr
         assert "APPLIED" in result.stdout
-        # The pair is consistent again, and the restored value matches the
-        # original committed bytes (the sweep is deterministic).
+        # The pair is consistent again.
         assert _run(CHECK).returncode == 0
-        assert VALUE_FILE.read_bytes() == backup_value
+        # On the platform that froze the committed golden the sweep is
+        # bit-deterministic, so --apply restores the exact committed bytes.
+        # On any other platform the regenerated statistics carry that
+        # platform's own bits (criterion-8 divergence model); assert they
+        # agree with the committed golden within the derived band instead.
+        import tomllib  # noqa: PLC0415
+
+        from star_reacher.mc_regression import (  # noqa: PLC0415
+            CROSS_PLATFORM_BAND_M2PS2,
+            current_platform,
+        )
+
+        committed = tomllib.loads(backup_value.decode("utf-8"))
+        if committed["platform"] == current_platform():
+            assert VALUE_FILE.read_bytes() == backup_value
+        else:
+            applied = tomllib.loads(VALUE_FILE.read_text(encoding="utf-8"))
+            assert applied["n"] == committed["n"]
+            assert applied["platform"] == current_platform()
+            for field in ("mean_hex", "std_hex"):
+                delta = abs(
+                    float.fromhex(applied[field]) - float.fromhex(committed[field])
+                )
+                assert delta <= CROSS_PLATFORM_BAND_M2PS2, (
+                    f"{field}: regenerated value differs from the committed "
+                    f"golden by {delta:.3e} m^2/s^2, beyond the cross-platform "
+                    f"band {CROSS_PLATFORM_BAND_M2PS2}"
+                )
     finally:
         VALUE_FILE.write_bytes(backup_value)
         MANIFEST_FILE.write_bytes(backup_manifest)

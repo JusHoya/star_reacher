@@ -2,7 +2,12 @@
 
 ``star mc`` (``star_reacher.mc``) turns a sweep spec into a bit-reproducible
 ensemble: the same master seed yields the same per-run seeds, the same logged
-bytes, and so the same per-run outcome metric, run after run. This module
+bytes, and so the same per-run outcome metric, run after run on a given
+platform. Across platforms the logged states differ within the Phase 6
+criterion-8 divergence model (libm and instruction-set differences, bounded
+by the derived channel tolerance), so the golden records the platform that
+froze it: bit-exact reproduction is asserted there, and other platforms
+compare within :data:`CROSS_PLATFORM_BAND_M2PS2`. This module
 freezes the *statistics* of one such ensemble as a golden and gates a re-run's
 statistics against it with two complementary 99 % tests, so a change to the
 physics or the numerics that moves the outcome distribution is caught while a
@@ -62,8 +67,10 @@ first-principles ``chi2`` and ``anderson`` modules.
 from __future__ import annotations
 
 import math
+import platform as _platform
+import sys
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -72,12 +79,14 @@ from star_reacher.anderson import anderson_darling
 from star_reacher.chi2 import chi2_ppf
 
 __all__ = [
+    "CROSS_PLATFORM_BAND_M2PS2",
     "GOLDEN_METRIC",
     "GOLDEN_VALUE_FILE",
     "REGRESSION_PROB",
     "GoldenStats",
     "McRegressionError",
     "RegressionGate",
+    "current_platform",
     "ensemble_metric",
     "format_golden_toml",
     "golden_stats_dict",
@@ -99,6 +108,35 @@ REGRESSION_PROB = 0.99
 # generator, the gate, and the docs name the identical quantity.
 GOLDEN_METRIC = "energy_m2ps2"
 
+# Cross-platform closeness band for the frozen statistics [m^2/s^2]. Bit-exact
+# reproduction of the golden's mean/std is scoped to the platform that froze
+# it: across platforms the logged truth states legitimately differ within the
+# Phase 6 criterion-8 divergence model, whose derived channel tolerance is
+# tolerance_rel = 3.2557641192199413e-10
+# (tests/golden/determinism/cross_platform.toml). Propagated through the
+# metric E = v^2/2 - GM/r at the sweep's LEO scale (v^2 + GM/r ~ 1.2e8
+# m^2/s^2), that allows per-run energy differences up to ~0.039 m^2/s^2; the
+# ensemble mean is bounded by the same figure and the sample std by ~sqrt(n /
+# (n - 1)) times it (Cauchy-Schwarz), so 0.05 bounds both with margin. The
+# sweep mission is not itself in the measured criterion-8 set, so this is the
+# documented divergence model extended to its force-model class, not a
+# measured bound; the cross-leg differences observed at CI are ~1e-7, five
+# orders inside. A real regression that moves the distribution is caught by
+# the chi-square/A-D gates, which standardize by the frozen std and are
+# platform-independent at these scales.
+CROSS_PLATFORM_BAND_M2PS2 = 0.05
+
+
+def current_platform() -> str:
+    """The platform tag frozen into a golden, e.g. ``win32-amd64``.
+
+    ``sys.platform`` plus the machine architecture, lowercased: the pair that
+    scopes bit-exact reproduction under the criterion-8 divergence model (the
+    four CI legs map to win32-amd64, linux-x86_64, linux-aarch64, and
+    darwin-arm64).
+    """
+    return f"{sys.platform}-{_platform.machine().lower()}"
+
 
 class McRegressionError(Exception):
     """A Monte Carlo regression input error (bad manifest, empty ensemble, bad golden)."""
@@ -116,9 +154,14 @@ class GoldenStats:
 
     ``n`` is the ensemble size, ``mean``/``std`` the metric's mean and sample
     (ddof=1) standard deviation, ``metric`` the metric name, and ``mission``
-    the base mission the sweep dispersed. These are what the gate reads; the
-    provenance (date, generation procedure, value hash) lives alongside in the
-    directory's ``manifest.toml``.
+    the base mission the sweep dispersed. ``platform`` records the
+    :func:`current_platform` the statistics were computed on: bit-exact
+    reproduction of ``mean``/``std`` is scoped to that platform, and other
+    platforms compare within :data:`CROSS_PLATFORM_BAND_M2PS2` (criterion-8
+    divergence model); the empty string marks an inline, unscoped reference
+    (used by the verify harness's synthetic gate). These are what the gate
+    reads; the provenance (date, generation procedure, value hash) lives
+    alongside in the directory's ``manifest.toml``.
     """
 
     n: int
@@ -126,6 +169,7 @@ class GoldenStats:
     std: float
     metric: str
     mission: str
+    platform: str = field(default="")
 
 
 def ensemble_metric(manifest: dict, manifest_dir) -> np.ndarray:
@@ -213,6 +257,7 @@ def summarize_metric(metric: np.ndarray, *, mission: str) -> GoldenStats:
         std=std,
         metric=GOLDEN_METRIC,
         mission=mission,
+        platform=current_platform(),
     )
 
 
@@ -228,6 +273,7 @@ def golden_stats_dict(stats: GoldenStats) -> dict:
         "metric": stats.metric,
         "mission": stats.mission,
         "n": stats.n,
+        "platform": stats.platform,
         "mean_hex": float(stats.mean).hex(),
         "std_hex": float(stats.std).hex(),
     }
@@ -251,10 +297,14 @@ def format_golden_toml(stats: GoldenStats) -> str:
         "# --apply; provenance and the values_sha256 gate live in manifest.toml.\n"
         "# The mean/std are exact binary64 hex literals (float.hex()); the\n"
         "# *_readable decimals are for the eye only and are never read back.\n"
+        "# Bit-exact reproduction of mean/std is scoped to the recorded freeze\n"
+        "# platform; other platforms compare within the criterion-8-derived\n"
+        "# band (docs/formats/mc_regression_v1.md).\n"
         "\n"
         f'metric = "{d["metric"]}"\n'
         f'mission = "{d["mission"]}"\n'
         f'n = {d["n"]}\n'
+        f'platform = "{d["platform"]}"\n'
         f'mean_hex = "{d["mean_hex"]}"\n'
         f'std_hex = "{d["std_hex"]}"\n'
         f"mean_readable = {stats.mean!r}\n"
@@ -279,6 +329,7 @@ def load_golden_stats(path) -> GoldenStats:
             std=float.fromhex(doc["std_hex"]),
             metric=str(doc["metric"]),
             mission=str(doc["mission"]),
+            platform=str(doc["platform"]),
         )
     except KeyError as exc:
         raise McRegressionError(
