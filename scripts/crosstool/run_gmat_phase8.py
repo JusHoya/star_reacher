@@ -4,8 +4,10 @@ Maintainer-side only: drives the portable GMAT R2026a console install at
 C:/Users/hoyer/WorkSpace/tools/gmat/ against a committed Phase 8 script under
 ``tests/golden/crosstool/`` and converts the 16-significant-digit report into
 the committed frozen truth CSV. CI never runs this; CI consumes only the
-committed CSVs, and a gate whose CSV does not exist skips (deferred to
-docs/release_checklist.md item 10). This is the Phase 8 sibling of
+committed CSVs, and a gate whose CSV does not exist skips -- the honest-skip
+guard for a checkout that lacks one, not an open deferral: all five CSVs are
+frozen and docs/release_checklist.md item 10 is discharged. This is the Phase 8
+sibling of
 run_gmat_case1.py, parameterized over the five cases.
 
 Cases (``--case``):
@@ -20,9 +22,13 @@ The 7-day cases emit the full 10081-row 60 s grid exactly as case 1 does; the
 trans-lunar case emits a single arrival row at the simulator's SOI-transition
 epoch (passed as ``--arrival-s``, the elapsed-from-burnout span 455401 s by
 default - the elapsed seconds of the tli SOI event, 455755 s, minus the 354 s
-ballistic-burnout time; the cutoff is commanded at 353 s and the delivered
-thrust level is zero from 354 s under the per-step spool discipline, so the
-GMAT coast starts at the t = 354 s truth state).
+ballistic-burnout time; the cutoff is commanded at 353 s but the delivered
+thrust level is only zero from 354 s, because the control cycle advances the
+engine state after the RK4 step it feeds (D-5 zero-order hold, the per-cycle
+ordering in docs/mathlib chapter "6DOF vehicle"), so the GMAT coast starts at
+the t = 354 s truth state). ``--arrival-s`` stamps the CSV only: the span GMAT
+propagates is the ``.script``'s ``Propagate`` stop condition, and the two are
+checked against each other at the grid tolerance.
 
 Zero-EOP: the Earth-regime cases (molniya, translunar) reuse the committed
 gmat_startup_zeroeop.txt override (the controlled-comparison configuration
@@ -168,11 +174,17 @@ def convert_grid(report: Path, truth_out: Path, case: str) -> None:
 def convert_arrival(report: Path, truth_out: Path, arrival_s: float) -> None:
     """Emit the single arrival-epoch row for the trans-lunar point gate."""
     rows = _parse_report(report)
-    # The arrival row is the last one; assert the script propagated to the
-    # requested arrival span within the grid tolerance.
+    # The arrival row is the last one. Gate it at the grid tolerance, not at a
+    # step: the stamped t_s is the REQUESTED span while the state is whatever
+    # GMAT reported, so any accepted slack silently pairs one epoch's timestamp
+    # with another epoch's state. At the ~127.8 m/s arrival speed a full 60 s of
+    # slack would be ~7.7 km -- 7.7x the 1 km gate this file feeds.
     last = rows[-1]
-    assert abs(last[0] - arrival_s) < STEP_S, (
-        f"report ends at {last[0]} s, expected the arrival span {arrival_s} s"
+    assert abs(last[0] - arrival_s) < GRID_TOL_S, (
+        f"report ends at {last[0]} s, expected the arrival span {arrival_s} s "
+        f"(off by {last[0] - arrival_s:.3e} s > {GRID_TOL_S:g} s). --arrival-s "
+        f"only restamps the CSV; the propagation span lives in the .script's "
+        f"Propagate stop condition and must be edited to match."
     )
     xyz = [v * 1000.0 for v in last[2:8]]
     out = [
@@ -204,7 +216,10 @@ def main() -> None:
         type=float,
         default=DEFAULT_ARRIVAL_S,
         help="trans-lunar arrival span (elapsed from the t = 354 s ballistic "
-        "burnout the script's coast starts at); ignored for the grid cases",
+        "burnout the script's coast starts at); ignored for the grid cases. "
+        "This flag only stamps the emitted CSV -- the span GMAT actually "
+        "propagates is the .script's Propagate stop condition, so change both "
+        "together or the run aborts on the arrival-epoch check",
     )
     args = ap.parse_args()
 

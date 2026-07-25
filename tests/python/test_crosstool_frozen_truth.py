@@ -12,23 +12,28 @@ Phase 3 (frozen, gated in CI):
 - XTOOL-LEO-DRAG-OREKIT missions/leo_drag_hp.toml vs Orekit 13.1.5,
                         position RMS < 100 m over 7 days.
 
-Phase 8 (fully prepared; frozen truth deferred to the pre-release checklist):
+Phase 8 (frozen, gated in CI):
 
-- XTOOL-MOLNIYA-GMAT       missions/molniya.toml, position RMS < 100 m / 7 d;
-- XTOOL-LUNAR-GMAT         missions/lunar_orbiter.toml, position RMS < 100 m / 7 d;
-- XTOOL-MARS-ORBITER-GMAT  missions/mars_orbiter.toml, position RMS < 100 m / 7 d;
-- XTOOL-TRANSLUNAR-GMAT    missions/tli.toml coast, position < 1 km at lunar arrival;
-- XTOOL-MARS-CRUISE-GMAT   missions/mars_cruise.toml, position < 100 km at arrival.
+- XTOOL-MOLNIYA-GMAT       missions/molniya.toml, position RMS < 100 m / 7 d
+                           (measured 0.160317 m);
+- XTOOL-LUNAR-GMAT         missions/lunar_orbiter.toml, position RMS < 100 m / 7 d
+                           (measured 7.232688 m);
+- XTOOL-MARS-ORBITER-GMAT  missions/mars_orbiter.toml, position RMS < 100 m / 7 d
+                           (measured 79.478630 m);
+- XTOOL-TRANSLUNAR-GMAT    missions/tli.toml coast, position < 1 km at lunar
+                           arrival (measured 18.089824 m);
+- XTOOL-MARS-CRUISE-GMAT   missions/mars_cruise.toml, position < 100 km at
+                           arrival (measured 952.550 m at the end of the
+                           committed arc).
 
-The Phase 8 truth CSVs are frozen offline on the maintainer GMAT machine
-(D-15; ``docs/release_checklist.md`` item 10). Four of the five are committed
-and their gates measure (values recorded in the crosstool manifest); the
-trans-lunar CSV is pending a re-freeze (its first freeze started from a
-mid-burn state and was invalidated -- the manifest's deferral note has the
-history). A case whose truth CSV is absent SKIPS with an explicit deferral
-message naming the checklist item rather than pass vacuously or read a
-fabricated CSV. That the comparison machinery is correct independent of the
-external truth is proven by
+The Phase 8 truth CSVs were frozen offline on the maintainer GMAT machine
+(D-15; ``docs/release_checklist.md`` item 10). All five are committed, all
+five gates measure, and every gate is met; the values above are recorded with
+their full provenance in the crosstool manifest. A case whose truth CSV is
+absent SKIPS with an explicit message naming the checklist item rather than
+pass vacuously or read a fabricated CSV; that branch is retained as the
+honest-skip guard for a checkout without the frozen baselines. That the
+comparison machinery is correct independent of the external truth is proven by
 ``test_rms_machinery_is_correct_on_sim_own_states`` below, which feeds the
 sim's own re-propagated states through the identical CSV/grid/RMS path and
 asserts the position RMS is ~0.
@@ -138,9 +143,9 @@ def test_xtool_leo_drag_orekit(tmp_path):
 # ---------------------------------------------------------------------------
 # Phase 8 cross-tool cases (exit criterion 1). Each carries the mission it
 # re-propagates, the frozen-truth CSV it compares against, and the PRD gate
-# verbatim. A case whose truth CSV is absent (trans-lunar, pending re-freeze)
-# is a real gate that skips with an explicit deferral rather than a vacuous
-# pass; the committed cases measure.
+# verbatim. All five truth CSVs are committed, so all five gates measure; a
+# case whose truth CSV is absent from the checkout still skips explicitly
+# rather than pass vacuously.
 # ---------------------------------------------------------------------------
 
 # 7-day position-RMS cases: (test id, mission file, frozen-truth CSV, gate m).
@@ -160,17 +165,18 @@ _RMS_CASES = [
 def test_xtool_phase8_rms_case(case_id, mission, truth_csv, gate_m, tmp_path):
     """Phase 8 7-day position-RMS cross-tool gate vs frozen GMAT truth.
 
-    Frozen only when the maintainer has run GMAT (D-15); until then the truth
-    CSV is absent and the gate skips, naming the checklist item. The absent
-    external truth is the ONLY reason to skip: the mission and the comparison
-    both work here (proven by the sim-own-states self-consistency test and, for
-    the lunar case, by whether its libration excerpt is present).
+    The truth CSVs were frozen by the maintainer against GMAT (D-15) and are
+    committed, so all three cases measure. An absent external truth is the ONLY
+    reason to skip: the mission and the comparison both work here (proven by
+    the sim-own-states self-consistency test and, for the lunar case, by
+    whether its libration excerpt is present).
     """
     truth_path = CROSSTOOL / truth_csv
     if not truth_path.is_file():
         pytest.skip(
-            f"{case_id}: frozen GMAT truth {truth_csv} pending (GMAT not "
-            f"available at Phase 8 execution) -- deferred to {_CHECKLIST_ITEM}"
+            f"{case_id}: frozen GMAT truth {truth_csv} is absent from this "
+            f"checkout; it is generated offline on the maintainer GMAT machine "
+            f"(D-15) per {_CHECKLIST_ITEM}"
         )
     truth = _load_truth_csv(truth_csv)
     r_sim, v_sim = _run_and_sample(mission, tmp_path)
@@ -186,12 +192,18 @@ def test_xtool_phase8_rms_case(case_id, mission, truth_csv, gate_m, tmp_path):
 
 # The tli ballistic-burnout epoch the trans-lunar frozen CSV's elapsed times
 # are measured from. The cutoff is COMMANDED at the meco event (t = 353 s), but
-# the delivered thrust level follows the per-step spool discipline on the 1 s
-# integrator grid and reaches exactly zero one step later, so t = 354 s is the
-# first ballistic epoch (measured: the truth log's specific orbital energy is
-# constant from 354 s on, and gains a full-thrust step over [353, 354)). The
-# GMAT replication coasts from the t = 354 s truth state, so its elapsed time
-# t maps to mission time t + 354.
+# the D-5 zero-order hold applies it one cycle late by construction: the
+# control cycle in cpp/src/vehicle_cycle.cpp advances the RK4 translational
+# step (line 1485) BEFORE engine_advance (line 1504), so the [353, 354) step
+# integrates at the pre-command throttle level (the per-cycle ordering is
+# docs/mathlib/chapters/vehicle6dof.tex lines 276-282; the D-5 zero-order-hold
+# statement is lines 45-46 of the same chapter). No spool ramp is spread over
+# steps here: the kick stage's spool_time_s = 0.5 s is shorter than the 1 s
+# cycle, so the level clamps to zero in that single advance. t = 354 s is
+# therefore the first ballistic epoch (measured: the truth log's specific
+# orbital energy is constant from 354 s on, and gains a full-thrust step over
+# [353, 354)). The GMAT replication coasts from the t = 354 s truth state, so
+# its elapsed time t maps to mission time t + 354.
 _TLI_BURNOUT_T_S = 354.0
 
 
@@ -202,14 +214,17 @@ def test_xtool_translunar_gmat(tmp_path):
     (missions/tli.toml from ballistic burnout) propagated in both tools,
     differenced at the arrival epoch the simulator locates (the frozen CSV
     carries the GMAT arrival-epoch state, stamped in elapsed-from-burnout
-    time). Deferred until GMAT freezes the coast.
+    time). Frozen and measuring: |dr| = 18.089824 m against the 1 km gate, at
+    the 455755.0 s arrival mission time (455401.0 s of CSV elapsed time plus
+    the 354 s burnout offset), where both tools place the spacecraft ~397,665
+    km from Earth. The companion velocity difference is 5.379870e-05 m/s.
     """
     truth_path = CROSSTOOL / "truth_gmat_translunar.csv"
     if not truth_path.is_file():
         pytest.skip(
             "XTOOL-TRANSLUNAR-GMAT: frozen GMAT truth truth_gmat_translunar.csv "
-            f"pending (GMAT not available at Phase 8 execution) -- deferred to "
-            f"{_CHECKLIST_ITEM}"
+            f"is absent from this checkout; it is generated offline on the "
+            f"maintainer GMAT machine (D-15) per {_CHECKLIST_ITEM}"
         )
     # The frozen CSV's single arrival row is [t_s, x..z (m), vx..vz] with t_s
     # elapsed from the ballistic burnout state the GMAT coast starts at; the
@@ -242,14 +257,14 @@ def test_xtool_mars_cruise_gmat(tmp_path):
     at the 1 Hz SRLOG minimum, mars_cruise.toml header). The gate compares the
     3D position difference at the end of the committed arc; the full "arrival
     SOI" propagation is the maintainer variant recorded in the manifest.
-    Deferred until GMAT freezes the cruise.
+    Frozen and measuring: |dr| = 952.550 m against the 100 km gate.
     """
     truth_path = CROSSTOOL / "truth_gmat_mars_cruise.csv"
     if not truth_path.is_file():
         pytest.skip(
             "XTOOL-MARS-CRUISE-GMAT: frozen GMAT truth truth_gmat_mars_cruise.csv "
-            f"pending (GMAT not available at Phase 8 execution) -- deferred to "
-            f"{_CHECKLIST_ITEM}"
+            f"is absent from this checkout; it is generated offline on the "
+            f"maintainer GMAT machine (D-15) per {_CHECKLIST_ITEM}"
         )
     truth = _load_truth_csv("truth_gmat_mars_cruise.csv")
     r_sim, _ = _run_and_sample("mars_cruise.toml", tmp_path)
@@ -276,11 +291,11 @@ def _load_arrival_csv(name: str) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Self-consistency proof: the RMS/grid/CSV machinery is correct even though no
-# external truth is present for the Phase 8 cases. Feeding the sim's OWN
-# re-propagated states through the identical frozen-truth CSV path must give a
-# position RMS of ~0 -- any nonzero value would be a defect in the comparison
-# code, not in the (absent) external tool.
+# Self-consistency proof: the RMS/grid/CSV machinery is correct independent of
+# any external tool. Feeding the sim's OWN re-propagated states through the
+# identical frozen-truth CSV path must give a position RMS of ~0 -- any nonzero
+# value would be a defect in the comparison code rather than a real cross-tool
+# residual, and this holds whether or not an external truth CSV is present.
 # ---------------------------------------------------------------------------
 
 
@@ -292,9 +307,10 @@ def test_rms_machinery_is_correct_on_sim_own_states(tmp_path):
     grid alignment, position RMS) against a fresh re-propagation of the same
     mission. Because the run is bit-deterministic (D-10), the RMS must be
     exactly 0; the assertion allows a sub-micrometre band so it tests the
-    machinery, not floating-point identity. This is what lets a Phase 8 gate
-    whose truth CSV is absent skip honestly: the comparison path it will use
-    is proven correct here without any external tool.
+    machinery, not floating-point identity. This separates the two failure
+    modes the cross-tool gates confound: a residual reported by a gate above is
+    a real tool difference, because the comparison path itself is proven here
+    to contribute nothing, with or without an external tool present.
     """
     # A short, fast, self-contained mission with a 1 Hz truth log on exact
     # integer seconds. molniya runs in ~1 s and needs only committed data.

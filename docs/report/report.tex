@@ -59,10 +59,10 @@ commit. This report describes the architecture, the physical-model set, the
 seven-layer verification and validation approach and its measured results, and
 two representative case studies (a translunar transfer and an Earth--Mars
 transfer) whose figures are regenerated bit-for-bit from committed seeds. The
-acceptance suite passes \num{29} of \num{29} checks; six frozen cross-tool
-comparisons are measured, and the one remaining case of the extended validation
-campaign (the trans-lunar arrival, awaiting a single external-tool re-freeze)
-is identified honestly as pending.
+acceptance suite passes \num{29} of \num{29} checks; seven frozen cross-tool
+comparisons are measured, every one inside its gate; and the work that remains
+--- a long-arc cross-platform divergence re-measurement and the
+Raspberry~Pi~5 hardware qualification --- is identified honestly as pending.
 \end{abstract}
 
 \section{Introduction and Related Tools}
@@ -223,8 +223,8 @@ so a passing verdict is evidence rather than a green light that cannot turn red.
 \subsection{Measured cross-tool comparisons}
 \label{sec:vv-crosstool}
 
-Six frozen cross-tool cases are measured and gated: the two low-Earth-orbit
-cases frozen at Phase~3 and four regime cases frozen for the Phase~8 campaign.
+Seven frozen cross-tool cases are measured and gated: the two low-Earth-orbit
+cases frozen at Phase~3 and five regime cases frozen for the Phase~8 campaign.
 All external truth was generated offline by the maintainer and frozen in-repo
 with full provenance manifests; continuous integration never installs GMAT or
 Orekit and consumes only the frozen truth. The Earth-regime cases run against a
@@ -233,8 +233,36 @@ higher-order Earth-orientation corrections zeroed on both sides, with the
 residual an irreducible difference between the two tools' frame-reduction
 chains --- while the Moon-, Mars-, and Sun-centred cases use body-centred
 celestial-reference-frame axes that the Earth-orientation convention does not
-touch. Table~\ref{tab:crosstool} gives the Phase~3 results and
-Table~\ref{tab:crosstool8} the Phase~8 results.
+touch.
+
+The planetary ephemeris is a second irreducible tool difference of the same
+kind. The simulator reads the committed DE440 excerpt, while the Phase~8 GMAT
+runs set no \texttt{SolarSystem.EphemerisSource} and therefore took the
+portable install's default DE405 planetary and lunar source, as the GMAT run
+log records and as the provenance manifest now states; that install carries no
+DE440 file to select. The difference is left in place rather than tuned away,
+because it is precisely the class of tool-to-tool disagreement this layer
+exists to measure, and the Phase~8 residuals bound it empirically below every
+gate --- most tightly by the trans-lunar case, the most
+lunar-ephemeris-sensitive of the set, at \SI{18.09}{\meter} against a
+\SI{1}{\kilo\meter} gate.
+
+A control run attributes almost all of that trans-lunar residual to a third
+convention difference rather than to dynamics. The trans-lunar script models a
+point-mass Earth and so declares no gravity field, which leaves GMAT no
+gravitational parameter to adopt and its built-in
+\SI{3.986004415e14}{\meter\cubed\per\second\squared} in force, against the
+simulator's \SI{3.986004418e14}{\meter\cubed\per\second\squared} --- a relative
+difference of \num{7.5e-10}. Re-running the identical script with only that
+constant changed displaces the arrival state by \SI{18.62}{\meter}, at
+\ang{7.95} to the measured residual; removing it leaves the two tools agreeing
+to \SI{2.60}{\meter} over the \SI{455401}{\second} coast, \num{0.26}\,\% of the
+gate. The frozen truth remains the unmodified run and the gate remains the
+requirement bound: the control quantifies the convention, and no simulator
+constant was changed to close it. Table~\ref{tab:crosstool} gives the Phase~3 results
+and Table~\ref{tab:crosstool8} the Phase~8 results;
+Section~\ref{sec:vv-translunar} records the invalidated first freeze of the
+trans-lunar case.
 
 \begin{table}[htbp]
 \centering
@@ -270,9 +298,10 @@ $\SI{3.3e-5}{\meter}$ RMS by a convergence rerun.
 \centering
 \caption{Phase~8 frozen cross-tool comparisons that are measured, all against
   GMAT R2026a truth. The first three rows are the 3D position RMS over all
-  shared 60~s epochs across 7 days; the cruise row is the 3D position
-  difference at the end of the committed 7-day arc. Test identifiers are the
-  case identifiers in
+  shared 60~s epochs across 7 days; the last two rows are single-epoch 3D
+  position differences --- at the end of the committed 7-day cruise arc and at
+  the lunar sphere-of-influence arrival respectively --- not 7-day RMS values.
+  Test identifiers are the case identifiers in
   \texttt{tests/python/test\_crosstool\_frozen\_truth.py}.}
 \label{tab:crosstool8}
 \small
@@ -286,28 +315,33 @@ Lunar orbiter (GRGM1200A $50\times50$, SRP), 7~d & 7.233 &
   ${<}\,\SI{100}{\meter}$ & \texttt{XTOOL-LUNAR-GMAT} \\
 Mars orbiter (MRO120F $20\times20$, SRP), 7~d & 79.479 &
   ${<}\,\SI{100}{\meter}$ & \texttt{XTOOL-MARS-ORBITER-GMAT} \\
-Earth--Mars cruise, arrival $\Delta r$ & 952.550 &
+Earth--Mars cruise, arc-end $\Delta r$ & 952.550 &
   ${<}\,\SI{100}{\kilo\meter}$ & \texttt{XTOOL-MARS-CRUISE-GMAT} \\
+Trans-lunar transfer, arrival $\Delta r$ & 18.090 &
+  ${<}\,\SI{1}{\kilo\meter}$ & \texttt{XTOOL-TRANSLUNAR-GMAT} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The Molniya, lunar-orbiter, and cruise residuals sit ${\sim}624\times$,
-${\sim}14\times$, and ${\sim}105\times$ inside their gates. The Mars-orbiter
+The Molniya, lunar-orbiter, cruise, and trans-lunar residuals sit
+${\sim}624\times$, ${\sim}14\times$, ${\sim}105\times$, and ${\sim}55\times$
+inside their gates. The Mars-orbiter
 residual of \SI{79.5}{\meter} meets its \SI{100}{\meter} gate with the
 thinnest margin of the set (${\sim}1.26\times$); the provenance manifest
 records the irreducible tool differences left in place for that case, with the
 two tools' Mars body-fixed-orientation models the recorded candidate
 contributor.
 
-\subsection{Remaining cross-tool case (pending)}
-\label{sec:vv-pending}
+\subsection{Trans-lunar case: an invalidated first freeze}
+\label{sec:vv-translunar}
 
-One case of the campaign --- the trans-lunar arrival, gated at
-${<}\,\SI{1}{\kilo\meter}$ position difference at the lunar
-sphere-of-influence arrival --- is pending a re-freeze of its GMAT truth and
-is reported as pending, never as an invented result. Its first freeze was
-invalidated by a replication-state error, documented in full in the provenance
+The trans-lunar case --- gated at ${<}\,\SI{1}{\kilo\meter}$ position
+difference at the lunar sphere-of-influence arrival --- reached the
+\SI{18.090}{\meter} result of Table~\ref{tab:crosstool8} only on a second
+freeze of its GMAT truth. The first freeze is recorded here rather than erased,
+because the failure and its diagnosis are the evidence that the second freeze
+is sound. That first freeze was invalidated by a replication-state error,
+documented in full in the provenance
 manifest: the replication coasted from the simulator's cutoff-\emph{event}
 state, which is one integrator step before ballistic burnout under the
 propulsion model's per-step spool-down discipline, so the replicated coast was
@@ -321,10 +355,18 @@ $\sim\!\SI{45}{\kilo\meter}$ on its own; the corrected gate maps truth-file
 time to mission time explicitly and asserts the epoch.) The
 diagnosis simultaneously measured the two tools' agreement: the simulator's
 own ballistic coast of the identical mid-burn state reproduced the invalidated
-GMAT arrival state to \SI{22}{\meter} over the 5.3-day transfer. The corrected
-replication (burnout state, verified to reproduce the mission's own arrival
-state bit-exactly on the simulator side) is committed, and the single
-re-freeze run is registered on the pre-release checklist. An illustrative
+GMAT arrival state to \SI{22}{\meter} over the 5.3-day transfer.
+
+The corrected replication --- the burnout state, verified to reproduce the
+mission's own arrival state bit-exactly on the simulator side --- was re-frozen
+from the same pinned portable GMAT install recorded in the manifest's
+toolchain-provenance block, which regenerated the committed Phase~3 gravity
+truth byte-identically as a toolchain canary before the run. The re-freeze
+reproduced the requested \SI{455401}{\second} coast span to
+\SI{1.29e-7}{\second}; at the arrival epoch the two tools place the spacecraft
+at \SI{397664.930}{\kilo\meter} and \SI{397664.947}{\kilo\meter} geocentric
+distance, differing by \SI{18.089824}{\meter} in position and
+\SI{5.379870e-5}{\meter\per\second} in velocity. An illustrative
 Lunar Reconnaissance Orbiter ephemeris comparison remains a report case study
 only, with no gate, because the real spacecraft's maneuver and
 surface-property history is unmodeled.
@@ -433,13 +475,12 @@ carries evolving true state to a GNC component under a batch run --- is enforced
 by construction and pinned by test.
 
 Future work follows the phased roadmap to a completed validation campaign and to
-the applications above. Three items are called out as explicitly pending. First,
-the trans-lunar cross-tool case of Section~\ref{sec:vv-pending} awaits a single
-maintainer re-freeze of its GMAT truth from the corrected replication state. Second, cross-platform
-final-state divergence, bounded at $\le\!10^{-9}$ relative and measured on
+the applications above. Two items are called out as explicitly pending. First,
+cross-platform final-state divergence, bounded at $\le\!10^{-9}$ relative and
+measured on
 short reference arcs, must be re-measured on long heliocentric arcs where
 transcendental-function differences accumulate, and the bound tightened or
-per-regime-split as the data require. Third, the Raspberry~Pi~5 hardware
+per-regime-split as the data require. Second, the Raspberry~Pi~5 hardware
 qualification --- the sub-\SI{60}{\second} cislunar and $\ge\!100\times$
 real-time ascent performance gates, the offline viewer check, and the aarch64
 cross-platform learned-model comparison --- is prepared as scripted,
@@ -458,11 +499,11 @@ fidelity, and that such an instrument is the right substrate for
 machine-learning navigation research because every training signal it emits
 traces to a derived, cited, and tested model. The model set is complete through
 the current phase and documented chapter by chapter; the acceptance suite passes
-in full; six cross-tool comparisons are measured inside their gates; and the
+in full; seven cross-tool comparisons are measured inside their gates; and the
 case-study figures regenerate bit-for-bit from committed seeds. The work that
-remains --- the trans-lunar cross-tool re-freeze and the hardware
-qualification --- is specified, prepared, and registered rather than assumed
-complete, in keeping with the project's honest-status discipline.
+remains --- the long-arc cross-platform divergence re-measurement and the
+hardware qualification --- is specified, prepared, and registered rather than
+assumed complete, in keeping with the project's honest-status discipline.
 
 \printbibliography
 

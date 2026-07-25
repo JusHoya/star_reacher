@@ -1,0 +1,8 @@
+# Frozen GMAT R2026a truth for the Phase 8 trans-lunar cross-tool case
+# (exit criterion 1, D-15): the single arrival-epoch EarthICRF Cartesian
+# state at elapsed-from-burnout 455401.0 s (lunar-SOI arrival; the
+# coast starts at the tli t = 354 s ballistic-burnout state, so mission
+# time is 455401.0 + 354 s). The gate is the position difference vs
+# the tli truth log at this epoch < 1 km.
+t_s,x_m,y_m,z_m,vx_mps,vy_mps,vz_mps
+455401.0,-7.3327423256090879e+07,3.4544702769736880e+08,1.8283011253201032e+08,-1.1283587239377169e+02,-5.0615769748268143e+01,-3.2071673338903160e+01

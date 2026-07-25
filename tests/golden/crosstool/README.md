@@ -186,11 +186,13 @@ zero-EOP startup override as Phase 3.
   ecc 0.74, inc 63.4 deg (critical), argp 270 deg — period ~11.97 h, apogee
   ~40,100 km where the third-body torque is the leading non-Keplerian signal.
 - **Lunar orbiter** (Moon): GRGM1200A 50x50 harmonic gravity in the Moon
-  principal-axis frame (built from the DE440 lunar librations — this is the
-  case that needs the `moon_librations` excerpt segment, i.e. the committed
-  `excerpt_de440s_lunar.sreph`), plus the Sun and Earth point masses (the
-  lunar-regime pair) and cannonball SRP (Moon occulter). ~100 km circular
-  polar mapping orbit, stable unmaneuvered over 7 days.
+  principal-axis frame (the simulator builds that frame from the DE440 lunar
+  librations — this is the case that needs the `moon_librations` excerpt
+  segment, i.e. the committed `excerpt_de440s_lunar.sreph`; GMAT's own
+  orientation source is covered under "Planetary ephemeris source" below),
+  plus the Sun and Earth point masses (the lunar-regime pair) and cannonball
+  SRP (Moon occulter). ~100 km circular polar mapping orbit, stable
+  unmaneuvered over 7 days.
 - **Mars orbiter** (Mars): MRO120F 20x20 harmonic gravity in the analytic
   IAU 2015 Mars body-fixed frame (no ephemeris orientation data needed), plus
   the Sun point mass and cannonball SRP (Mars occulter). ~400 km near-polar
@@ -200,32 +202,87 @@ zero-EOP startup override as Phase 3.
   (the tli coast force set), compared at the lunar-SOI arrival epoch. The
   finite TLI burn is a simulator-internal maneuver and is not replicated; the
   gate measures the transfer trajectory. Burnout is t = 354 s, not the meco
-  event time 353 s: the cutoff is commanded at 353 s, but the delivered
-  thrust level follows the per-step spool discipline on the 1 s integrator
-  grid and reaches exactly zero one step later, so the truth log gains
+  event time 353 s: the cutoff is commanded at 353 s, but the D-5 zero-order
+  hold applies it one cycle late, because the control cycle advances the RK4
+  translational step before it advances the engine states (the per-cycle
+  ordering in `docs/mathlib/chapters/vehicle6dof.tex`, implemented in
+  `cpp/src/vehicle_cycle.cpp`), so the [353, 354) step integrates at the
+  pre-command throttle level. The kick stage's `spool_time_s` = 0.5 s is
+  shorter than the 1 s cycle, so no ramp is spread over steps and the level
+  clamps to zero in that single advance. The truth log therefore gains
   +15.3 m/s of equivalent prograde delta-v over [353, 354) and 354 s is the
   first ballistic epoch (a first freeze from the 353 s state was invalidated
-  by exactly this; see the manifest's deferral note).
+  by exactly this; see the freeze history under "Phase 8 frozen truth" below).
 - **Earth-Mars cruise** (heliocentric): Sun two-body plus Earth/Luna/Venus/
   Mars/Jupiter point masses and cannonball SRP (no occulter), over the
   committed 7-day report arc. The full 259-day "arrival SOI" propagation is
   the maintainer variant noted in `gmat_mars_cruise.script`.
 
-## Phase 8 deferral (frozen truth pending)
+### Planetary ephemeris source
 
-GMAT is not installed on the Phase 8 execution host (the same class of blocker
-as the Phase 3 maintainer boundary, D-15), so the Phase 8 truth CSVs and the
-lunar libration excerpt were **deferred through the PRD section 9 valve** to
-`docs/release_checklist.md` item 10. Status 2026-07-24: the lunar excerpt is
-committed, four of the five truth CSVs (Molniya, lunar orbiter, Mars orbiter,
-Mars cruise) are frozen and their gates measure — the values are recorded in
-`manifest.toml` — and the trans-lunar case is pending a single re-freeze (its
-first freeze started from the mid-burn t = 353 s state and was invalidated;
-root cause and the corrected-script details are in the manifest's deferral
-note). A gate whose truth CSV is absent skips with an explicit deferral
-message naming that checklist item — never a vacuous pass. That the
-comparison machinery is correct despite absent external truth is proven by
+The two tools do not read the same planetary ephemeris, and the case `.script`
+headers name the intended source rather than the one GMAT used. As-run: no
+Phase 8 `.script` sets `SolarSystem.EphemerisSource`, so GMAT fell back to its
+default, and its run log records the planetary source as **DE405**, loaded
+from `data/planetary_ephem/spk/DE405AllPlanets.bsp`. The maintainer's portable
+GMAT R2026a install ships only `leDE1941.405`, `leDE1900.421`, and
+`leDE18002100.424`, so no DE440 source was selectable on it. The simulator
+side reads the committed DE440 excerpts throughout. The `.script` files are
+committed as-run artifacts whose SHA-256 pins `manifest.toml` carries, and the
+frozen truth was generated from exactly those bytes, so they are not edited;
+this note and the matching statement in `manifest.toml` are the correction of
+record.
+
+The resulting DE440-vs-DE405 difference in third-body positions and in GMAT's
+lunar orientation is an irreducible tool difference of the same kind as the
+FK5/IAU-76-vs-CIO frame-chain difference already recorded for GMAT — the kind
+of difference exit criterion 1 exists to measure rather than to eliminate. It
+is bounded empirically below every gate by the five measured residuals in the
+next section, and most tightly by the trans-lunar case (18.089824 m against a
+1 km gate), the most lunar-ephemeris-sensitive case in the set.
+
+## Phase 8 frozen truth (deferral discharged 2026-07-25)
+
+GMAT was not installed on the Phase 8 execution host (the same class of
+blocker as the Phase 3 maintainer boundary, D-15), so the Phase 8 truth CSVs
+and the lunar libration excerpt were **deferred through the PRD section 9
+valve** to `docs/release_checklist.md` item 10. That item is now discharged:
+the lunar excerpt and all five truth CSVs are committed, and all five gates
+measure and are met.
+
+| Gate (test id) | Baseline file (GMAT R2026a) | Gate | Frozen measurement |
+|---|---|---|---|
+| XTOOL-MOLNIYA-GMAT | `truth_gmat_molniya.csv` | RMS < 100 m / 7 d | **0.160317 m** |
+| XTOOL-LUNAR-GMAT | `truth_gmat_lunar_orbiter.csv` | RMS < 100 m / 7 d | **7.232688 m** |
+| XTOOL-MARS-ORBITER-GMAT | `truth_gmat_mars_orbiter.csv` | RMS < 100 m / 7 d | **79.478630 m** |
+| XTOOL-TRANSLUNAR-GMAT | `truth_gmat_translunar.csv` | < 1 km at lunar arrival | **18.089824 m** |
+| XTOOL-MARS-CRUISE-GMAT | `truth_gmat_mars_cruise.csv` | < 100 km at arrival | **952.550 m** |
+
+The command lines, artifact SHA-256 pins, and the toolchain provenance behind
+each value are recorded in `manifest.toml`. The Mars-orbiter case carries the
+thinnest margin (~1.26x); the Molniya case the widest (~624x).
+
+Freeze history (recorded, not erased): the trans-lunar case was frozen twice.
+The first freeze started the GMAT coast from the mid-burn t = 353 s state
+instead of the t = 354 s ballistic-burnout state, which left a 75,189 km miss
+at the matched epoch and invalidated the CSV; a ~45 km comparison-epoch defect
+was fixed alongside it. The 2026-07-25 re-freeze ran
+`python scripts/crosstool/run_gmat_phase8.py --case translunar` with no
+`--arrival-s` override, so the committed 455401 s default span stands, and
+GMAT's last reported row is `ElapsedSecs` = 455401.000000129 s — the requested
+span reproduced to 1.29e-7 s. The arrival mission time is 455755.0 s (455401 s
+of CSV elapsed time plus the 354 s burnout offset), where the `tli` truth log
+has an exact row and where both tools place the spacecraft ~397,665 km from
+Earth (simulator 397664.930 km, GMAT 397664.947 km); the companion velocity
+difference is 5.379870e-05 m/s. In the same session the Molniya and
+Mars-cruise CSVs were regenerated byte-identically, and a toolchain canary run
+first reproduced the committed Phase 3 truth `truth_gmat_leo_gravity_8x8.csv`
+byte-identically, tying the freeze to the install pinned in `manifest.toml`.
+
+A gate whose truth CSV is absent from a checkout still skips with an explicit
+message naming that checklist item — never a vacuous pass. That the comparison
+machinery is correct independent of the external truth is proven by
 `test_rms_machinery_is_correct_on_sim_own_states`, which feeds the sim's own
 re-propagated states through the identical CSV/grid/RMS path and measures a
-position RMS of ~5e-9 m (i.e. the RMS, grid-alignment, and CSV round-trip are
-sound; only the external tool is missing).
+position RMS of 4.618e-09 m (i.e. the RMS, grid-alignment, and CSV round-trip
+contribute nothing to any residual above).
