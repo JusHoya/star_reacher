@@ -1,12 +1,12 @@
 # Release handoff — v0.8.0 (Phase 8 close)
 
-**Status: prepared, NOT released.** The Phase 8 work is complete and merged to
-`main` at `6d8b3af`, and every exit-criterion clause closable on the hosts
-available to the maintainer is closed and gated there. Two things stand between
-this tree and the tag, and neither is a measurement of the physics: a
-confirmation that can only be produced after the phase merge (a green `nightly`
-run, checklist item 3) and an action that only the maintainer takes (pushing the
-public release tag, a D-19 disclosure event, checklist item 11). The clauses
+**Status: RELEASED 2026-07-27 as `v0.8.0`, tagged at `3e111ad`.** The Phase 8
+work is complete and merged to `main` at `6d8b3af`, every exit-criterion clause
+closable on the hosts available to the maintainer is closed and gated there,
+and both release-gating items are discharged: the green post-merge `nightly`
+run (checklist item 3) and the four-platform wheel build and smoke that the tag
+triggered (item 11, a D-19 public disclosure event). This document is retained
+as the record of what was run to qualify the release, not as a to-do list. The clauses
 that need a resource no available host has — Raspberry Pi 5 silicon, a MATLAB
 license — were re-scheduled on 2026-07-26 into **Phase 9, hardware and
 external-tool validation**, together with the one deferred frozen-format
@@ -85,11 +85,18 @@ not before:
       CI on the merge commit was green too, but could not stand in for this:
       the rolling performance history is only exercised end to end by a
       `nightly` run on the code the release is cut from.
-- [ ] **Handoff C** — the `v0.8.0` tag is pushed and the `release` job builds
+- [x] **Handoff C** — the `v0.8.0` tag is pushed and the `release` job builds
       the four-platform wheels and passes `verify --quick` on each
-      (`release_checklist.md` item 11).
+      (`release_checklist.md` item 11). Discharged 2026-07-27: the tag at
+      `3e111ad` ran green on `ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15`
+      and `windows-2022`, with all four `wheels-<os>` artifacts uploaded —
+      <https://github.com/JusHoya/star_reacher/actions/runs/30238694917>. The
+      first attempt, at `ebc4655`, went red on Windows because cibuildwheel's
+      Windows `auto` architectures also build 32-bit wheels, which FR-32 never
+      targeted and which cannot install (matplotlib publishes no `win32`
+      wheel); item 11 carries that record.
 
-Until both hold, this is a prepared release candidate, not a release. Neither
+**Both items are discharged: v0.8.0 is released.** Neither
 item measures Pi 5 performance, and the release must not claim any: the nightly
 `ubuntu-24.04-arm` leg is an aarch64 proxy, not a Pi 5, and the Pi 5 clauses
 close in Phase 9.

@@ -130,9 +130,15 @@ merge for item 3, the tag push itself for item 11.
   the GitHub release.
 - **Records to:** the `release` workflow run history and its uploaded wheel
   artifacts (self-recording).
-- **Status:** pending, on its second tag attempt. The release job and its tag
-  trigger are committed; the tag is a maintainer action (a public disclosure
-  event, D-19) and is not pushed as part of the phase merge.
+- **Status:** discharged 2026-07-27, on the second tag attempt. The `v0.8.0`
+  tag at `3e111ad` ran the `release` job green on all four platforms —
+  `ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15` and `windows-2022` — each
+  building its cp311/cp312/cp313 wheels with cibuildwheel and passing
+  `star verify --quick` in an isolated venv holding only the built wheel and
+  its declared runtime dependencies. All four `wheels-<os>` artifacts uploaded
+  (2.7–3.3 MB each, inside the FR-32 20 MB per-wheel budget):
+  <https://github.com/JusHoya/star_reacher/actions/runs/30238694917>. With
+  item 3 discharged 2026-07-27 as well, the v0.8.0 release gate is closed.
 
   *First attempt, 2026-07-27, failed — recorded because the defect was in this
   item's own gate.* The `v0.8.0` tag was pushed at `ebc4655` and the release
