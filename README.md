@@ -13,7 +13,7 @@
 [![ci](https://github.com/JusHoya/star_reacher/actions/workflows/ci.yml/badge.svg)](https://github.com/JusHoya/star_reacher/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-6E56CF?style=flat-square)](LICENSE)
 
-[Why](#why) · [Architecture](#architecture) · [Quickstart](#quickstart) · [Design guarantees](#design-guarantees) · [Roadmap](#roadmap) · [Cite](#how-to-cite) · [License](#license)
+[Why](#why) · [Architecture](#architecture) · [Quickstart](#quickstart) · [Gallery](#example-gallery) · [Design guarantees](#design-guarantees) · [Roadmap](#roadmap) · [Cite](#how-to-cite) · [License](#license)
 
 </div>
 
@@ -78,10 +78,34 @@ Four commands, all real and copy-pasteable today (verification-first onboarding,
 pip install .                                  # build the native core and install the star CLI
 star verify --quick                            # run the acceptance smoke tier (< 60 s; ends "VERIFY: PASS")
 star run missions/twobody_leo.toml             # propagate the two-body reference mission -> out/twobody-leo/
-star export --csv out/twobody-leo/run.srlog    # export every logged channel to CSV, round-trip exact
+star view out/twobody-leo/run.srlog            # write the self-contained HTML 3D viewer -> out/twobody-leo/run.html
 ```
 
-`star plot` renders the quicklook PNG set headless (groundtrack, altitude/speed, osculating elements, attitude and rates, mass/thrust, dynamic pressure and Mach, per-source force/torque budgets — event markers on every time axis), `star view` writes a self-contained HTML 3D playback viewer that opens offline, and `star docs` builds both PDFs if a TeX distribution with `latexmk` and `biber` is installed. The everyday loop is three commands with zero intermediate steps: run a baseline, edit one TOML value, run the variant, overlay the plots (`star plot a/run.srlog b/run.srlog`) — every curve labeled with its resolved-config hash so a plot can never be misattributed to the wrong edit.
+The fourth command writes `out/twobody-leo/run.html` — a single self-contained WebGL playback file: open it in any browser (it makes zero network requests) to see the rendered trajectory. That is the four-command path from a clean machine to a rendered 3D trajectory (DX-1/DX-5), and every command above is copy-pasteable today. The [fresh-machine walkthrough](docs/walkthrough.md) runs the same path from a clean clone, adds the read-the-log-from-NumPy step, and lists it command by command.
+
+`star plot` renders the quicklook PNG set headless (groundtrack, altitude/speed, osculating elements, attitude and rates, mass/thrust, dynamic pressure and Mach, per-source force/torque budgets — event markers on every time axis; see the [example gallery](#example-gallery)), `star export --csv|--npz|--parquet` writes every logged channel for external tooling, and `star docs` builds both PDFs if a TeX distribution with `latexmk` and `biber` is installed. The everyday loop is three commands with zero intermediate steps: run a baseline, edit one TOML value, run the variant, overlay the plots (`star plot a/run.srlog b/run.srlog`) — every curve labeled with its resolved-config hash so a plot can never be misattributed to the wrong edit.
+
+## Example gallery
+
+Representative `star plot` and `star view` output, every image regenerated from
+a committed mission by [`docs/gallery/generate.py`](docs/gallery/generate.py)
+(the commands it runs are the ones documented above). The PNG bytes are a pure
+function of the log and the pinned matplotlib version — no timestamps, no host
+data — so a regeneration is byte-identical (the FR-21 determinism discipline
+applied to a derived artifact).
+
+| | |
+| --- | --- |
+| [![Groundtrack of an inclined LEO: the classic sinusoidal ITRF sub-vehicle track over an embedded coastline, with run-start and run-end event markers.](docs/gallery/groundtrack_inclined_leo.png)](docs/gallery/groundtrack_inclined_leo.png)<br>**Groundtrack** — inclined LEO, WGS-84 geodetic sub-vehicle track in ITRF over the embedded coastline (`missions/leo_gravity_8x8.toml`). | [![Six osculating orbital elements of the inclined LEO over roughly six orbits, showing J2 short-period oscillations in semi-major axis, eccentricity, and inclination and the secular drift of RAAN and argument of periapsis.](docs/gallery/elements_inclined_leo.png)](docs/gallery/elements_inclined_leo.png)<br>**Osculating elements** — the loader-derived elements over ~6 orbits, showing J2 short-period and secular structure. |
+| [![Altitude and inertial speed of a scripted two-stage ascent versus time, with vertical event ticks at ignition, staging, and orbit insertion; altitude rises smoothly to roughly 300 km and speed to about 8.4 km per second.](docs/gallery/altitude_speed_ascent.png)](docs/gallery/altitude_speed_ascent.png)<br>**Altitude & speed** — scripted pad-to-LEO ascent with staging event ticks (`missions/ascent_leo.toml`). | [![Per-source force and torque magnitudes of the ascent on a logarithmic axis: gravity, thrust, and aerodynamic force in the upper panel and aerodynamic and gravity-gradient torque in the lower panel, with event markers.](docs/gallery/forces_by_source_ascent.png)](docs/gallery/forces_by_source_ascent.png)<br>**Force/torque budget** — the per-source model-scrutiny channel on a log axis. |
+| [![Vehicle mass and thrust magnitude of the ascent versus time: mass falls in two straight segments with a discontinuous drop at staging, and thrust shows the higher stage-1 level rising with altitude followed by the lower stage-2 level.](docs/gallery/mass_thrust_ascent.png)](docs/gallery/mass_thrust_ascent.png)<br>**Mass & thrust** — two-stage depletion with the staging mass jump and stage thrust levels. | [![Static three-dimensional still of the Mission A trans-lunar transfer trajectory in the Earth-centered GCRF frame, an arc leaving a small Earth sphere and curving out to roughly 300000 km, previewing the interactive viewer.](docs/gallery/trajectory3d_cislunar.png)](docs/gallery/trajectory3d_cislunar.png)<br>**3D trajectory** — a static still of the Mission A trans-lunar coast (`missions/mission_a_cislunar.toml`); `star view <run.srlog>` writes the interactive WebGL version. |
+
+The **3D view** is interactive in the browser: `star run missions/mission_a_cislunar.toml`
+then `star view out/mission-a-cislunar/run.srlog` writes one self-contained HTML
+file (scrub bar with event ticks, play/pause, 0.1×–1000× speed, four camera
+modes, toggleable overlays) that opens offline. The still above is rendered
+from the same truth channel the viewer decimates, as a preview for readers
+browsing on GitHub.
 
 ## Design guarantees
 
@@ -107,7 +131,7 @@ Eight independently shippable phases, each gated on red-team-checkable exit crit
 | 5 | **Data out** — `star plot`, `star view` HTML playback, NPZ/Parquet exporters, Mission A + Mars-cruise missions, performance gates | Headless PNGs gated by golden vectors; viewer opens offline with zero network requests, exact scrub-extreme epochs, measured decimation bound; NPZ round-trips bit-exactly and Parquet loads in pandas (CI-gated); GMAT ephemeris-import transcript committed; Pi 5 gates (cislunar < 60 s wall, ascent ≥ 100× real time, SRLOG ≥ 50 MB/s) live on the ARM64 proxy leg with a documented Pi 5 hardware checklist; dependency and wheel-size minimality gates live | Complete — the MATLAB `parquetread` transcript and the Pi 5 hardware checklist run are deferred, fully prepared, to the [pre-release checklist](docs/release_checklist.md) (PRD §9 valve), which also tracks the first post-merge nightly run |
 | 6 | **Sensors, GNC, stepping API** — `ISensor` suite, GNC plugin interface (C++/Python), `Sim` stepping API, `star consistency` | Sensor statistics inside chi-square bounds; Allan deviation recovers IMU coefficients within ±10 %; reference EKF passes ensemble NEES/NIS 95 % gates; step-wise and batch runs hash-identical; the FR-32 ascent target re-gated with the C++ GNC stack in the loop | Deliverables complete, all ten criteria measured — but an internal evidence audit found the gates behind criteria 1, 2, 3, 7, and 9 weaker than their wording implies, so only the criteria it found sound are wired into `star verify`. The open gate defects are listed in the PRD's Phase 6 entry and carried as named remediation items; the Pi 5 hardware clause of criterion 10 is deferred, fully prepared, to the [pre-release checklist](docs/release_checklist.md) (PRD §9 valve) |
 | 7 | **Batch, Monte Carlo, ML layer** — `star mc` sweeps, MC regression goldens, Gymnasium + ONNX extras | 256/256 sweep manifest success with per-run reproducibility; MC statistics within distributional bounds; `check_env` passes; ONNX controller closes the loop on x86-64 and Pi 5 | Complete — the four criteria are met and gated: the 256-run/8-worker LHS sweep finishes 256/256 and any entry re-runs via `star run` to its logged SHA-256; MC ensemble statistics gate against frozen goldens at chi-square/Anderson–Darling 99 % bounds behind a two-key golden-update path; `check_env` passes on `SpaceEnv` with Gym-side seeding bit-identical to core seeding; and an ONNX MLP fitted in an external framework closes the loop on x86-64. The literal Pi 5 and the x86-64-versus-aarch64 cross-platform clauses of criterion 4 are deferred, fully prepared, to the [pre-release checklist](docs/release_checklist.md) item 9 (PRD §9 valve) |
-| 8 | **Validation campaign, report, release** — full cross-tool table, completed report, fresh-machine walkthrough, tagged release | Every cross-tool case within stated tolerance (e.g., trans-lunar < 1 km at arrival); byte-identical doc rebuilds; fresh-machine README walkthrough succeeds; release wheels pass `verify --quick` on all four platforms | Planned |
+| 8 | **Validation campaign, report, release** — full cross-tool table, completed report, fresh-machine walkthrough, tagged release | Every cross-tool case within stated tolerance (e.g., trans-lunar < 1 km at arrival); byte-identical doc rebuilds; fresh-machine README walkthrough succeeds; release wheels pass `verify --quick` on all four platforms | **Prepared — release not yet claimed** ([handoff](docs/release_handoff.md)). Deliverables complete and every locally-closable criterion met and verified: the scientific report and math library are complete (chapter-accretion lint green, every code-cited equation label and validation-table test ID resolves) and build warning-clean via `star docs`; the report case-study figures regenerate bit-for-bit under the pinned matplotlib/FreeType; the fresh-machine [walkthrough](docs/walkthrough.md) reaches a rendered trajectory using README commands only and `star verify` passes (29/29) in ~9 s on x86-64; the example gallery is committed. The extended cross-tool table is complete: all five frozen-GMAT cases are measured and recorded, each inside its gate (Molniya 0.16 m, lunar orbiter 7.2 m, Mars orbiter 79.5 m, Earth–Mars cruise 0.95 km at the end of its committed 7-day arc, trans-lunar arrival 18.1 m against the 1 km tolerance; `tests/golden/crosstool/manifest.toml`), which discharges [pre-release checklist](docs/release_checklist.md) item 10. The cruise case's substituted comparison epoch — arc end rather than Mars-SOI arrival — is registered as checklist item 12, a residual rather than a release blocker. Two clauses remain and gate the release: the `< 10 min on a Pi 5` timing clause is deferred, fully prepared, to checklist item 1 (PRD §9 valve), and the four-platform release wheels build and `verify --quick`-smoke in the tag-triggered `release` job (item 11). The `v0.8.0` tag is not pushed until those discharge — see the [release handoff](docs/release_handoff.md) |
 
 ## Data in, data out
 
@@ -167,7 +191,7 @@ Citation metadata lives in [`CITATION.cff`](CITATION.cff) (validated by `cffconv
   title   = {star\_reacher},
   year    = {2026},
   url     = {https://github.com/JusHoya/star_reacher},
-  version = {0.7.0}
+  version = {0.8.0}
 }
 ```
 
@@ -208,7 +232,7 @@ Determinism lives in a single-threaded C++ core with fixed evaluation order and 
 <details>
 <summary><b>Will it really run on a Raspberry Pi 5?</b></summary>
 
-That is the hardware floor and a binding performance gate, not an afterthought: a multi-day cislunar transfer targets under 60 s of wall time on a single Pi 5 core, and `star verify` runs the acceptance subset in under 10 minutes on the same hardware.
+That is the hardware floor and a binding performance gate, not an afterthought: a multi-day cislunar transfer targets under 60 s of wall time on a single Pi 5 core, and `star verify` runs the full acceptance suite in under 10 minutes on the same hardware. The literal Pi 5 wall-time numbers await Pi 5 silicon — no Pi 5 hardware is available to the maintainer yet, so those clauses are deferred, fully prepared, to the [pre-release checklist](docs/release_checklist.md) (item 1, procedure [`docs/perf/pi5_checklist.md`](docs/perf/pi5_checklist.md)), and the nightly `ubuntu-24.04-arm` leg gates them as a documented aarch64 proxy in the interim. For reference, the full `star verify` suite (29 checks) runs in about 9 seconds on the maintainer's x86-64 development host — well inside the 10-minute budget, though an x86-64 number is not a Pi 5 number and does not discharge the clause.
 
 </details>
 

@@ -92,3 +92,22 @@ citation = "Park, Folkner, Williams, and Boggs, 'The JPL Planetary and Lunar Eph
 generation = "generate_mars_cruise.py: the verbatim (never refit) DE440 Chebyshev records of the sun, emb, earth, moon, venus_bary, mars_bary, and jupiter_bary segments covering [2026-12-05 TDB - 2 d, 2026-12-05 TDB + 9 d], one contiguous SREPH v1 mini-segment per body; the mission window of missions/mars_cruise.toml plus margin. Bit-identity of excerpt evaluation against the full repack is asserted at generation time"
 date = "2026-07-04"
 tolerance = "not applicable (input fixture; committed binary excerpt per the Phase 2 exception recorded in tests/golden/README.md). Consumers: missions/mars_cruise.toml (its [environment] ephemeris path), tests/python/test_phase5_missions.py, and the doctest cases env_sun_central_composition_matches_terms and env_sun_central_error_paths_and_gm"
+
+# Phase 8 lunar excerpt (generated and committed 2026-07-24): the Moon-centred
+# cross-tool cases need the moon_librations segment (kind 1) for the Moon
+# principal-axis body-fixed frame, which the Phase 3 crosstool excerpt does
+# not carry. generate_lunar.py cuts this fifth-segment excerpt from the same
+# pinned DE440 kernels. It was originally registered against
+# docs/release_checklist.md item 10 alongside the frozen GMAT truth, on the
+# expectation that the DE440 kernels would not be fetchable on the Phase 8
+# execution host; they were, so the excerpt was generated and committed there
+# and that half of the item was lifted at once. Item 10 itself is now fully
+# discharged (the trans-lunar GMAT truth was frozen 2026-07-25), so nothing
+# under it remains deferred. The generator is committed and deterministic.
+[[file]]
+name = "excerpt_de440s_lunar.sreph"
+source = "de440s.bsp (SHA-256 c1c7feeab882263fc493a9d5a5b2ddd71b54826cdf65d8d17a76126b260a49f2) and moon_pa_de440_200625.bpc (SHA-256 60cd55aa401ea2ea97360636f567554bfe4e37bb829f901b4460a455dfaf783f), JPL SSD / NAIF distribution"
+citation = "Park, Folkner, Williams, and Boggs, 'The JPL Planetary and Lunar Ephemerides DE440 and DE441', The Astronomical Journal 161:105, 2021"
+generation = "generate_lunar.py: the verbatim (never refit) DE440 Chebyshev records of the moon_librations, sun, emb, earth, and moon segments covering [2026-01-01 TDB - 2 d, 2026-01-01 TDB + 9 d], one contiguous SREPH v1 mini-segment per body; the mission window of missions/lunar_orbiter.toml and missions/lro_illustrative.toml plus margin. Bit-identity of excerpt evaluation (positions AND libration angles) against the full repack is asserted at generation time. Generated and committed on the Phase 8 execution host, whose DE440 kernels were fetchable via `star data fetch de440s`; excerpt SHA-256 ec5b6f5a0cdfd52026cee6a6d84ffcdf3970d12f1c4a2e7bcb96f7463f243df5, byte-reproducible across regenerations. This lifted the lunar-excerpt half of docs/release_checklist.md item 10; the remaining GMAT frozen truth was completed 2026-07-25 and that item is now fully discharged."
+date = "2026-07-24"
+tolerance = "not applicable (input fixture; committed binary excerpt per the Phase 2 exception recorded in tests/golden/README.md). Consumers: missions/lunar_orbiter.toml and missions/lro_illustrative.toml (their [environment] ephemeris paths)"

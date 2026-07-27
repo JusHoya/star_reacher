@@ -188,19 +188,39 @@ def test_frozen_ensemble_is_bit_reproducible(tmp_path):
 
 
 def test_frozen_ensemble_matches_the_golden_statistics(tmp_path, golden):
-    """The frozen sweep reproduces the golden's own frozen mean and std exactly.
+    """The frozen sweep reproduces the golden's statistics.
 
-    The golden was frozen from this same deterministic sweep, so a re-run must
-    reproduce its mean and std to the bit -- if it does not, the golden is stale
-    or the sweep drifted, which is exactly what the two-key tooling exists to
-    surface.
+    On the platform that froze the golden, a re-run must reproduce its mean
+    and std to the bit -- if it does not, the golden is stale or the sweep
+    drifted, which is exactly what the two-key tooling exists to surface. On
+    any other platform the logged states differ within the criterion-8
+    divergence model, so the reproduction is asserted within the derived
+    cross-platform band instead (the bit half of the check is carried by the
+    freeze platform's CI leg; the distributional regression gates run
+    platform-independently in the tests above).
     """
+    from star_reacher.mc_regression import CROSS_PLATFORM_BAND_M2PS2
+
     _core_or_fail()
     metric = _run_regression_ensemble(tmp_path / "out")
     fresh = summarize_metric(metric, mission=golden.mission)
     assert fresh.n == golden.n
-    assert fresh.mean == golden.mean
-    assert fresh.std == golden.std
+    if fresh.platform == golden.platform:
+        assert fresh.mean == golden.mean
+        assert fresh.std == golden.std
+    else:
+        assert abs(fresh.mean - golden.mean) <= CROSS_PLATFORM_BAND_M2PS2, (
+            f"mean {fresh.mean!r} differs from the golden {golden.mean!r} by "
+            f"{abs(fresh.mean - golden.mean):.3e} m^2/s^2 on platform "
+            f"{fresh.platform} (golden frozen on {golden.platform}; "
+            f"cross-platform band {CROSS_PLATFORM_BAND_M2PS2})"
+        )
+        assert abs(fresh.std - golden.std) <= CROSS_PLATFORM_BAND_M2PS2, (
+            f"std {fresh.std!r} differs from the golden {golden.std!r} by "
+            f"{abs(fresh.std - golden.std):.3e} m^2/s^2 on platform "
+            f"{fresh.platform} (golden frozen on {golden.platform}; "
+            f"cross-platform band {CROSS_PLATFORM_BAND_M2PS2})"
+        )
 
 
 def test_ensemble_metric_refuses_incomplete_manifest():

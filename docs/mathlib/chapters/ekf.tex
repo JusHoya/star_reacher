@@ -748,15 +748,25 @@ gate on a windowed statistic over a segment short enough to resolve the
 transient, which is separate work from this chapter's whole-run
 aggregates.
 
-\begin{table}[htbp]
-  \centering
+% longtable rather than table: these rows outgrew a single page once the
+% exit-criterion-3 gate earned a can-it-fail row per failure mode alongside
+% its reference-agreement rows, and a float too large for the page drops its
+% trailing rows from the PDF while the source still lists them.
+\begin{longtable}{lp{7.2cm}}
   \caption{Validation evidence for the consistency statistics and their
     chi-square gates (pytest, \texttt{tests/python/test\_consistency.py}).}
-  \label{tab:ekf:validation-py}
-  \begin{tabular}{lp{7.2cm}}
-    \toprule
-    Test ID & Acceptance basis \\
-    \midrule
+  \label{tab:ekf:validation-py} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
     \testid{test_chi2_ppf_matches_published_tables} &
       The quantile evaluator matches published chi-square table values
       across the used $(p, k)$ set, and each reference digit is
@@ -854,21 +864,29 @@ aggregates.
       the path exit criterion~3 takes: that driver derives its bounds
       in-process and never invokes the CLI, as the note following
       Table~\ref{tab:ekf:validation-filter} records. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\end{longtable}
 
-\begin{table}[htbp]
-  \centering
+% longtable rather than table: these rows outgrew a single page once the
+% exit-criterion-3 ensemble rows joined the filter's per-mechanism doctest
+% rows and the logged-channel contract rows, and a float too large for the
+% page drops its trailing rows from the PDF while the source still lists them.
+\begin{longtable}{lp{7.2cm}}
   \caption{Validation evidence for the reference error-state filter
     (doctest, \texttt{cpp/tests/test\_ekf.cpp}; pytest,
     \texttt{tests/python/test\_ekf\_consistency.py} and
     \texttt{test\_ekf\_channels.py}).}
-  \label{tab:ekf:validation-filter}
-  \begin{tabular}{lp{7.2cm}}
-    \toprule
-    Test ID & Acceptance basis \\
-    \midrule
+  \label{tab:ekf:validation-filter} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
     \testid{test_ensemble_nees_gate_passes} &
       Phase~6 exit criterion~3, NEES half, taken through
       \texttt{consistency.ensemble\_gate} with
@@ -992,9 +1010,7 @@ aggregates.
       \texttt{star consistency} applies the $n \to m$ reduction of
       Section~\ref{sec:ekf:consistency} and gates each aiding sensor's NIS
       at that sensor's own dimension. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\end{longtable}
 
 \paragraph{How the criterion-3 driver reaches its verdict.} The driver
 takes both halves of the criterion through

@@ -1,0 +1,87 @@
+%------------------------------------------------------------------------------
+% gmat_lunar_orbiter.script -- frozen-truth generation run for the Phase 8
+% lunar-orbiter cross-tool case (exit criterion 1, D-15):
+% missions/lunar_orbiter.toml replicated in GMAT R2026a. Full replication
+% specification: tests/golden/crosstool/README.md; provenance and command
+% line: manifest.toml.
+%
+% Controlled-comparison configuration (documented in the manifest):
+%   * Central body Luna, LunaICRF coordinate system (Luna origin, ICRF axes -
+%     the GMAT equivalent of the mission's Moon-centred GCRF frame).
+%   * Gravity field: moon_grgm1200a_50x50.cof, generated from the same
+%     committed GRGM1200A coefficient excerpt the mission loads (identical
+%     GM/R/coefficients), degree/order 50x50, TideModel None. GMAT evaluates
+%     the lunar field in the Moon principal-axis body-fixed frame from the
+%     DE440 lunar orientation, matching the simulator's PA-frame evaluation.
+%   * Third bodies: the Sun and Earth as point masses (the mission's
+%     third_bodies = ["sun", "earth"], the lunar-regime pair).
+%   * SRP: On, spherical (cannonball), Cr = 1.5 and SRPArea = 13.3333... m^2
+%     so Cr*A/m = 0.02 m^2/kg over the 1000 kg mass (matching the mission).
+%     Luna is the sole occulter (GMAT casts the central body's shadow).
+%   * DE440 point-mass and lunar-orientation source: the DE-file set the
+%     zero-EOP startup file selects, the same DE440 family as the committed
+%     excerpt the mission reads.
+%   * Fixed-step integration (ErrorControl = None, 60 s RK89 steps) so report
+%     rows land exactly on the shared 60 s comparison grid (604800/60 = 10080).
+%   * The Cartesian state below is the simulator's exact t = 0 truth state
+%     (sma 1838 km, ecc 0.01, inc 90 deg, ta 0 through the core GM_moon), in
+%     LunaICRF, so both tools start from identical numbers.
+%
+% This script contains maintainer-machine absolute paths by design: D-15 runs
+% the external tools offline on the maintainer machine only; CI never runs it.
+%------------------------------------------------------------------------------
+
+Create Spacecraft sat;
+GMAT sat.DateFormat = UTCGregorian;
+GMAT sat.Epoch = '01 Jan 2026 00:00:00.000';
+GMAT sat.CoordinateSystem = LunaICRF;
+GMAT sat.DisplayStateType = Cartesian;
+GMAT sat.X = 1819.62;
+GMAT sat.Y = 0;
+GMAT sat.Z = 0;
+GMAT sat.VX = 0;
+GMAT sat.VY = 1.01012073498579e-16;
+GMAT sat.VZ = 1.649652349867856;
+GMAT sat.DryMass = 1000;
+GMAT sat.Cr = 1.5;
+GMAT sat.SRPArea = 13.33333333333333;
+
+Create CoordinateSystem LunaICRF;
+GMAT LunaICRF.Origin = Luna;
+GMAT LunaICRF.Axes = ICRF;
+
+Create ForceModel fm;
+GMAT fm.CentralBody = Luna;
+GMAT fm.PrimaryBodies = {Luna};
+GMAT fm.PointMasses = {Sun, Earth};
+GMAT fm.GravityField.Luna.PotentialFile = 'C:/Users/hoyer/WorkSpace/Projects/star_reacher/tests/golden/crosstool/moon_grgm1200a_50x50.cof';
+GMAT fm.GravityField.Luna.Degree = 50;
+GMAT fm.GravityField.Luna.Order = 50;
+GMAT fm.GravityField.Luna.TideModel = 'None';
+GMAT fm.Drag = None;
+GMAT fm.SRP = On;
+GMAT fm.SRP.Flux = 1367;
+GMAT fm.SRP.Nominal_Sun = 149597870.691;
+GMAT fm.RelativisticCorrection = Off;
+GMAT fm.ErrorControl = None;
+
+Create Propagator prop;
+GMAT prop.FM = fm;
+GMAT prop.Type = RungeKutta89;
+GMAT prop.InitialStepSize = 60;
+GMAT prop.MinStep = 0.001;
+GMAT prop.MaxStep = 60;
+GMAT prop.MaxStepAttempts = 50;
+
+Create ReportFile rpt;
+GMAT rpt.Filename = 'C:/Users/hoyer/WorkSpace/tools/crosstool-runs/gmat_lunar_orbiter_report.txt';
+GMAT rpt.Precision = 16;
+GMAT rpt.WriteHeaders = true;
+GMAT rpt.LeftJustify = On;
+GMAT rpt.FixedWidth = true;
+GMAT rpt.WriteReport = true;
+GMAT rpt.Add = {sat.ElapsedSecs, sat.UTCModJulian, sat.LunaICRF.X, sat.LunaICRF.Y, sat.LunaICRF.Z, sat.LunaICRF.VX, sat.LunaICRF.VY, sat.LunaICRF.VZ};
+
+BeginMissionSequence;
+
+Propagate prop(sat) {sat.ElapsedSecs = 604800.0};

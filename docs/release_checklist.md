@@ -8,22 +8,36 @@ the item below — and additionally carries any release-qualifying
 confirmation that can only be produced after a phase merge (item 3). Green
 CI is necessary but not sufficient wherever this register applies.
 
-The valve admits two kinds of blocker, and the register carries both.
+The valve admits three kinds of blocker, and the register carries all three.
 Items 1 and 2 are the original kind: a required external **tool or hardware**
 was unavailable at phase close, and the item is a prepared measurement
-waiting for the resource. Item 4 is the second kind, added to section 9 at
-the Phase 6 close: a clause whose closure requires a new field in a **frozen
-on-disk format**, where what is deferred is a specified change rather than a
-measurement. The three obligations are identical for both — committed fully
-prepared, registered here, recorded inline beside the criterion — and only
-the **Procedure:** line differs in character.
+waiting for the resource. Item 10 was that kind too, and is discharged. Item 4
+is the second kind, added to section 9 at the Phase 6 close: a clause whose
+closure requires a new field in a **frozen on-disk format**, where what is
+deferred is a specified change rather than a measurement. Item 12 is the third
+kind, added to section 9 at the Phase 8 close-out: every resource the clause
+needs is in hand and its reduced form is committed, measured, and passing, but
+running the clause in the **full form the criterion states** is impractical
+with the committed tooling — one route is a data-volume problem and the other
+waits on a logging capability SRLOG v1 does not have. The three obligations are
+identical for all three — committed fully prepared, registered here, recorded
+inline beside the criterion — and only the **Procedure:** line differs in
+character: a command to run, a change to specify, or, for item 12, an
+extension described but not runnable at today's data volumes.
 
-The register covers the phases closed so far (through Phase 7). Phase 7 exit
+The register covers the phases closed so far (through Phase 8). Phase 7 exit
 criterion 4 re-gates on Pi 5 hardware and is registered as item 9 at its phase
-close; Phase 8 exit criterion 4 will add its own item if the hardware is still
-unavailable. Once Pi 5 hardware is available, attaching it as the pinned
-self-hosted runner (PRD section 9) supersedes the manual route for the
-performance clauses.
+close; Phase 8 exit criterion 1 (the five new cross-tool cases vs frozen GMAT
+truth) was registered as item 10 at the Phase 8 close, GMAT being unavailable
+to the maintainer on the execution host, and is discharged as of 2026-07-25;
+Phase 8 exit criterion 4 (the fresh-machine Pi 5 `star verify` walkthrough) is
+carried by item 1's Pi 5 hardware register.
+Once Pi 5 hardware is available, attaching it as the pinned self-hosted runner
+(PRD section 9) supersedes the manual route for the performance clauses.
+Phase 8 exit criterion 1's Earth-Mars cruise **arrival-SOI** clause is separate
+from item 10's truth generation and is registered as item 12 at the Phase 8
+close-out: that truth is frozen and its gate passes, but it measures at the end
+of the committed 7-day arc rather than at Mars-SOI arrival.
 
 Each item names the clause it carries, its prepared procedure, and where the
 result is recorded. When an item is discharged, commit its evidence as its
@@ -38,7 +52,14 @@ register always states what has and has not been done.
   hardware clause of **Phase 6 exit criterion 10** (the FR-32 ascent target
   holding with the built-in C++ GNC stack in the loop). Criterion 10 adds no
   new step: it is a fourth metric, `ascent_gnc_rt_factor`, measured by the
-  same harness invocation in step 4 and gated at the same >= 100x.
+  same harness invocation in step 4 and gated at the same >= 100x. It also
+  carries the Pi 5 timing clause of **Phase 8 exit criterion 4** (`star verify`
+  prints `VERIFY: PASS` in `< 10 min` on a Pi 5): this is exactly the
+  `star verify` run in the bring-up procedure below (step 3), timed on Pi 5
+  silicon. The x86-64 measurement — full-tier `star verify` at ~9 s, 65x inside
+  the 10-minute budget — is recorded in the README and the fresh-machine
+  walkthrough, but an x86-64 number is not a Pi 5 number and does not discharge
+  this clause.
 - **Procedure:** [`docs/perf/pi5_checklist.md`](perf/pi5_checklist.md). Steps
   1–3 of that document double as the generic Pi 5 bring-up procedure
   (toolchain, source build into a fresh venv, `star verify --quick`) for any
@@ -295,3 +316,291 @@ hardening and coverage work, tracked here to completion.
   items 1 and 2. Whether onnxruntime CPU inference is bit-reproducible across
   x86-64 and aarch64 within the D-10 bound is the open empirical question this
   item resolves; the x86-64 leg alone cannot answer it.
+
+## Phase 8 deferred items (external-tool clause)
+
+## 10. Phase 8 criterion 1 — frozen GMAT truth for the five new cross-tool cases
+
+- **Carries:** the frozen-GMAT-truth generation for Phase 8 exit criterion 1's
+  five new cross-tool cases, recorded inline against **Phase 8 exit criterion 1**
+  in `PRD.md`: Molniya (`missions/molniya.toml`), lunar orbiter with the
+  degree-matched GRGM field and SRP on (`missions/lunar_orbiter.toml`), and Mars
+  orbiter, MRO-class, harmonics + SRP (`missions/mars_orbiter.toml`), each gated
+  at position RMS < 100 m over 7 days; trans-lunar (the ballistic coast of
+  `missions/tli.toml`) gated at < 1 km at lunar arrival; and Earth-Mars cruise
+  (`missions/mars_cruise.toml`) gated at < 100 km, measured at the end of the
+  committed 7-day arc rather than at Mars-SOI arrival (item 12). The two
+  Phase 3 cross-tool cases (GMAT LEO gravity, Orekit LEO drag) are already
+  frozen and gated and are **not** part of this item. The illustrative
+  LRO-ephemeris comparison (`missions/lro_illustrative.toml`) is
+  **report-only, not a gate** (the real LRO's maneuvers and SRP/attitude
+  history are unmodeled), so it carries no tolerance and appears here only as
+  a note. What was deferred is the external truth: GMAT was not installed on
+  the Phase 8 execution host, exactly
+  the D-15 maintainer-boundary/unavailable-tool blocker the section 9 valve
+  covers (the analogue of item 2's MATLAB clause). The DE440 lunar excerpt
+  carrying the `moon_librations` segment
+  (`tests/golden/ephemeris/excerpt_de440s_lunar.sreph`) that the lunar cases
+  need was originally coupled to this item, but the DE440 kernels turned out to
+  be fetchable on the Phase 8 host, so the excerpt was generated and **committed**
+  there (deterministic, bit-identity-verified against the full repack); the
+  lunar missions now run out of the box. Only the **GMAT frozen truth** was
+  deferred under this item, for all five cases equally; it is now frozen and
+  measured for all five (see **Status**).
+- **Procedure:** this was a tool item, so what was prepared is a scripted
+  measurement waiting for the resource. It ran as written, on a maintainer host
+  with GMAT R2026a (pinned in `tests/golden/crosstool/manifest.toml`):
+  1. (Optional) `python tests/golden/ephemeris/generate_lunar.py` — the lunar
+     excerpt is already committed; the generator regenerates it byte-identically
+     and asserts bit-identity against the full repack, so this only re-confirms
+     it. No DE440 fetch is required for GMAT itself (GMAT supplies its own
+     ephemeris).
+  2. `python scripts/crosstool/gen_field_files_phase8.py` — confirm the
+     committed `moon_grgm1200a_50x50.cof` and `mars_mro120f_20x20.cof` (already
+     committed and deterministic; re-run only if the source excerpts changed).
+  3. For each case, `python scripts/crosstool/run_gmat_phase8.py --case
+     <molniya|lunar_orbiter|mars_orbiter|translunar|mars_cruise>` — run GMAT on
+     the committed `.script` and freeze the truth CSV. `--arrival-s` is
+     available to override the arrival epoch, and was not used for any case:
+     `translunar` was frozen on the committed 455401 s default. The gravity
+     fields, GMAT scripts, coordinate systems, and exact initial states are
+     already committed and documented per case in the manifest; only the truth
+     CSV bytes and the measured RMS are produced here.
+  4. Confirm the five gates in
+     `tests/python/test_crosstool_frozen_truth.py` stop skipping and pass, and
+     record each measured RMS in `tests/golden/crosstool/manifest.toml`. All
+     five now measure and pass, and the manifest's `date`, `generation`, and
+     `tolerance` fields carry the frozen dates and the measured values; no
+     `pending` marker remains under this item.
+  The comparison machinery those gates use is already proven correct
+  independent of GMAT by `test_rms_machinery_is_correct_on_sim_own_states`
+  (the sim's own states as pseudo-truth, measured position RMS ~5e-9 m), so the
+  external truth was the only missing piece.
+- **Records to:** `tests/golden/crosstool/` (the five truth CSVs, with their
+  manifest entries carrying the measured values and the SHA-256 pins of the
+  frozen CSVs and their source `.script` files). The lunar excerpt and its
+  `tests/golden/ephemeris/manifest.toml` entry are likewise committed. No
+  `pending` entry remains for this item in either manifest.
+- **Status:** discharged 2026-07-25 — the external GMAT truth is **frozen and
+  committed** for all five cases, and all five star-vs-truth gates measure and
+  pass. GMAT R2026a was unavailable on the Phase 8 execution host at close, but
+  the maintainer's portable GMAT install lives on a second host (the laptop
+  LAPTOP-HOYA), so the freeze half of this item was executed there in two
+  sessions: the four orbit and cruise cases on 2026-07-24, and trans-lunar on
+  2026-07-25 after the first trans-lunar freeze was invalidated (recorded
+  below). Each session opened with a toolchain canary before any new run — the
+  same install regenerated the committed Phase 3 truth
+  `truth_gmat_leo_gravity_8x8.csv` **byte-identically** (CSV SHA-256
+  181627b0..., GMAT report SHA-256 9909743b...) — so the freeze rests on an
+  install first shown to reproduce an independently committed result. Every
+  `truth_gmat_*.csv` was generated by `run_gmat_phase8.py` from the committed
+  `.script`, and its SHA-256 pin and date are recorded in
+  `tests/golden/crosstool/manifest.toml`.
+
+  The measurement half ran through `tests/python/test_crosstool_frozen_truth.py`
+  on a 0.8.0 build host, where all 8 tests in the file pass. The five gates
+  measure:
+
+  - `XTOOL-MOLNIYA-GMAT` — position RMS 0.160317 m against the < 100 m bound;
+  - `XTOOL-LUNAR-GMAT` — position RMS 7.232688 m against < 100 m;
+  - `XTOOL-MARS-ORBITER-GMAT` — position RMS 79.478630 m against < 100 m, the
+    thinnest margin in the set at ~1.26x;
+  - `XTOOL-MARS-CRUISE-GMAT` — |dr| 952.550 m at the end of the committed
+    7-day arc, not at Mars-SOI arrival (item 12), against < 100 km;
+  - `XTOOL-TRANSLUNAR-GMAT` — |dr| 18.089824 m at the lunar-SOI arrival epoch
+    against < 1 km, a margin of about 55x.
+
+  The first four were measured on the desktop on 2026-07-24; the laptop carried
+  only the 0.6.0 wheel and could not measure then. On 2026-07-25 a source build
+  of this branch on the laptop (CPython 3.12.10, win_amd64) re-measured all
+  four, and they reproduced exactly — an incidental confirmation of cross-host
+  bit-determinism. The trans-lunar figure comes from that same run: velocity
+  difference |dv| 5.379870e-05 m/s at the same epoch, dr components
+  (-3.4141, -14.7677, -9.8742) m, with both tools placing the spacecraft about
+  397,665 km from Earth at arrival (simulator 397664.930 km, GMAT
+  397664.947 km). The two Phase 3 cross-tool gates (0.015243 m against GMAT,
+  3.376229 m against Orekit) and the GMAT-independent machinery proof
+  (`test_rms_machinery_is_correct_on_sim_own_states`, position RMS 4.618e-09 m)
+  pass in the same run.
+
+  What was **not** done, and why: `gmat_lunar_orbiter.script` and
+  `gmat_mars_orbiter.script` could not be re-run from this worktree in the
+  2026-07-25 session, because each hard-codes the main checkout's absolute path
+  in its `.cof` field under the D-15 as-run convention — a property of an as-run
+  artifact rather than a defect. Their truth stands from the 2026-07-24 freeze
+  on the same install, and the corroboration available instead is that `molniya`
+  and `mars_cruise` were re-run in the 2026-07-25 session and returned
+  **byte-identical** CSVs (SHA-256 5341e53e... and 9892f24d...). The DE440 lunar
+  excerpt sub-blocker was lifted earlier and stays lifted (the excerpt is
+  committed and its manifest entry finalized). The item was never waived: every
+  input is committed as-run, and the gates measure real RMS — they do not pass
+  blind.
+
+  **Invalidated first trans-lunar freeze (2026-07-24, recorded history).** The
+  original deferral carried two residuals for the 0.8.0 build host: (a) confirm
+  the trans-lunar arrival span, and (b) record each measured RMS in the manifest
+  `tolerance` fields. Residual (b) was discharged for four of the five cases on
+  2026-07-24 with the position RMS and arrival |dr| numbers above. Residual (a)
+  uncovered more than an arrival-span change: the trans-lunar first freeze was
+  **invalidated and removed** because its `.script` initial state was the tli
+  t = 353 s truth state, which is mid-burn — the meco cutoff is commanded at
+  353 s but the delivered thrust level is zero only from 354 s under the
+  per-step spool discipline on the 1 s grid, so the replicated coast was
+  ~15.3 m/s low in energy and missed arrival by 75,189 km at matched epochs (the
+  simulator's own ballistic coast of the same mid-burn state reproduced the
+  removed GMAT arrival state to 0.022 km, proving the tools agree and isolating
+  the initial state as the fault). The gate's 75,212 km readout also contained
+  ~23 km from a second, independent defect fixed alongside: the superseded test
+  sampled the simulator log at the CSV's elapsed stamp without the 353 s MECO
+  offset — a comparison-epoch misalignment worth ~45 km on its own, which would
+  have failed the < 1 km gate even against a perfect freeze; the corrected test
+  maps CSV time to mission time explicitly and asserts the epoch. The corrected
+  script (t = 354 s burnout state, epoch 12:05:54Z, arrival span 455401 s) was
+  committed, and the 455402 s span quoted while residual (a) was open belonged
+  to the invalidated 353 s-based script and does not describe anything
+  committed.
+
+  **Residual (a), closed 2026-07-25.** The re-freeze ran exactly `python
+  scripts/crosstool/run_gmat_phase8.py --case translunar` on the laptop, with no
+  `--arrival-s` override: the committed 455401 s default stands, and the source
+  `gmat_translunar.script` is unchanged from the pin the manifest already
+  carries (SHA-256 7b2ae9a5...). GMAT's last reported row is
+  ElapsedSecs 455401.000000129 s, reproducing the requested span to 1.29e-7 s;
+  the frozen `truth_gmat_translunar.csv` (581 bytes, one arrival row, SHA-256
+  7a3cca16...) stamps the nominal 455401.0 s. The corresponding arrival mission
+  time is 455755.0 s exactly — 455401 s of CSV elapsed time plus the 354 s
+  burnout offset — the tli truth log carries a row exactly there, so the gate's
+  epoch assertion holds, and `tli.toml`'s `duration_s = 600000.0` covers it. The
+  measured 18.089824 m lands where the removed-freeze diagnostic predicted
+  (~0.02 km).
+
+- **Ephemeris-source note (recorded 2026-07-25):** the four Phase 8 `.script`
+  headers state a DE440 point-mass and lunar-orientation source for GMAT (as did
+  `tests/golden/crosstool/README.md`, corrected in the same change). That is not
+  what ran, and it is not
+  selectable on the pinned install: no Phase 8 script sets
+  `SolarSystem.EphemerisSource`, so GMAT used its default, and the run log
+  records the planetary source as **DE405**, loading
+  `data/planetary_ephem/spk/DE405AllPlanets.bsp`; the install ships only
+  `leDE1941.405`, `leDE1900.421`, and `leDE18002100.424`, with no DE440 file
+  present to select. The `.script` files are committed as-run artifacts whose
+  SHA-256 pins the manifest already carries, and the frozen truth was generated
+  from exactly those bytes, so they are not edited; the correction is recorded
+  additively, in the manifest prose, the crosstool README, the report, and here. The simulator side reads the
+  committed DE440 excerpt, so the planetary-ephemeris difference — a
+  DE440-family excerpt against GMAT's DE405 — is an irreducible tool difference
+  of exactly the kind exit criterion 1 exists to measure, alongside the
+  already-recorded FK5/IAU-76-versus-CIO frame-chain difference. It is bounded
+  empirically below every gate by the five measured residuals above, and most
+  tightly by the trans-lunar case at 18.089824 m against 1 km, which is the most
+  lunar-ephemeris-sensitive case in the set.
+
+## 11. Phase 8 criterion 5 — release-wheel build and smoke on all four platforms
+
+- **Carries:** Phase 8 exit criterion 5 in its release-time form — the
+  four-platform wheels install and pass `verify --quick`. Unlike items 1, 2, 9,
+  and 10, this was never blocked on an unavailable resource: it is a
+  confirmation that can only be produced after the release tag is pushed
+  (GitHub runs a tag-triggered workflow only once the tag exists), so it is
+  registered here in the same spirit as item 3's first-nightly confirmation.
+  The per-push `wheel-budget` and `dep-minimality` jobs already build and
+  audit the wheel on all four legs, and the per-push `build-test` job already
+  installs from source and runs `star verify --quick` on all four legs, so the
+  capability is continuously exercised; what the tag adds is the distributable
+  cibuildwheel artifacts and their isolated-venv `verify --quick` smoke.
+- **Procedure:** after the phase merge, push the annotated `v0.8.0` tag and
+  confirm the `release` job in `.github/workflows/ci.yml` goes green on all
+  four legs (ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2022): each
+  builds its native wheel with cibuildwheel and runs `star verify --quick` in a
+  fresh venv containing only the built wheel and its declared runtime
+  dependencies. The wheels upload as `wheels-<os>` artifacts for attachment to
+  the GitHub release.
+- **Records to:** the `release` workflow run history and its uploaded wheel
+  artifacts (self-recording).
+- **Status:** pending first post-tag run. The release job and its tag trigger
+  are committed; the tag is a maintainer action (a public disclosure event,
+  D-19) and is not pushed as part of the phase merge.
+
+## Phase 8 registered residual (full-form-impractical clause)
+
+## 12. Phase 8 criterion 1 — Earth-Mars cruise at Mars-SOI arrival
+
+- **Carries:** Phase 8 exit criterion 1's Earth-Mars cruise clause in the form
+  the criterion literally states — "Mars cruise < 100 km at arrival SOI"
+  (`PRD.md`) — as distinct from the form now gated and passing. The committed
+  gate `XTOOL-MARS-CRUISE-GMAT` applies that same 100 km bound at the end of
+  the committed 7-day report arc of `missions/mars_cruise.toml`
+  (`duration_s = 604800.0`), where it measures 952.550 m against frozen GMAT
+  truth. Seven days is about 2.7 % of the ~259-day transfer, so the committed
+  measurement bounds the two tools' agreement over the departure leg only: the
+  difference accumulated by Mars-SOI arrival is unmeasured, and it is not
+  implied by the 952.550 m figure. The substitution is disclosed wherever the
+  gate is stated — the criterion-1 record in `PRD.md`, the
+  `gmat_mars_cruise.script` and `truth_gmat_mars_cruise.csv` entries in
+  `tests/golden/crosstool/manifest.toml`, the script header itself (lines
+  26–37), `tests/golden/crosstool/README.md`, the gate's own docstring in
+  `tests/python/test_crosstool_frozen_truth.py`, and `docs/release_handoff.md`
+  — so what this item carries is the unmeasured arrival epoch, not an
+  undisclosed one. Item 10 carried the *generation* of this case's frozen
+  truth and is discharged; this item carries the *epoch at which the frozen
+  comparison is taken*.
+- **Procedure:** the `.script` header (lines 26–37) records two routes to a
+  full-cruise comparison, and both change only `Propagate`'s stop condition on
+  the GMAT side — the force model, the SunICRF system, and the t = 0
+  patched-conic handoff state carry over unchanged. Both are blocked on the
+  simulator side, so what follows is a described extension rather than a
+  scripted measurement waiting on a resource:
+  1. **Extend the arc at the committed log rate.** Raise
+     `missions/mars_cruise.toml`'s `duration_s` to the ~259-day transfer,
+     propagate GMAT to the Mars-SOI crossing, and compare the arrival
+     position. SRLOG v1's minimum periodic rate is 1 Hz, at which the run
+     writes ~22 million truth records, about 2.7 GB
+     (`missions/mars_cruise.toml` header) — the volume for whose sake the
+     committed mission is a 7-day arc in the first place. GMAT's own side is
+     not the constraint: its report stays on the 60 s comparison grid, roughly
+     373,000 rows against the committed arc's 10,081.
+  2. **Extend the arc at a coarser log rate.** The same extension with
+     sub-hertz truth logging, which SRLOG v1 cannot express:
+     `docs/formats/srlog_v1.md` section 3 makes `rate_hz` an integer with 0
+     reserved for aperiodic streams, and the mission validator
+     (`python/star_reacher/mission.py`) rejects a `truth_rate_hz` that is not
+     an integer >= 1, so 1 Hz is the floor. This route waits on a format
+     change that is **not** additive and so is heavier than item 4's: item 4
+     adds a new header key, which `docs/formats/srlog_v1.md` section 6 admits
+     as a minor bump ("additive change only: new channels or new groups"),
+     whereas relaxing `rate_hz` widens the value domain of an existing
+     normative key that section 3 specifies as an integer and requires every
+     fixed-rate group to divide exactly. It is nonetheless the route that
+     would make the arrival comparison routinely runnable rather than a
+     one-off.
+
+  Two pieces of the comparison path are already committed and proven: the
+  frozen-truth CSV reader and the 60 s grid alignment, exercised on the sim's
+  own states by `test_rms_machinery_is_correct_on_sim_own_states`. That test
+  measures a *position RMS* over a whole arc, which is the form the Molniya
+  and orbiter gates take; the cruise gate is not that shape — it is a
+  single-epoch difference at the last row
+  (`tests/python/test_crosstool_frozen_truth.py`), and an arrival gate would
+  be the same shape at a different epoch. So what stands between the committed
+  gate and the criterion's literal wording is the arc length, the log rate,
+  and an arrival-epoch comparison whose first attempt on the trans-lunar case
+  was got wrong twice — once on the initial state and once on the comparison
+  epoch — which is the part of this item that warrants care rather than
+  confidence.
+- **Records to:** `tests/golden/crosstool/` — a full-transfer arrival truth row
+  committed alongside the arc truth rather than in place of it, with its own
+  manifest entry carrying the SHA-256 pin, the freeze date, and the measured
+  arrival `|dr|` — plus a second assertion in
+  `tests/python/test_crosstool_frozen_truth.py` gating that row at < 100 km,
+  so the arc-end and arrival forms remain visibly distinct gates.
+- **Status:** open — registered at the Phase 8 close-out (2026-07-26). It is a
+  **registered residual and does not gate the v0.8.0 release**: criterion 1's
+  Earth-Mars cruise case is measured rather than waived, by a committed gate
+  that passes at 952.550 m with its substituted epoch disclosed at every site
+  that states the gate, and the outstanding form is impractical rather than
+  merely unresourced — route 1 costs a multi-gigabyte truth log and route 2
+  waits on a non-additive SRLOG change heavier than the additive one the
+  register already defers separately as item 4, so gating the tag here would
+  hold the release behind a format break it does not otherwise need. The
+  blocker is the data volume of a full-transfer comparison at the 1 Hz SRLOG
+  floor, named here rather than left implicit in the criterion's wording.

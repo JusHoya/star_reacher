@@ -5,16 +5,20 @@
 # criterion 4 gates this mission at < 60 s wall on a Raspberry Pi 5 single
 # core, so the force models are exactly FR-32's, nothing more.
 #
-# Initial state: the trans-lunar injection cutoff (MECO, t = 353 s) truth
+# Initial state: the trans-lunar injection cutoff-command (t = 353 s) truth
 # state of missions/tli.toml, taken verbatim from its 1 Hz truth log, with the
-# epoch shifted from the tli MECO epoch (2025-12-28T12:05:53Z) to
-# 2025-12-30T12:00:00Z. The transfer ellipse is inertially fixed, so the
+# epoch shifted from the tli t = 353 s epoch (2025-12-28T12:05:53Z) to
+# 2025-12-30T12:00:00Z. (In the tli mission the delivered thrust level
+# reaches zero one integrator step after the cutoff command, at t = 354 s, so
+# the 353 s sample is the last in-burn state; it serves here as a fixed
+# initial condition for the performance gate, not as a burnout replication.)
+# The transfer ellipse is inertially fixed, so the
 # +1.996-day shift re-phases the Moon along its orbit and places the closest
 # lunar approach inside the 4.5-day window: the coast reaches a ~19,350 km
 # perilune (center distance ~1.94e7 m, ~17,600 km above the mean lunar
 # surface) at t ~ 3.71 d and logs the outbound leg after the flyby. The mass
-# is the tli truth-log mass at MECO (the post-burn kick stage). Cr*A/m uses
-# round cannonball values: Cr = 1.3 with A = 2.5 m^2 over the MECO mass,
+# is the tli truth-log mass at the same t = 353 s sample. Cr*A/m uses
+# round cannonball values: Cr = 1.3 with A = 2.5 m^2 over that mass,
 # rounded to 0.0124 m^2/kg.
 #
 # The run terminates on duration_s: the point-mass path has no event

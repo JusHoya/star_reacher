@@ -38,3 +38,47 @@ Every frozen artifact, configuration choice, command line, hash, and measured
 number is recorded in `tests/golden/crosstool/manifest.toml`; a refreeze must
 update that manifest in the same commit (tests/golden/README.md update
 policy).
+
+## Phase 8 cross-tool cases (exit criterion 1, D-15)
+
+Five additional GMAT cases: Molniya, lunar orbiter, Mars orbiter, trans-lunar
+coast, and Earth-Mars cruise (the Molniya, lunar-orbiter, and Mars-orbiter
+gates are 7-day position RMS < 100 m; trans-lunar is < 1 km at lunar arrival;
+Mars cruise is < 100 km at the end of its committed 7-day arc rather than at
+Mars-SOI arrival, which is checklist item 12). Their missions, GMAT `.script`
+files, and
+gravity-field COF inputs are committed; the frozen truth is generated offline
+on the maintainer GMAT machine (`docs/release_checklist.md` item 10) because
+GMAT was not installed on the Phase 8 execution host. Status 2026-07-25: all
+five truth CSVs are frozen and all five gates measure and are met (values,
+provenance, and the trans-lunar re-freeze history in
+`tests/golden/crosstool/manifest.toml` and `tests/golden/crosstool/README.md`).
+A gate in `tests/python/test_crosstool_frozen_truth.py` whose truth CSV is
+absent from a checkout still skips with an explicit message rather than pass
+vacuously.
+
+Phase 8 regeneration order (repo root; maintainer with GMAT R2026a):
+
+1. `python scripts/crosstool/gen_field_files_phase8.py` — derive the GMAT COF
+   fields `moon_grgm1200a_50x50.cof` and `mars_mro120f_20x20.cof` from the
+   committed GRGM1200A/MRO120F excerpts (needs no external tool; already
+   committed, re-run only if the source excerpts change).
+2. `python tests/golden/ephemeris/generate_lunar.py` — cut the lunar DE440
+   excerpt carrying the `moon_librations` segment (needs the fetched DE440
+   kernels), required by the lunar-orbiter and LRO missions.
+3. `python scripts/crosstool/run_gmat_phase8.py --case molniya` (then
+   `lunar_orbiter`, `mars_orbiter`, `translunar`, `mars_cruise`) — run GMAT on
+   each committed script and freeze the truth CSV. The committed trans-lunar
+   arrival span is the 455401 s default (elapsed from the t = 354 s ballistic
+   burnout the script's coast starts at); the frozen CSV was generated with
+   that default and no `--arrival-s` override. Pass `--arrival-s <span>` only
+   if a future build locates a different lunar arrival epoch.
+4. `python scripts/crosstool/compare_rms.py <mission run.srlog> <truth.csv>` —
+   report the 7-day RMS numbers for the manifest (the trans-lunar and
+   Mars-cruise gates are single-epoch differences rather than RMS values --
+   trans-lunar at lunar arrival, Mars cruise at its arc end -- and each is
+   reported by its own gate directly).
+
+CI never runs any of this; it consumes only the committed CSVs, and a gate
+whose CSV is missing from a checkout skips rather than passes. The lunar cases
+additionally need step 2's excerpt.

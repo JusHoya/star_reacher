@@ -1,0 +1,105 @@
+%------------------------------------------------------------------------------
+% gmat_translunar.script -- frozen-truth generation run for the Phase 8
+% trans-lunar cross-tool case (exit criterion 1, D-15). Replicates the
+% BALLISTIC COAST of missions/tli.toml in GMAT R2026a. Full replication
+% specification: tests/golden/crosstool/README.md; provenance and command
+% line: manifest.toml.
+%
+% Why the coast, not the burn. The gate is "trans-lunar < 1 km at lunar
+% arrival": it measures the transfer TRAJECTORY, not the finite TLI burn. The
+% burn (prograde_hold) is a simulator-internal maneuver; the cross-tool
+% comparison propagates both tools ballistically from the simulator's exact
+% post-burn ballistic state and compares position where the coast enters the
+% Moon's sphere of influence. This isolates the coast dynamics both tools
+% model identically and removes the finite-burn replication as a source of
+% tool difference. The simulator side of the comparison is the tli truth log
+% sampled from t = 354 s (ballistic burnout) onward.
+%
+% Burnout is t = 354 s, NOT the meco event time 353 s. The cutoff is COMMANDED
+% at the meco timer (t = 353 s), but the delivered thrust level follows the
+% per-step spool discipline (docs/mathlib propulsion chapter, PROP-SPOOL-RAMP)
+% on the mission's 1 s integrator grid: the [353, 354) step still integrates
+% at the pre-command level and the level is exactly zero from t = 354 s.
+% Measured in the truth log: specific orbital energy gains a full-thrust step
+% over [353, 354) (+15.3 m/s equivalent prograde delta-v) and is constant from
+% 354 s on. The first freeze of this case used the t = 353 s state and was
+% invalidated: the 15.3 m/s energy deficit amplifies through the near-capture
+% lunar approach into a 75,189 km matched-epoch arrival miss (the failing gate
+% printed 75,212 km because the superseded test additionally sampled the
+% simulator log at the CSV's elapsed stamp without the 353 s offset -- a
+% comparison-epoch misalignment worth ~45 km on its own, fixed by the explicit
+% epoch mapping the corrected test asserts). The simulator's own ballistic
+% coast of that same mid-burn state reproduced the invalidated GMAT arrival
+% state to 0.022 km, which is what localized the disagreement to the initial
+% state, not the tools.
+%
+% Controlled-comparison configuration (documented in the manifest):
+%   * Central body Earth, EarthICRF (the mission's Earth-centred GCRF).
+%   * Force model: Earth point mass plus the Sun and Luna as point masses (the
+%     mission's central_body = "earth" with a point-mass Earth - no gravity
+%     table - and third_bodies = ["sun", "moon"]). No SRP, no drag: tli.toml
+%     configures none.
+%   * DE440 point-mass source: the DE-file set the zero-EOP startup file
+%     selects, the same DE440 family as the committed excerpt tli.toml reads.
+%   * EOP: run with --startup_file gmat_startup_zeroeop.txt (as the other
+%     Earth-regime cases), though at cislunar distances the Earth-orientation
+%     convention is immaterial to the < 1 km gate.
+%   * Fixed-step integration (ErrorControl = None, 60 s RK89 steps). The coast
+%     is 455755 - 354 = 455401 s; 455401 is not a multiple of 60, so the
+%     comparison samples the trajectory at the SOI-arrival epoch located by
+%     the simulator (the manifest records the arrival epoch and the compared
+%     state).
+%   * Burnout Cartesian state (EarthICRF), the simulator's exact tli t = 354 s
+%     truth state (the first ballistic epoch, see above), so both tools start
+%     from identical numbers. Epoch is the tli burnout epoch
+%     2025-12-28T12:05:54Z (t0 2025-12-28T12:00:00Z + 354 s).
+%
+% This script contains maintainer-machine absolute paths by design: D-15 runs
+% the external tools offline on the maintainer machine only; CI never runs it.
+%------------------------------------------------------------------------------
+
+Create Spacecraft sat;
+GMAT sat.DateFormat = UTCGregorian;
+GMAT sat.Epoch = '28 Dec 2025 12:05:54.000';
+GMAT sat.CoordinateSystem = EarthICRF;
+GMAT sat.DisplayStateType = Cartesian;
+GMAT sat.X = 2935.113038034428;
+GMAT sat.Y = -5362.330919384242;
+GMAT sat.Z = -2782.6716981243067;
+GMAT sat.VX = 10.226771053695357;
+GMAT sat.VY = 2.9192276112691835;
+GMAT sat.VZ = 1.9036603302281139;
+GMAT sat.DryMass = 1000;
+
+Create ForceModel fm;
+GMAT fm.CentralBody = Earth;
+GMAT fm.PointMasses = {Earth, Sun, Luna};
+GMAT fm.Drag = None;
+GMAT fm.SRP = Off;
+GMAT fm.RelativisticCorrection = Off;
+GMAT fm.ErrorControl = None;
+
+Create Propagator prop;
+GMAT prop.FM = fm;
+GMAT prop.Type = RungeKutta89;
+GMAT prop.InitialStepSize = 60;
+GMAT prop.MinStep = 0.001;
+GMAT prop.MaxStep = 60;
+GMAT prop.MaxStepAttempts = 50;
+
+Create ReportFile rpt;
+GMAT rpt.Filename = 'C:/Users/hoyer/WorkSpace/tools/crosstool-runs/gmat_translunar_report.txt';
+GMAT rpt.Precision = 16;
+GMAT rpt.WriteHeaders = true;
+GMAT rpt.LeftJustify = On;
+GMAT rpt.FixedWidth = true;
+GMAT rpt.WriteReport = true;
+GMAT rpt.Add = {sat.ElapsedSecs, sat.UTCModJulian, sat.EarthICRF.X, sat.EarthICRF.Y, sat.EarthICRF.Z, sat.EarthICRF.VX, sat.EarthICRF.VY, sat.EarthICRF.VZ};
+
+BeginMissionSequence;
+
+% Coast from ballistic burnout through lunar arrival. The stop time is the
+% simulator's SOI-transition elapsed-from-burnout span (455755 - 354 =
+% 455401 s); the manifest records the arrival-epoch state used for the < 1 km
+% comparison.
+Propagate prop(sat) {sat.ElapsedSecs = 455401.0};

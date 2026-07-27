@@ -44,6 +44,10 @@ docs/mathlib/mathlib_layout.txt
 # Agent-session state (local permissions, worktrees) is per-machine, never shared
 .claude/
 
+# Machine-local Claude memory (e.g. this machine's hypoCamp path override in
+# CLAUDE.local.md); per-machine, never shared
+CLAUDE.local.md
+
 # Editor and OS litter
 .vscode/
 .idea/

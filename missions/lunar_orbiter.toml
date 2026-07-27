@@ -1,0 +1,88 @@
+# Cross-tool case (Phase 8 exit criterion 1, D-15): 7-day lunar orbiter under
+# Moon GRGM1200A 50x50 harmonic gravity in the Moon principal-axis frame plus
+# cannonball SRP, with the Sun and Earth as point-mass third bodies - so the
+# frozen GMAT truth exercises the degree-matched lunar field, the PA-frame
+# rotation, and the lunar-regime third-body pair (gate: position RMS < 100 m
+# over 7 days vs frozen GMAT). Every setting is exact and round-numbered for
+# external replication; the full replication specification (frames, time,
+# constants, field provenance) is tests/golden/crosstool/README.md.
+#
+# The orbit is a stable ~100 km circular near-polar mapping orbit: semimajor
+# axis 1838 km (altitude ~100 km above the 1738 km GRGM reference radius),
+# eccentricity 0.01, inclination 90 deg, orbital period ~1.96 h. A 100 km
+# polar orbit is the standard cross-tool lunar-gravity test geometry - high
+# enough that the mascon-driven eccentricity growth stays bounded over 7 days
+# without station-keeping, so the run is a clean unmaneuvered gravity-plus-SRP
+# comparison (the lower ~50 km LRO mapping orbit needs frequent maintenance
+# and is carried separately as the report-only LRO illustration,
+# missions/lro_illustrative.toml).
+#
+# Central body Moon: the Moon body-fixed frame is the DE440 principal-axis
+# frame built from the lunar libration angles (ch:frames), so this mission
+# REQUIRES a DE440 excerpt carrying the moon_librations segment (kind 1) in
+# addition to the sun/emb/earth/moon position segments. That excerpt
+# (tests/golden/ephemeris/excerpt_de440s_lunar.sreph) is a maintainer-
+# generated golden fixture: it is cut from the fetched DE440 kernels by
+# tests/golden/ephemeris/generate_lunar.py, exactly as the Phase 3 crosstool
+# and Phase 5 mars-cruise excerpts are cut by their own generators, and is
+# committed with provenance in tests/golden/ephemeris/manifest.toml. FR-6/
+# FR-15 require the Earth and Sun third bodies together in the lunar regime,
+# which is the physically correct pair for a lunar orbiter.
+#
+# SRP: cannonball Cr*A/m = 0.02 m^2/kg, with the Moon as the only occulter
+# (FR-7: the current central body always occults; the Earth's shadow does not
+# reach a low lunar orbit at this geometry).
+#
+# provenance "representative": a representative 100 km polar mapping orbit,
+# not a real spacecraft's ephemeris; the epoch is the crosstool excerpt
+# window (2026-01-01), matched by the lunar excerpt's generation.
+
+schema_version = 1
+
+[mission]
+name = "lunar-orbiter"
+epoch_utc = "2026-01-01T00:00:00Z"
+duration_s = 604800.0
+
+[run]
+seed = 20260101
+
+[integrator]
+type = "rkf78"
+rtol = 1e-11
+atol_pos_m = 1e-6
+atol_vel_mps = 1e-9
+h_init_s = 30.0
+# 60 s cap: bounds the 1 Hz dense-output interpolation error (ch:integrators)
+# well below the 100 m gate on a ~1.96 h orbit; the tolerance controls the
+# dynamics.
+h_max_s = 60.0
+
+[spacecraft]
+mass_kg = 1000.0
+cr_a_over_m_m2pkg = 0.02
+
+[initial_state.keplerian]
+sma_m = 1838000.0
+ecc = 0.01
+inc_deg = 90.0
+raan_deg = 0.0
+argp_deg = 0.0
+ta_deg = 0.0
+
+[environment]
+central_body = "moon"
+third_bodies = ["sun", "earth"]
+ephemeris = "tests/golden/ephemeris/excerpt_de440s_lunar.sreph"
+
+[environment.gravity]
+model = "harmonic"
+field = "tests/golden/gravity/moon_grgm1200a_n50.srgrav"
+degree = 50
+order = 50
+
+[environment.srp]
+occulters = ["moon"]
+
+[logging]
+truth_rate_hz = 1

@@ -20,6 +20,15 @@
 # bytes (the external tools consumed exactly these LF bytes).
 tests/golden/crosstool/* text eol=lf
 
+# Monte-Carlo golden value files carry the same requirement as the cross-tool
+# set: scripts/check_golden_manifests.py hashes their working-tree bytes and
+# compares to the LF-normalized values_sha256 pinned in each directory's
+# manifest.toml (the two-key policy, FR-22 layer 6). Without eol=lf a CRLF
+# checkout (Windows) hashes differently and the integrity gate fails even
+# though the certified value is unchanged.
+tests/golden/mc/* text eol=lf
+tests/golden/mc_regression/* text eol=lf
+
 # Viewer-embedded sources and assets check out byte-identical on every
 # platform: the generated single-file HTML embeds these bytes verbatim, and
 # the vendored three.js SHA-256 is pinned in _viewer/vendor/PROVENANCE.md.

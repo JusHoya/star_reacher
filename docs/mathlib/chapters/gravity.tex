@@ -275,7 +275,7 @@ $\cos\varphi$ or $\sqrt{1-u^2}$: the exact poles ($s = t = 0$,
 $u = \pm 1$) are regular points, the property FR-5 selects the Pines
 formulation for.
 
-\subsection{$J_2$ secular rates (acceptance formulas)}
+\subsection{\texorpdfstring{$J_2$}{J2} secular rates (acceptance formulas)}
 
 The first-order secular rates of the node and argument of perigee under
 $J_2$, in mean elements, are~\cite{vallado2013}
@@ -359,15 +359,24 @@ to exist in the test tree by \texttt{scripts/lint\_chapters.py}; golden
 provenance and tolerances are recorded in
 \texttt{tests/golden/gravity/manifest.toml}.
 
-\begin{table}[htbp]
-  \centering
+% longtable rather than table: this table has exceeded a page since ae13a64
+% created it with all ten rows at once, and a float too large for the page
+% drops its trailing rows from the PDF while the source still lists them.
+\begin{longtable}{lp{8.6cm}}
   \caption{Validation evidence for the spherical-harmonic gravity
     module.}
-  \label{tab:gravity:validation}
-  \begin{tabular}{lp{8.6cm}}
-    \toprule
-    Test ID & Acceptance basis \\
-    \midrule
+  \label{tab:gravity:validation} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
     \testid{GRAV-XTOOL-20} &
       Phase~3 exit criterion 1: acceleration matches independently
       synthesized pyshtools~4.14.1 values over the same committed
@@ -415,9 +424,7 @@ provenance and tolerances are recorded in
       pytest: committed excerpt headers carry each source's own $GM$,
       $R$, and tide system (never \texttt{constants.hpp} values), the
       monopole is exactly 1, and degree-1 rows are zero. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\end{longtable}
 
 \section{References}
 \label{sec:gravity:references}

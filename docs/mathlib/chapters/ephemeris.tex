@@ -254,14 +254,23 @@ carry the published DE440/DE441 difference
 lunar gate runs against an independent evaluation of the checksummed source
 kernel.
 
-\begin{table}[htbp]
-  \centering
+% longtable rather than table: this table has exceeded a page since ab24254
+% created it with all seven rows at once, and a float too large for the page
+% drops its trailing rows from the PDF while the source still lists them.
+\begin{longtable}{lp{3.2cm}p{6.2cm}}
   \caption{Validation evidence for the ephemeris evaluator.}
-  \label{tab:ephemeris:validation}
-  \begin{tabular}{lp{3.2cm}p{6.2cm}}
-    \toprule
-    Test ID & Suite & Acceptance basis \\
-    \midrule
+  \label{tab:ephemeris:validation} \\
+  \toprule
+  Test ID & Suite & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{3}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Suite & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
     \testid{ephemeris_bitlevel_golden} &
       doctest (\texttt{cpp/tests/}) &
       Bit-exact agreement (binary64 equality) with the Python reference
@@ -309,9 +318,7 @@ kernel.
       pytest (\texttt{tests/python/}) &
       The C++ error contract crosses pybind11 as typed Python exceptions
       (\texttt{ValueError}, \texttt{IndexError}, \texttt{RuntimeError}). \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\end{longtable}
 
 \section{References}
 \label{sec:ephemeris:references}

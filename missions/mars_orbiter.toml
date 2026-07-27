@@ -1,0 +1,85 @@
+# Cross-tool case (Phase 8 exit criterion 1, D-15): 7-day MRO-class Mars
+# orbiter under Mars MRO120F 20x20 harmonic gravity plus cannonball SRP - no
+# drag - so the frozen GMAT truth exercises the Mars body-fixed harmonic field
+# and the Mars-centred SRP shadow (gate: position RMS < 100 m over 7 days).
+# Every setting is exact and round-numbered for external replication; the full
+# replication specification is tests/golden/crosstool/README.md.
+#
+# The orbit is MRO-representative: a near-circular (ecc 0.01), near-polar
+# (inclination 93 deg, sun-synchronous-class) science orbit with semimajor
+# axis 3796 km, i.e. altitude ~360-450 km above the 3389.5 km Mars mean
+# radius - the same altitude band the Mars Reconnaissance Orbiter flies. The
+# orbital period is ~1.97 h. The 20x20 field (the FR-5 Mars default band, the
+# committed MRO120F excerpt) plus SRP are the perturbations a Mars science
+# orbit is dominated by; drag is out (the 400 km orbit is above the sensible
+# Mars atmosphere at this class).
+#
+# Central body Mars: the Mars body-fixed frame is the analytic IAU 2015
+# rotational model (ch:frames), so no Mars orientation ephemeris is needed;
+# only the Mars-system-barycentre position (mars_bary) and the Sun position
+# (for the SRP direction and shadow, and as the third body) are read from the
+# committed continuous DE440 excerpt covering this window
+# (tests/golden/ephemeris/excerpt_de440s_mars_cruise.sreph, provenance in
+# tests/golden/ephemeris/manifest.toml). The Sun is the only third body: at
+# Mars, Jupiter's differential pull is orders below the SRP and the harmonic
+# terms this case measures, so it is deliberately omitted to keep the frozen
+# comparison a clean gravity-plus-SRP test. The mission runs on a clean clone
+# and in CI with no fetched data.
+#
+# SRP: cannonball Cr*A/m = 0.02 m^2/kg (Cr = 1.5, A ~13.3 m^2 over a 1000 kg
+# spacecraft - MRO-class solar-array area), with Mars as the only occulter
+# (FR-7: the current central body always occults; no other body's shadow
+# reaches a low Mars orbit).
+#
+# provenance "representative": the orbit is an MRO-class representative set,
+# not the real MRO ephemeris; the epoch is the mars_cruise excerpt window.
+
+schema_version = 1
+
+[mission]
+name = "mars-orbiter"
+epoch_utc = "2026-12-05T00:00:00Z"
+duration_s = 604800.0
+
+[run]
+seed = 20261205
+
+[integrator]
+type = "rkf78"
+rtol = 1e-11
+atol_pos_m = 1e-6
+atol_vel_mps = 1e-9
+h_init_s = 30.0
+# 60 s cap: bounds the 1 Hz dense-output interpolation error (ch:integrators)
+# well below the 100 m gate on a ~1.97 h orbit; the tolerance controls the
+# dynamics.
+h_max_s = 60.0
+
+[spacecraft]
+mass_kg = 1000.0
+cr_a_over_m_m2pkg = 0.02
+
+[initial_state.keplerian]
+sma_m = 3796000.0
+ecc = 0.01
+inc_deg = 93.0
+raan_deg = 0.0
+argp_deg = 0.0
+ta_deg = 0.0
+
+[environment]
+central_body = "mars"
+third_bodies = ["sun"]
+ephemeris = "tests/golden/ephemeris/excerpt_de440s_mars_cruise.sreph"
+
+[environment.gravity]
+model = "harmonic"
+field = "tests/golden/gravity/mars_mro120f_n20.srgrav"
+degree = 20
+order = 20
+
+[environment.srp]
+occulters = ["mars"]
+
+[logging]
+truth_rate_hz = 1
