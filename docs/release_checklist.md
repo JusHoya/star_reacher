@@ -130,9 +130,30 @@ merge for item 3, the tag push itself for item 11.
   the GitHub release.
 - **Records to:** the `release` workflow run history and its uploaded wheel
   artifacts (self-recording).
-- **Status:** pending first post-tag run. The release job and its tag trigger
-  are committed; the tag is a maintainer action (a public disclosure event,
-  D-19) and is not pushed as part of the phase merge.
+- **Status:** pending, on its second tag attempt. The release job and its tag
+  trigger are committed; the tag is a maintainer action (a public disclosure
+  event, D-19) and is not pushed as part of the phase merge.
+
+  *First attempt, 2026-07-27, failed — recorded because the defect was in this
+  item's own gate.* The `v0.8.0` tag was pushed at `ebc4655` and the release
+  job went red on `windows-2022` while `ubuntu-24.04`, `ubuntu-24.04-arm` and
+  `macos-15` all passed, so no Windows wheel was produced. The cause was not
+  the code: cibuildwheel's Windows `auto` architectures are AMD64 **and** x86,
+  and nothing in the job constrained them, so it built a 32-bit
+  `star_reacher-0.8.0-cp311-cp311-win32.whl` — a target FR-32 never named, its
+  four platforms being manylinux x86-64/aarch64, macOS arm64, and Windows
+  **x64**. Installing that wheel into cibuildwheel's isolated test venv failed
+  because matplotlib publishes no `win32` wheel, so a declared runtime
+  dependency could not resolve. The job now sets `CIBW_ARCHS_WINDOWS: AMD64`,
+  which states the FR-32 target positively and also excludes any future
+  architecture cibuildwheel folds into `auto`. The tag was deleted and
+  re-pushed at the fixed commit under explicit maintainer direction; no
+  GitHub release object had been created and no Windows artifact had been
+  published, so nothing downstream had consumed it.
+
+  The general lesson is that this gate was the only place the four-platform
+  claim was ever exercised, and it had never run before the tag existed —
+  which is exactly why it is a registered item rather than an assumption.
 
 ## Phase 9 scope — hardware and external-tool validation
 

@@ -535,6 +535,14 @@ jobs:
           # FR-32 names manylinux; skip the musllinux variants to keep the
           # release set to the four stated targets.
           CIBW_SKIP: "*-musllinux*"
+          # FR-32 names Windows x64, but cibuildwheel's Windows `auto` archs
+          # are AMD64 *and* x86, so the default also builds 32-bit wheels this
+          # project never targeted -- and they cannot install: matplotlib
+          # publishes no win32 wheel, so pip fails resolving a declared runtime
+          # dependency and the whole leg reds. Naming the arch is preferred to
+          # adding *-win32 to CIBW_SKIP because it also excludes any future
+          # arch cibuildwheel folds into `auto`.
+          CIBW_ARCHS_WINDOWS: AMD64
           # Bare-install smoke (criterion 5): `star verify --quick` uses inlined
           # fixtures and needs no repo checkout, so it runs from cibuildwheel's
           # isolated test venv with only the wheel and its declared runtime
