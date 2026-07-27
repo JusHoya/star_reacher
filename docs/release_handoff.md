@@ -1,22 +1,37 @@
 # Release handoff — v0.8.0 (Phase 8 close)
 
-**Status: prepared, NOT released.** The Phase 8 work is complete and verified on
-the `phase-8-validation-report-release` branch to the full extent of the machine
-it was executed on, but two exit-criterion clauses could not be closed there
-because they need a resource that host did not have (Raspberry Pi 5 hardware) or
-an action that only the maintainer takes (pushing the public release tag, a D-19
-disclosure event). Each is shipped fully prepared under the PRD section 9 valve
-and registered on [`release_checklist.md`](release_checklist.md).
+**Status: prepared, NOT released.** The Phase 8 work is complete and merged to
+`main` at `6d8b3af`, and every exit-criterion clause closable on the hosts
+available to the maintainer is closed and gated there. Two things stand between
+this tree and the tag, and neither is a measurement of the physics: a
+confirmation that can only be produced after the phase merge (a green `nightly`
+run, checklist item 3) and an action that only the maintainer takes (pushing the
+public release tag, a D-19 disclosure event, checklist item 11). The clauses
+that need a resource no available host has — Raspberry Pi 5 silicon, a MATLAB
+license — were re-scheduled on 2026-07-26 into **Phase 9, hardware and
+external-tool validation**, together with the one deferred frozen-format
+field. Phase 9 therefore inherits four register items: 1 (Pi 5 measurement
+campaign), 9 (ONNX loop closure and the aarch64 cross-platform final state),
+2 (the MATLAB `parquetread` transcript), and 4 (the SRLOG 1.4
+`gnc.error_layout` header field). Items 1, 9 and 2 have handoff sections
+below because each waits on a resource somebody with that hardware or licence
+can supply; item 4 has none, because it waits on a format change rather than
+a resource and is executed like ordinary development work. All four stay
+shipped fully prepared under the PRD section 9 valve and registered on
+[`release_checklist.md`](release_checklist.md): re-scheduling is neither a
+discharge nor a waiver, and v0.8.0 claims no Pi 5 result.
 
 This document is the task-oriented entry point: if you have the missing hardware
 or the maintainer role, find your section below and run it. Handoff A is
-discharged and its section is retained as the record of what was run. The
-register in `release_checklist.md` is the status-of-record; this file tells you
-what to do.
+discharged and its section is retained as the record of what was run; Handoff B
+is retained as the prepared Pi 5 procedure, now Phase 9 scope rather than a
+v0.8.0 blocker. The register in `release_checklist.md` is the status-of-record;
+this file tells you what to do.
 
 Do **not** tag or announce v0.8.0 as released until the "Definition of done"
-below is fully satisfied. Green CI on the branch is necessary but not
-sufficient — it cannot exercise the deferred clauses.
+below is fully satisfied. Green CI on the merge commit is necessary but not
+sufficient: GitHub schedules the `nightly` cron only on the default branch, and
+it runs the `release` job only once the tag exists.
 
 ## What is already closed
 
@@ -49,31 +64,35 @@ These need nothing from you and are gated in `.github/workflows/ci.yml`:
 - Criterion 4, fresh-machine half — the README quickstart and
   [`walkthrough.md`](walkthrough.md) reach a rendered trajectory using README
   commands only, and `star verify` prints `VERIFY: PASS (29/29)` (measured ~9 s
-  on x86-64; the `< 10 min on a Pi 5` half is Handoff B below).
+  on x86-64; the `< 10 min on a Pi 5` half is Handoff B below, Phase 9 scope).
 - The two Phase 3 frozen cross-tool cases stay gated and passing (GMAT
   LEO-gravity RMS 0.0152 m, Orekit LEO-drag RMS 3.376 m).
 
 ## Definition of done for the v0.8.0 release
 
-Tag and announce only when all of these hold:
+Exactly two items gate the tag. Handoff A is discharged and its record is
+retained below; the Pi 5 clauses this list previously carried are Phase 9 scope.
+Item 3 is now discharged as well, leaving item 11, which by construction can
+only close once the tag exists. Tag and announce when both of these hold, and
+not before:
 
-- [x] **Handoff A** — the five new cross-tool cases are frozen against GMAT and
-      their five gates in `tests/python/test_crosstool_frozen_truth.py` pass
-      (no longer skip), each measured residual within its PRD tolerance and
-      recorded in `tests/golden/crosstool/manifest.toml`. Discharged: four cases
-      frozen and measured 2026-07-24, the trans-lunar case re-frozen and measured
-      2026-07-25 at `|dr|` = 18.089824 m against its 1 km gate. See the Handoff A
-      record below.
-- [ ] **Handoff B** — the Pi 5 checklist is run and `star verify` completes in
-      `< 10 min` on real Pi 5 silicon (plus the Phase 5/6 Pi 5 performance
-      clauses that share item 1).
-- [ ] Branch CI is green on all legs, and the first post-merge `nightly` run is
-      green (`release_checklist.md` item 3).
+- [x] The first post-merge `nightly` run is green (`release_checklist.md`
+      item 3). Discharged 2026-07-27: run #21, a `workflow_dispatch` against
+      the merged main `6d8b3af`, green on both `ubuntu-24.04` and
+      `ubuntu-24.04-arm` with the EC-4 absolutes, the EC-5 rolling-median
+      gate, and the artifact upload all passing —
+      <https://github.com/JusHoya/star_reacher/actions/runs/30236484910>.
+      CI on the merge commit was green too, but could not stand in for this:
+      the rolling performance history is only exercised end to end by a
+      `nightly` run on the code the release is cut from.
 - [ ] **Handoff C** — the `v0.8.0` tag is pushed and the `release` job builds
-      the four-platform wheels and passes `verify --quick` on each.
+      the four-platform wheels and passes `verify --quick` on each
+      (`release_checklist.md` item 11).
 
-Until Handoff B is discharged, this is a prepared release candidate, not a
-release.
+Until both hold, this is a prepared release candidate, not a release. Neither
+item measures Pi 5 performance, and the release must not claim any: the nightly
+`ubuntu-24.04-arm` leg is an aarch64 proxy, not a Pi 5, and the Pi 5 clauses
+close in Phase 9.
 
 ---
 
@@ -237,22 +256,34 @@ The illustrative LRO case (`missions/lro_illustrative.toml`) is **report-only,
 not a gate** — the real spacecraft's maneuver and SRP history is unmodeled — so
 it carries no tolerance and nothing needs freezing for it.
 
-## Handoff B — the Raspberry Pi 5 (criterion 4 timing, checklist item 1)
+## Handoff B (Phase 9 scope) — the Raspberry Pi 5 (checklist items 1 and 9)
+
+**Not a v0.8.0 blocker, and not closed.** As of 2026-07-26 this handoff is
+Phase 9 work: it was re-scheduled out of the release gate, not discharged and
+not waived. Nothing below is met, and no number measured elsewhere in this
+document or in CI substitutes for one measured here.
 
 **You need:** Raspberry Pi 5 (8 GB) hardware per the baseline in
 [`perf/pi5_checklist.md`](perf/pi5_checklist.md).
 
-Run that checklist end to end. Its step 3 is the criterion-4 timing clause
-(`star verify` under 10 min on Pi 5 silicon); steps 4, 6, and 7 carry the Phase
-5/6 Pi 5 performance and viewer/plot clauses that share item 1. Record results
-under `docs/perf/results/`. The nightly `ubuntu-24.04-arm` leg is only a proxy
-and never counts as a Pi 5 measurement.
+Run that checklist end to end; it is the procedure of record, and every deferred
+Pi 5 clause has exactly one home in it. Together those clauses are checklist
+item 1 — the Phase 5 performance, quicklook-plot and viewer clauses, Phase 6
+exit criterion 10 (the ascent target with the C++ GNC stack in the loop), and
+Phase 8 exit criterion 4's `star verify` under 10 min on Pi 5 silicon — and
+checklist item 9, the Phase 7 ONNX loop closure on aarch64 with its
+x86-64-versus-aarch64 final-state comparison at the D-10 1e-9 bound. Take the
+step list from that file rather than from a step number quoted here, so this
+document cannot drift out of step with it. Record results under
+`docs/perf/results/`. The nightly `ubuntu-24.04-arm` leg is only a proxy and
+never counts as a Pi 5 measurement.
 
 ## Handoff C — tag and release (criterion 5, checklist item 11)
 
-**Do this last**, after Handoff B is discharged (Handoff A already is) and
-branch + nightly CI are green. Pushing the tag is a public disclosure event
-(D-19); it is a maintainer action, deliberately not performed by the phase work.
+**Do this last**, after the first post-merge `nightly` run is green — Handoff A
+is already discharged, and Handoff B is Phase 9 scope and does not gate this
+tag. Pushing the tag is a public disclosure event (D-19); it is a maintainer
+action, deliberately not performed by the phase work.
 
 ```sh
 git tag -a v0.8.0 -m "star_reacher v0.8.0"

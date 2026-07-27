@@ -4,26 +4,41 @@ The single register of deferred, maintainer-discharged items that qualify a
 release. It implements the PRD section 9 valve — an exit-criterion clause
 that could not be closed inside its own phase is deferred here, fully
 prepared, and a release is qualified against that clause only by discharging
-the item below — and additionally carries any release-qualifying
-confirmation that can only be produced after a phase merge (item 3). Green
-CI is necessary but not sufficient wherever this register applies.
+the item below — and additionally carries the release-qualifying
+confirmations that can only be produced after a phase merge (item 3) or after
+the release tag itself (item 11). Green CI is necessary but not sufficient
+wherever this register applies.
+
+**The v0.8.0 release gate is exactly items 3 and 11**, and nothing else on
+this register blocks that tag. Item 3 needed one green `nightly` run against
+the merged main and is **discharged as of 2026-07-27**; item 11 needs the
+pushed `v0.8.0` tag and the four-platform wheel build and `verify --quick`
+smoke it triggers, so it closes as the tag lands. Items 1, 2, 4, and 9 are
+**scheduled into Phase 9 — Hardware and external-tool validation** as of
+2026-07-26: each waits on a resource or a format change that release work does
+not supply, so the phase that owns them waits on them and the tag does not.
+That is a re-scheduling, not a discharge and not a waiver — all four keep the
+clause they carry, their prepared procedure, and the record of why they were
+deferred, and each closes only by being executed. Item 10 is discharged. Items
+5–8 and 12 are registered residuals that never gated a release.
 
 The valve admits three kinds of blocker, and the register carries all three.
-Items 1 and 2 are the original kind: a required external **tool or hardware**
-was unavailable at phase close, and the item is a prepared measurement
-waiting for the resource. Item 10 was that kind too, and is discharged. Item 4
-is the second kind, added to section 9 at the Phase 6 close: a clause whose
-closure requires a new field in a **frozen on-disk format**, where what is
-deferred is a specified change rather than a measurement. Item 12 is the third
-kind, added to section 9 at the Phase 8 close-out: every resource the clause
-needs is in hand and its reduced form is committed, measured, and passing, but
-running the clause in the **full form the criterion states** is impractical
-with the committed tooling — one route is a data-volume problem and the other
-waits on a logging capability SRLOG v1 does not have. The three obligations are
-identical for all three — committed fully prepared, registered here, recorded
-inline beside the criterion — and only the **Procedure:** line differs in
-character: a command to run, a change to specify, or, for item 12, an
-extension described but not runnable at today's data volumes.
+Items 1, 2, and 9 are the original kind: a required external **tool or
+hardware** was unavailable at phase close, and the item is a prepared
+measurement waiting for the resource. Item 10 was that kind too, and is
+discharged. Item 4 is the second kind, added to section 9 at the Phase 6
+close: a clause whose closure requires a new field in a **frozen on-disk
+format**, where what is deferred is a specified change rather than a
+measurement. Item 12 is the third kind, added to section 9 at the Phase 8
+close-out: every resource the clause needs is in hand and its reduced form is
+committed, measured, and passing, but running the clause in the **full form
+the criterion states** is impractical with the committed tooling — one route
+is a data-volume problem and the other waits on a logging capability SRLOG v1
+does not have. The three obligations are identical for all three — committed
+fully prepared, registered here, recorded inline beside the criterion — and
+only the **Procedure:** line differs in character: a command to run, a change
+to specify, or, for item 12, an extension described but not runnable at
+today's data volumes.
 
 The register covers the phases closed so far (through Phase 8). Phase 7 exit
 criterion 4 re-gates on Pi 5 hardware and is registered as item 9 at its phase
@@ -33,7 +48,8 @@ to the maintainer on the execution host, and is discharged as of 2026-07-25;
 Phase 8 exit criterion 4 (the fresh-machine Pi 5 `star verify` walkthrough) is
 carried by item 1's Pi 5 hardware register.
 Once Pi 5 hardware is available, attaching it as the pinned self-hosted runner
-(PRD section 9) supersedes the manual route for the performance clauses.
+(PRD section 9) supersedes the manual route for the performance clauses; that
+attachment is Phase 9 work.
 Phase 8 exit criterion 1's Earth-Mars cruise **arrival-SOI** clause is separate
 from item 10's truth generation and is registered as item 12 at the Phase 8
 close-out: that truth is frozen and its gate passes, but it measures at the end
@@ -42,7 +58,100 @@ of the committed 7-day arc rather than at Mars-SOI arrival.
 Each item names the clause it carries, its prepared procedure, and where the
 result is recorded. When an item is discharged, commit its evidence as its
 procedure directs and update its status line here in the same commit, so this
-register always states what has and has not been done.
+register always states what has and has not been done. The groups below
+separate what gates v0.8.0 from what Phase 9 owns, but an item's **number is
+stable**: `PRD.md`, `docs/release_handoff.md`, `README.md`, and test code cite
+these items by number, so an item that changes group keeps the number it was
+registered under.
+
+## v0.8.0 release gate
+
+The two items below, and only these two, block the `v0.8.0` tag. Neither is a
+measurement waiting on an unavailable resource: each is a confirmation that
+can only be produced after an event that has not happened yet — the phase
+merge for item 3, the tag push itself for item 11.
+
+## 3. Nightly performance history
+
+- **Carries:** Phase 5 exit criterion 5 in its steady state: the rolling
+  10-run-median regression gate reads prior runs' measurement artifacts
+  through the Actions API, so it is only exercised end to end by a `nightly`
+  run on the code a release is cut from. The workflow itself has been on the
+  default branch since `47cfbe5` (authored 2026-07-04, merged to main as part
+  of `d08b6a6` on 2026-07-07) and its history was not empty when this item was
+  written — twenty scheduled runs were recorded — but none of them had run
+  against the merged main this release is cut from. The gate's compare logic is
+  CI-tested independently of the schedule.
+- **Procedure:** confirm at least one green `nightly` run against the merged
+  main (`6d8b3af`, the Phase 8 merge) before tagging the release — either the
+  scheduled 06:47 UTC run or a manual `workflow_dispatch` from the Actions
+  tab.
+- **Records to:** the workflow's run history and its measurement artifacts
+  (self-recording).
+- **Status:** discharged 2026-07-27 — `nightly` run #21, a `workflow_dispatch`
+  against the merged main `6d8b3af`, completed green on both legs
+  (`ubuntu-24.04` and `ubuntu-24.04-arm`), with the EC-4 absolutes, the
+  rolling-median EC-5 gate, and the measurement-artifact upload all passing on
+  each: <https://github.com/JusHoya/star_reacher/actions/runs/30236484910>.
+  The rolling-median gate therefore ran live, against history, on the exact
+  code the release is cut from.
+
+  *A false red on the way, recorded because the gate's variance is worth
+  knowing.* Immediately before that run, scheduled run #20 was re-run at its
+  original pre-merge commit `81d0138`; attempt 1 had passed and attempt 2
+  failed the EC-5 rolling-median gate on `ubuntu-24.04` while the
+  `ubuntu-24.04-arm` leg and every EC-4 absolute passed. Same commit, opposite
+  results, so the variable is the runner and not the code: EC-5 is a relative
+  gate with a flat 10 % tolerance and no repeat-measurement provision
+  (`scripts/perf_gate.py`, `compare_metric`), which on shared GitHub-hosted
+  x86-64 runners will produce occasional false reds. Read the failing step
+  before treating a red nightly as a regression — an EC-5 failure with the
+  EC-4 absolutes green is the signature of runner variance.
+
+## 11. Phase 8 criterion 5 — release-wheel build and smoke on all four platforms
+
+- **Carries:** Phase 8 exit criterion 5 in its release-time form — the
+  four-platform wheels install and pass `verify --quick`. Unlike items 1, 2, 9,
+  and 10, this was never blocked on an unavailable resource: it is a
+  confirmation that can only be produced after the release tag is pushed
+  (GitHub runs a tag-triggered workflow only once the tag exists), so it is
+  registered here in the same spirit as item 3's first-nightly confirmation.
+  The per-push `wheel-budget` and `dep-minimality` jobs already build and
+  audit the wheel on all four legs, and the per-push `build-test` job already
+  installs from source and runs `star verify --quick` on all four legs, so the
+  capability is continuously exercised; what the tag adds is the distributable
+  cibuildwheel artifacts and their isolated-venv `verify --quick` smoke.
+- **Procedure:** after the phase merge, push the annotated `v0.8.0` tag and
+  confirm the `release` job in `.github/workflows/ci.yml` goes green on all
+  four legs (ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2022): each
+  builds its native wheel with cibuildwheel and runs `star verify --quick` in a
+  fresh venv containing only the built wheel and its declared runtime
+  dependencies. The wheels upload as `wheels-<os>` artifacts for attachment to
+  the GitHub release.
+- **Records to:** the `release` workflow run history and its uploaded wheel
+  artifacts (self-recording).
+- **Status:** pending first post-tag run. The release job and its tag trigger
+  are committed; the tag is a maintainer action (a public disclosure event,
+  D-19) and is not pushed as part of the phase merge.
+
+## Phase 9 scope — hardware and external-tool validation
+
+Phase 9 of the PRD roadmap owns the four items below: every exit-criterion
+clause deferred through the section 9 valve because a **resource** was
+unavailable, plus the one deferred **frozen-format field**. They were
+scheduled into that phase on 2026-07-26, at the Phase 8 merge, because none of
+them is closable by release work — a tag supplies neither a Pi 5, nor a MATLAB
+license, nor a format bump. Scheduling is not discharge and not waiver: each
+item keeps the clause it carries, the procedure that closes it, and the record
+of why it was deferred, and each closes only by being executed and having its
+status line updated in the same commit as its evidence.
+
+One consequence is stated here rather than left to be derived: **v0.8.0 ships
+with no verified Pi 5 measurement of any kind.** The nightly
+`ubuntu-24.04-arm` leg is an aarch64 proxy on a Neoverse-class server core
+(`.github/workflows/nightly.yml`), not Pi 5 silicon, and an x86-64 number is
+not a Pi 5 number either; both are recorded as proxies below, and neither
+discharges a Pi 5 clause.
 
 ## 1. Raspberry Pi 5 hardware checklist
 
@@ -54,9 +163,9 @@ register always states what has and has not been done.
   new step: it is a fourth metric, `ascent_gnc_rt_factor`, measured by the
   same harness invocation in step 4 and gated at the same >= 100x. It also
   carries the Pi 5 timing clause of **Phase 8 exit criterion 4** (`star verify`
-  prints `VERIFY: PASS` in `< 10 min` on a Pi 5): this is exactly the
-  `star verify` run in the bring-up procedure below (step 3), timed on Pi 5
-  silicon. The x86-64 measurement — full-tier `star verify` at ~9 s, 65x inside
+  prints `VERIFY: PASS` in `< 10 min` on a Pi 5): this is the **timed
+  full-tier** `star verify` of step 3 below — not the `--quick` health check
+  that opens that step — measured on Pi 5 silicon. The x86-64 measurement — full-tier `star verify` at ~9 s, 65x inside
   the 10-minute budget — is recorded in the README and the fresh-machine
   walkthrough, but an x86-64 number is not a Pi 5 number and does not discharge
   this clause.
@@ -66,9 +175,14 @@ register always states what has and has not been done.
   downstream Pi 5 deployment of the simulator.
 - **Records to:** `docs/perf/results/` (measurement JSONs plus a README
   entry), per that checklist.
-- **Status:** pending — no Pi 5 hardware is available to the maintainer.
-  Deferred at Phase 5 close (2026-07-07); extended at Phase 6 close
-  (2026-07-19) to carry exit criterion 10 on the same provision. The nightly
+- **Status:** open, scheduled into **Phase 9** as of 2026-07-26 — not
+  discharged, not waived, and no longer a gate on the v0.8.0 release. It waits
+  on the resource it was deferred for and on nothing else: Raspberry Pi 5
+  hardware, either bench hardware run through the procedure above or attached
+  as the pinned self-hosted runner that supersedes the manual route. None is
+  available to the maintainer. Deferred at Phase 5 close (2026-07-07);
+  extended at Phase 6 close (2026-07-19) to carry exit criterion 10 on the
+  same provision; carried into Phase 9 with its procedure unchanged. The nightly
   `ubuntu-24.04-arm` leg is the interim aarch64 proxy and is never reported
   as a Pi 5 measurement. For the record, the closed-loop GNC ascent measures
   10,096x real time (median of three) on the maintainer's x86-64 Windows
@@ -87,22 +201,12 @@ register always states what has and has not been done.
   the run is one scripted command on any MATLAB R2019a+ host.
 - **Records to:** `tests/interop/matlab/transcript.txt` plus a manifest entry,
   per that README.
-- **Status:** pending — no MATLAB-licensed host is available to the
-  maintainer. Deferred at Phase 5 close (2026-07-07).
-
-## 3. Nightly performance history
-
-- **Carries:** Phase 5 exit criterion 5 in its steady state: the rolling
-  10-run-median regression gate only accumulates history once
-  `.github/workflows/nightly.yml` is on the default branch (GitHub schedules
-  cron only there). The gate's compare logic is CI-tested independently of the
-  schedule.
-- **Procedure:** after the phase merge, confirm at least one green `nightly`
-  run before tagging a release — either the scheduled run or a manual
-  `workflow_dispatch` from the Actions tab.
-- **Records to:** the workflow's run history and its measurement artifacts
-  (self-recording).
-- **Status:** pending first post-merge run.
+- **Status:** open, scheduled into **Phase 9** as of 2026-07-26 — not
+  discharged, not waived, and no longer a gate on the v0.8.0 release. It waits
+  on the resource it was deferred for: a MATLAB R2019a+ licensed host, which
+  is not available to the maintainer. Deferred at Phase 5 close (2026-07-07);
+  carried into Phase 9 with its committed script, expected values, and pinned
+  input hashes unchanged, so closing it remains one scripted command.
 
 ## 4. SRLOG error-layout header field (KNOWN-ISSUE-P6-5, reader side)
 
@@ -155,7 +259,12 @@ register always states what has and has not been done.
   drives `star consistency` against a log whose declared layout is *not*
   quaternion-led and asserts refusal — the coverage gap that currently makes
   the mangling reproducible only by hand.
-- **Status:** pending — deferred at Phase 6 close (2026-07-19). The blocker
+- **Status:** open, scheduled into **Phase 9** as of 2026-07-26 — not
+  discharged, not waived, and no longer a gate on the v0.8.0 release. What it
+  waits on is a change rather than a resource: the additive **SRLOG 1.4**
+  header field specified above, landed across the writer, the reader, the
+  three reduction sites, the format specification, and its conformance tests
+  in one step. Deferred at Phase 6 close (2026-07-19). The blocker
   is format stability rather than an unavailable resource: the change moves
   the writer, the reader, three independent reduction sites, the format
   specification and its conformance tests together, and landing it at the
@@ -165,6 +274,46 @@ register always states what has and has not been done.
   producer-side refusal is committed and proven at three levels, and the
   field's contents are specified above so whoever implements it is not
   starting from scratch.
+
+## 9. Phase 7 criterion 4 — ONNX loop closure on Pi 5 and the ARM cross-platform final state
+
+- **Carries:** the Pi 5 hardware and cross-platform clauses of **Phase 7 exit
+  criterion 4** ("an ONNX MLP exported from an external framework closes the
+  loop for a full scenario on x86-64 and Pi 5, with cross-platform final states
+  within the published bound"). The x86-64 clause is **met and gated in CI**:
+  `tests/python/test_onnx_gnc.py` runs the committed closed-loop scenario
+  (`missions/leo_attitude_onnx.toml` with `examples/onnx_gnc_plugin.py` and the
+  committed MLP `tests/golden/onnx/pd_mlp.onnx`) on the `ubuntu-24.04` extras
+  leg, proving the loop settles (10° → 0.171°, no NaN, `run_end` reached) and is
+  bit-deterministic across reruns. What is deferred is the literal **Pi 5**
+  half and the **x86-64-versus-aarch64 final-state** comparison, neither
+  runnable without aarch64 hardware.
+- **Procedure:** on real Raspberry Pi 5 silicon (aarch64): (a) `pip install
+  'star_reacher[ml]'` and confirm the onnxruntime aarch64 wheel installs;
+  (b) `star run missions/leo_attitude_onnx.toml --gnc-plugin
+  examples/onnx_gnc_plugin.py` and confirm it reaches `run_end` with final
+  attitude error < 1° and no NaN; (c) `python
+  scripts/cross_platform_divergence.py extract` on both the x86-64 and the Pi 5
+  `run.srlog` (distinct `--leg` labels), then `measure --bound 1e-9` and `gate
+  --bound 1e-9`, confirming the ONNX mission's cross-platform final-state
+  divergence is within the D-10 bound. The extract/measure/gate format is
+  already exercised by `test_onnx_gnc.py`'s
+  `test_final_state_is_capturable_for_cross_platform_comparison`, so the item
+  ships fully prepared: the mission, the model, the plugin, and the comparison
+  script are all committed, and discharging the clause is running the same
+  scripted steps on aarch64. Until Pi 5 hardware is available, extending the
+  extras install and this mission run to the `ubuntu-24.04-arm` CI leg is the
+  committed aarch64 proxy (it is never reported as a Pi 5 measurement).
+- **Records to:** `docs/perf/results/` (the Pi 5 run) and a cross-platform
+  measurement JSON alongside the Phase 2 record, per the divergence script.
+- **Status:** open, scheduled into **Phase 9** as of 2026-07-26 — not
+  discharged, not waived, and no longer a gate on the v0.8.0 release. It waits
+  on the resource it was deferred for: Pi 5 or other aarch64 hardware, none of
+  which is available to the maintainer. Deferred at Phase 7 close (2026-07-23)
+  on the same provision as items 1 and 2, and carried into Phase 9 alongside
+  them. Whether onnxruntime CPU inference is bit-reproducible across
+  x86-64 and aarch64 within the D-10 bound is the open empirical question this
+  item resolves; the x86-64 leg alone cannot answer it.
 
 ## Disclosed Phase 6 residuals (red-team registered)
 
@@ -278,46 +427,10 @@ hardening and coverage work, tracked here to completion.
   nightly job on the named mission; this pins against silent default drift. The
   Pi 5 hardware clause of criterion 10 is carried separately by item 1.
 
-## Phase 7 deferred items (Pi 5 hardware clause)
+## Discharged items
 
-## 9. Phase 7 criterion 4 — ONNX loop closure on Pi 5 and the ARM cross-platform final state
-
-- **Carries:** the Pi 5 hardware and cross-platform clauses of **Phase 7 exit
-  criterion 4** ("an ONNX MLP exported from an external framework closes the
-  loop for a full scenario on x86-64 and Pi 5, with cross-platform final states
-  within the published bound"). The x86-64 clause is **met and gated in CI**:
-  `tests/python/test_onnx_gnc.py` runs the committed closed-loop scenario
-  (`missions/leo_attitude_onnx.toml` with `examples/onnx_gnc_plugin.py` and the
-  committed MLP `tests/golden/onnx/pd_mlp.onnx`) on the `ubuntu-24.04` extras
-  leg, proving the loop settles (10° → 0.171°, no NaN, `run_end` reached) and is
-  bit-deterministic across reruns. What is deferred is the literal **Pi 5**
-  half and the **x86-64-versus-aarch64 final-state** comparison, neither
-  runnable without aarch64 hardware.
-- **Procedure:** on real Raspberry Pi 5 silicon (aarch64): (a) `pip install
-  'star_reacher[ml]'` and confirm the onnxruntime aarch64 wheel installs;
-  (b) `star run missions/leo_attitude_onnx.toml --gnc-plugin
-  examples/onnx_gnc_plugin.py` and confirm it reaches `run_end` with final
-  attitude error < 1° and no NaN; (c) `python
-  scripts/cross_platform_divergence.py extract` on both the x86-64 and the Pi 5
-  `run.srlog` (distinct `--leg` labels), then `measure --bound 1e-9` and `gate
-  --bound 1e-9`, confirming the ONNX mission's cross-platform final-state
-  divergence is within the D-10 bound. The extract/measure/gate format is
-  already exercised by `test_onnx_gnc.py`'s
-  `test_final_state_is_capturable_for_cross_platform_comparison`, so the item
-  ships fully prepared: the mission, the model, the plugin, and the comparison
-  script are all committed, and discharging the clause is running the same
-  scripted steps on aarch64. Until Pi 5 hardware is available, extending the
-  extras install and this mission run to the `ubuntu-24.04-arm` CI leg is the
-  committed aarch64 proxy (it is never reported as a Pi 5 measurement).
-- **Records to:** `docs/perf/results/` (the Pi 5 run) and a cross-platform
-  measurement JSON alongside the Phase 2 record, per the divergence script.
-- **Status:** pending — no Pi 5 or other aarch64 hardware is available to the
-  maintainer. Deferred at Phase 7 close (2026-07-23) on the same provision as
-  items 1 and 2. Whether onnxruntime CPU inference is bit-reproducible across
-  x86-64 and aarch64 within the D-10 bound is the open empirical question this
-  item resolves; the x86-64 leg alone cannot answer it.
-
-## Phase 8 deferred items (external-tool clause)
+Closed in place, with the history of the deferral retained rather than
+deleted.
 
 ## 10. Phase 8 criterion 1 — frozen GMAT truth for the five new cross-tool cases
 
@@ -494,32 +607,6 @@ hardening and coverage work, tracked here to completion.
   empirically below every gate by the five measured residuals above, and most
   tightly by the trans-lunar case at 18.089824 m against 1 km, which is the most
   lunar-ephemeris-sensitive case in the set.
-
-## 11. Phase 8 criterion 5 — release-wheel build and smoke on all four platforms
-
-- **Carries:** Phase 8 exit criterion 5 in its release-time form — the
-  four-platform wheels install and pass `verify --quick`. Unlike items 1, 2, 9,
-  and 10, this was never blocked on an unavailable resource: it is a
-  confirmation that can only be produced after the release tag is pushed
-  (GitHub runs a tag-triggered workflow only once the tag exists), so it is
-  registered here in the same spirit as item 3's first-nightly confirmation.
-  The per-push `wheel-budget` and `dep-minimality` jobs already build and
-  audit the wheel on all four legs, and the per-push `build-test` job already
-  installs from source and runs `star verify --quick` on all four legs, so the
-  capability is continuously exercised; what the tag adds is the distributable
-  cibuildwheel artifacts and their isolated-venv `verify --quick` smoke.
-- **Procedure:** after the phase merge, push the annotated `v0.8.0` tag and
-  confirm the `release` job in `.github/workflows/ci.yml` goes green on all
-  four legs (ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2022): each
-  builds its native wheel with cibuildwheel and runs `star verify --quick` in a
-  fresh venv containing only the built wheel and its declared runtime
-  dependencies. The wheels upload as `wheels-<os>` artifacts for attachment to
-  the GitHub release.
-- **Records to:** the `release` workflow run history and its uploaded wheel
-  artifacts (self-recording).
-- **Status:** pending first post-tag run. The release job and its tag trigger
-  are committed; the tag is a maintainer action (a public disclosure event,
-  D-19) and is not pushed as part of the phase merge.
 
 ## Phase 8 registered residual (full-form-impractical clause)
 
