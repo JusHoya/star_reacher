@@ -252,7 +252,9 @@ tolerance = "gate: 3D position RMS of the re-propagated mission vs this file < 1
 #   XTOOL-LUNAR-GMAT         missions/lunar_orbiter.toml  RMS < 100 m / 7 d
 #   XTOOL-MARS-ORBITER-GMAT  missions/mars_orbiter.toml   RMS < 100 m / 7 d
 #   XTOOL-TRANSLUNAR-GMAT    missions/tli.toml coast      < 1 km at lunar arrival
-#   XTOOL-MARS-CRUISE-GMAT   missions/mars_cruise.toml    < 100 km at arrival
+#   XTOOL-MARS-CRUISE-GMAT   missions/mars_cruise.toml    < 100 km at arc end
+#                                                         (not Mars-SOI arrival;
+#                                                          checklist item 12)
 #
 # Toolchain provenance: identical to the Phase 3 block above (GMAT R2026a
 # portable, pinned SHA-256 F7B00BDE...; stock startup file and EOP pins as

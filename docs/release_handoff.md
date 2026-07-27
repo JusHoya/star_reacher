@@ -26,12 +26,22 @@ These need nothing from you and are gated in `.github/workflows/ci.yml`:
   five gates in `tests/python/test_crosstool_frozen_truth.py` pass, each
   measured residual inside its PRD tolerance and recorded in
   `tests/golden/crosstool/manifest.toml`. This was Handoff A, discharged
-  2026-07-25; the record and the measured residuals are below.
-- Criterion 2 — the math-library and report PDFs build warning-clean via
-  `star docs` on the CI TeX Live, the chapter-accretion lint is green, every
-  code-cited equation label resolves, and every validation-table test ID exists
-  (`docs` job; the two consecutive builds are byte-identical under
-  `SOURCE_DATE_EPOCH`).
+  2026-07-25; the record and the measured residuals are below. The Earth-Mars
+  cruise gate measures at the end of the committed 7-day arc rather than at
+  Mars-SOI arrival; that substituted epoch is registered as
+  [`release_checklist.md`](release_checklist.md) item 12 and is a residual, not
+  a release blocker.
+- Criterion 2 — the math-library and report PDFs build warning-clean, the
+  chapter-accretion lint is green, every code-cited equation label resolves,
+  and every validation-table test ID exists. Warning-clean is enforced by
+  `star docs` itself, so it holds on any host and not only in CI: `build_docs`
+  scans each document's `.log` and fails on any LaTeX, Package, Class, or Font
+  `Warning:` diagnostic, on an undefined reference or citation, and on a
+  missing log. Overfull and underfull box reports are outside that definition
+  and are counted and printed rather than gated. The `docs` job additionally
+  builds both PDFs, fully cleans each document directory, rebuilds, and fails
+  on any SHA-256 difference, which is the byte-identity clause;
+  `SOURCE_DATE_EPOCH` is pinned to the HEAD commit time by `build_docs`.
 - Criterion 3 — the report case-study figures regenerate bit-for-bit
   (`report-figures` job runs `scripts/figures/casestudy_figures.py --verify-repro`;
   `--check-committed` additionally proves a fresh render equals the committed
@@ -112,7 +122,7 @@ host produced the measured residuals.
 
 3. The trans-lunar re-freeze, the last of the five. Molniya (position RMS
    0.160317 m), lunar orbiter (7.232688 m), Mars orbiter (79.478630 m, the
-   thinnest margin at ~1.26x), and Mars cruise (arrival `|dr|` 952.550 m) were
+   thinnest margin at ~1.26x), and Mars cruise (`|dr|` 952.550 m at arc end) were
    closed by the 2026-07-24 laptop freeze plus the build-host measurement. The
    trans-lunar case needed a second freeze because its first one was
    invalidated: the original `.script` started from the tli t = 353 s truth

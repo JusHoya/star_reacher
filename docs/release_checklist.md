@@ -8,16 +8,22 @@ the item below — and additionally carries any release-qualifying
 confirmation that can only be produced after a phase merge (item 3). Green
 CI is necessary but not sufficient wherever this register applies.
 
-The valve admits two kinds of blocker, and the register carries both.
+The valve admits three kinds of blocker, and the register carries all three.
 Items 1 and 2 are the original kind: a required external **tool or hardware**
 was unavailable at phase close, and the item is a prepared measurement
 waiting for the resource. Item 10 was that kind too, and is discharged. Item 4
 is the second kind, added to section 9 at the Phase 6 close: a clause whose
 closure requires a new field in a **frozen on-disk format**, where what is
-deferred is a specified change rather than a measurement. The three
-obligations are identical for both — committed fully prepared, registered
-here, recorded inline beside the criterion — and only the **Procedure:** line
-differs in character.
+deferred is a specified change rather than a measurement. Item 12 is the third
+kind, added to section 9 at the Phase 8 close-out: every resource the clause
+needs is in hand and its reduced form is committed, measured, and passing, but
+running the clause in the **full form the criterion states** is impractical
+with the committed tooling — one route is a data-volume problem and the other
+waits on a logging capability SRLOG v1 does not have. The three obligations are
+identical for all three — committed fully prepared, registered here, recorded
+inline beside the criterion — and only the **Procedure:** line differs in
+character: a command to run, a change to specify, or, for item 12, an
+extension described but not runnable at today's data volumes.
 
 The register covers the phases closed so far (through Phase 8). Phase 7 exit
 criterion 4 re-gates on Pi 5 hardware and is registered as item 9 at its phase
@@ -28,6 +34,10 @@ Phase 8 exit criterion 4 (the fresh-machine Pi 5 `star verify` walkthrough) is
 carried by item 1's Pi 5 hardware register.
 Once Pi 5 hardware is available, attaching it as the pinned self-hosted runner
 (PRD section 9) supersedes the manual route for the performance clauses.
+Phase 8 exit criterion 1's Earth-Mars cruise **arrival-SOI** clause is separate
+from item 10's truth generation and is registered as item 12 at the Phase 8
+close-out: that truth is frozen and its gate passes, but it measures at the end
+of the committed 7-day arc rather than at Mars-SOI arrival.
 
 Each item names the clause it carries, its prepared procedure, and where the
 result is recorded. When an item is discharged, commit its evidence as its
@@ -318,13 +328,15 @@ hardening and coverage work, tracked here to completion.
   orbiter, MRO-class, harmonics + SRP (`missions/mars_orbiter.toml`), each gated
   at position RMS < 100 m over 7 days; trans-lunar (the ballistic coast of
   `missions/tli.toml`) gated at < 1 km at lunar arrival; and Earth-Mars cruise
-  (`missions/mars_cruise.toml`) gated at < 100 km at arrival. The two Phase 3
-  cross-tool cases (GMAT LEO gravity, Orekit LEO drag) are already frozen and
-  gated and are **not** part of this item. The illustrative LRO-ephemeris
-  comparison (`missions/lro_illustrative.toml`) is **report-only, not a gate**
-  (the real LRO's maneuvers and SRP/attitude history are unmodeled), so it
-  carries no tolerance and appears here only as a note. What was deferred is the
-  external truth: GMAT was not installed on the Phase 8 execution host, exactly
+  (`missions/mars_cruise.toml`) gated at < 100 km, measured at the end of the
+  committed 7-day arc rather than at Mars-SOI arrival (item 12). The two
+  Phase 3 cross-tool cases (GMAT LEO gravity, Orekit LEO drag) are already
+  frozen and gated and are **not** part of this item. The illustrative
+  LRO-ephemeris comparison (`missions/lro_illustrative.toml`) is
+  **report-only, not a gate** (the real LRO's maneuvers and SRP/attitude
+  history are unmodeled), so it carries no tolerance and appears here only as
+  a note. What was deferred is the external truth: GMAT was not installed on
+  the Phase 8 execution host, exactly
   the D-15 maintainer-boundary/unavailable-tool blocker the section 9 valve
   covers (the analogue of item 2's MATLAB clause). The DE440 lunar excerpt
   carrying the `moon_librations` segment
@@ -393,7 +405,8 @@ hardening and coverage work, tracked here to completion.
   - `XTOOL-LUNAR-GMAT` — position RMS 7.232688 m against < 100 m;
   - `XTOOL-MARS-ORBITER-GMAT` — position RMS 79.478630 m against < 100 m, the
     thinnest margin in the set at ~1.26x;
-  - `XTOOL-MARS-CRUISE-GMAT` — arrival |dr| 952.550 m against < 100 km;
+  - `XTOOL-MARS-CRUISE-GMAT` — |dr| 952.550 m at the end of the committed
+    7-day arc, not at Mars-SOI arrival (item 12), against < 100 km;
   - `XTOOL-TRANSLUNAR-GMAT` — |dr| 18.089824 m at the lunar-SOI arrival epoch
     against < 1 km, a margin of about 55x.
 
@@ -507,3 +520,87 @@ hardening and coverage work, tracked here to completion.
 - **Status:** pending first post-tag run. The release job and its tag trigger
   are committed; the tag is a maintainer action (a public disclosure event,
   D-19) and is not pushed as part of the phase merge.
+
+## Phase 8 registered residual (full-form-impractical clause)
+
+## 12. Phase 8 criterion 1 — Earth-Mars cruise at Mars-SOI arrival
+
+- **Carries:** Phase 8 exit criterion 1's Earth-Mars cruise clause in the form
+  the criterion literally states — "Mars cruise < 100 km at arrival SOI"
+  (`PRD.md`) — as distinct from the form now gated and passing. The committed
+  gate `XTOOL-MARS-CRUISE-GMAT` applies that same 100 km bound at the end of
+  the committed 7-day report arc of `missions/mars_cruise.toml`
+  (`duration_s = 604800.0`), where it measures 952.550 m against frozen GMAT
+  truth. Seven days is about 2.7 % of the ~259-day transfer, so the committed
+  measurement bounds the two tools' agreement over the departure leg only: the
+  difference accumulated by Mars-SOI arrival is unmeasured, and it is not
+  implied by the 952.550 m figure. The substitution is disclosed wherever the
+  gate is stated — the criterion-1 record in `PRD.md`, the
+  `gmat_mars_cruise.script` and `truth_gmat_mars_cruise.csv` entries in
+  `tests/golden/crosstool/manifest.toml`, the script header itself (lines
+  26–37), `tests/golden/crosstool/README.md`, the gate's own docstring in
+  `tests/python/test_crosstool_frozen_truth.py`, and `docs/release_handoff.md`
+  — so what this item carries is the unmeasured arrival epoch, not an
+  undisclosed one. Item 10 carried the *generation* of this case's frozen
+  truth and is discharged; this item carries the *epoch at which the frozen
+  comparison is taken*.
+- **Procedure:** the `.script` header (lines 26–37) records two routes to a
+  full-cruise comparison, and both change only `Propagate`'s stop condition on
+  the GMAT side — the force model, the SunICRF system, and the t = 0
+  patched-conic handoff state carry over unchanged. Both are blocked on the
+  simulator side, so what follows is a described extension rather than a
+  scripted measurement waiting on a resource:
+  1. **Extend the arc at the committed log rate.** Raise
+     `missions/mars_cruise.toml`'s `duration_s` to the ~259-day transfer,
+     propagate GMAT to the Mars-SOI crossing, and compare the arrival
+     position. SRLOG v1's minimum periodic rate is 1 Hz, at which the run
+     writes ~22 million truth records, about 2.7 GB
+     (`missions/mars_cruise.toml` header) — the volume for whose sake the
+     committed mission is a 7-day arc in the first place. GMAT's own side is
+     not the constraint: its report stays on the 60 s comparison grid, roughly
+     373,000 rows against the committed arc's 10,081.
+  2. **Extend the arc at a coarser log rate.** The same extension with
+     sub-hertz truth logging, which SRLOG v1 cannot express:
+     `docs/formats/srlog_v1.md` section 3 makes `rate_hz` an integer with 0
+     reserved for aperiodic streams, and the mission validator
+     (`python/star_reacher/mission.py`) rejects a `truth_rate_hz` that is not
+     an integer >= 1, so 1 Hz is the floor. This route waits on a format
+     change that is **not** additive and so is heavier than item 4's: item 4
+     adds a new header key, which `docs/formats/srlog_v1.md` section 6 admits
+     as a minor bump ("additive change only: new channels or new groups"),
+     whereas relaxing `rate_hz` widens the value domain of an existing
+     normative key that section 3 specifies as an integer and requires every
+     fixed-rate group to divide exactly. It is nonetheless the route that
+     would make the arrival comparison routinely runnable rather than a
+     one-off.
+
+  Two pieces of the comparison path are already committed and proven: the
+  frozen-truth CSV reader and the 60 s grid alignment, exercised on the sim's
+  own states by `test_rms_machinery_is_correct_on_sim_own_states`. That test
+  measures a *position RMS* over a whole arc, which is the form the Molniya
+  and orbiter gates take; the cruise gate is not that shape — it is a
+  single-epoch difference at the last row
+  (`tests/python/test_crosstool_frozen_truth.py`), and an arrival gate would
+  be the same shape at a different epoch. So what stands between the committed
+  gate and the criterion's literal wording is the arc length, the log rate,
+  and an arrival-epoch comparison whose first attempt on the trans-lunar case
+  was got wrong twice — once on the initial state and once on the comparison
+  epoch — which is the part of this item that warrants care rather than
+  confidence.
+- **Records to:** `tests/golden/crosstool/` — a full-transfer arrival truth row
+  committed alongside the arc truth rather than in place of it, with its own
+  manifest entry carrying the SHA-256 pin, the freeze date, and the measured
+  arrival `|dr|` — plus a second assertion in
+  `tests/python/test_crosstool_frozen_truth.py` gating that row at < 100 km,
+  so the arc-end and arrival forms remain visibly distinct gates.
+- **Status:** open — registered at the Phase 8 close-out (2026-07-26). It is a
+  **registered residual and does not gate the v0.8.0 release**: criterion 1's
+  Earth-Mars cruise case is measured rather than waived, by a committed gate
+  that passes at 952.550 m with its substituted epoch disclosed at every site
+  that states the gate, and the outstanding form is impractical rather than
+  merely unresourced — route 1 costs a multi-gigabyte truth log and route 2
+  waits on a non-additive SRLOG change heavier than the additive one the
+  register already defers separately as item 4, so gating the tag here would
+  hold the release behind a format break it does not otherwise need. The
+  blocker is the data volume of a full-transfer comparison at the 1 Hz SRLOG
+  floor, named here rather than left implicit in the criterion's wording.

@@ -1,5 +1,7 @@
 # CI (PRD section 7 matrix; Phase 1 exit criteria 1, 5, 6, 7; Phase 2
-# exit criterion 8; Phase 5 exit criteria 3 and 6).
+# exit criterion 8; Phase 5 exit criteria 3 and 6; Phase 8 exit criteria 2,
+# 3, and 5). A bare "exit criterion N" below means Phase 1; every other phase
+# is named.
 # Honesty rule: no continue-on-error anywhere — a red gate is a red build.
 name: ci
 
@@ -307,10 +309,16 @@ jobs:
       - name: Run doctest suite
         run: ctest --test-dir build/ci --output-on-failure
 
-  # Exit criterion 5: both PDFs build with zero LaTeX errors on a clean
-  # clone, the FR-29 chapter lint is green, and the PDFs are uploaded as
-  # artifacts. The lint runs before the build so a documentation-accretion
-  # failure is reported even when LaTeX would also fail.
+  # Exit criterion 5, and Phase 8 exit criterion 2's build and reproducibility
+  # clauses: both PDFs build on a clean clone, the FR-29 chapter lint is green,
+  # the PDFs are uploaded as artifacts, and two consecutive doc builds under
+  # SOURCE_DATE_EPOCH are byte-identical. The build is warning-clean, not merely
+  # error-clean: `star docs` scans each LaTeX log and fails on any Warning-tagged
+  # diagnostic, so Phase 8 criterion 2's wording is enforced by the tool rather
+  # than by this job. The lint runs before the build so a documentation-accretion
+  # failure is reported even when LaTeX would also fail. The byte-identity check
+  # runs last, after the upload, so the first build's PDFs are still collected
+  # for inspection when the digests disagree.
   docs:
     runs-on: ubuntu-24.04
     steps:
@@ -342,6 +350,47 @@ jobs:
             docs/mathlib/mathlib.pdf
             docs/report/report.pdf
           if-no-files-found: error
+      - name: Assert two consecutive builds are byte-identical (criterion 2)
+        # `star docs` already pins SOURCE_DATE_EPOCH to the HEAD commit time;
+        # what the criterion additionally demands is that a second build
+        # actually reproduces the first, so build it again and compare digests.
+        # `latexmk -C` is used rather than `-c` because it removes the PDF as
+        # well as the .aux/.fls/.fdb_latexmk state: a rebuild that resumed from
+        # that state could re-emit the first PDF untouched and prove nothing.
+        run: |
+          # pipefail matters here: without it a failing sha256sum still yields
+          # cut's zero status, and the digest silently becomes the empty string
+          # -- two empty digests compare equal and the gate passes vacuously.
+          set -euo pipefail
+          first_mathlib=$(sha256sum docs/mathlib/mathlib.pdf | cut -d ' ' -f 1)
+          first_report=$(sha256sum docs/report/report.pdf | cut -d ' ' -f 1)
+          (cd docs/mathlib && latexmk -C)
+          (cd docs/report && latexmk -C)
+          for pdf in docs/mathlib/mathlib.pdf docs/report/report.pdf; do
+            if [ -e "$pdf" ]; then
+              echo "latexmk -C left $pdf in place; the rebuild would be incremental" >&2
+              exit 1
+            fi
+          done
+          star docs
+          second_mathlib=$(sha256sum docs/mathlib/mathlib.pdf | cut -d ' ' -f 1)
+          second_report=$(sha256sum docs/report/report.pdf | cut -d ' ' -f 1)
+          echo "mathlib.pdf build 1: $first_mathlib"
+          echo "mathlib.pdf build 2: $second_mathlib"
+          echo "report.pdf  build 1: $first_report"
+          echo "report.pdf  build 2: $second_report"
+          status=0
+          if [ "$first_mathlib" != "$second_mathlib" ]; then
+            echo "docs/mathlib/mathlib.pdf differs between the two builds" >&2
+            status=1
+          fi
+          if [ "$first_report" != "$second_report" ]; then
+            echo "docs/report/report.pdf differs between the two builds" >&2
+            status=1
+          fi
+          # Both comparisons report before the job fails, so one run names
+          # every non-reproducible PDF rather than only the first.
+          exit $status
 
   # Exit criterion 6: CITATION.cff validates against the CFF schema and the
   # README BibTeX block matches it field for field.

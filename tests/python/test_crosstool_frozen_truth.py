@@ -22,9 +22,10 @@ Phase 8 (frozen, gated in CI):
                            (measured 79.478630 m);
 - XTOOL-TRANSLUNAR-GMAT    missions/tli.toml coast, position < 1 km at lunar
                            arrival (measured 18.089824 m);
-- XTOOL-MARS-CRUISE-GMAT   missions/mars_cruise.toml, position < 100 km at
-                           arrival (measured 952.550 m at the end of the
-                           committed arc).
+- XTOOL-MARS-CRUISE-GMAT   missions/mars_cruise.toml, position < 100 km,
+                           measured 952.550 m at the end of the committed
+                           7-day arc rather than at Mars-SOI arrival; that
+                           substituted epoch is checklist item 12.
 
 The Phase 8 truth CSVs were frozen offline on the maintainer GMAT machine
 (D-15; ``docs/release_checklist.md`` item 10). All five are committed, all
@@ -251,7 +252,7 @@ def test_xtool_translunar_gmat(tmp_path):
 
 
 def test_xtool_mars_cruise_gmat(tmp_path):
-    """XTOOL-MARS-CRUISE-GMAT: position < 100 km at arrival vs frozen GMAT.
+    """XTOOL-MARS-CRUISE-GMAT: position < 100 km at arc end vs frozen GMAT.
 
     The committed mars_cruise arc is 7 days (the full 259-day cruise is ~2.7 GB
     at the 1 Hz SRLOG minimum, mars_cruise.toml header). The gate compares the
@@ -272,8 +273,9 @@ def test_xtool_mars_cruise_gmat(tmp_path):
     dist = float(np.linalg.norm(r_sim[-1] - truth[-1, 1:4]))
     print(f"XTOOL-MARS-CRUISE-GMAT: |dr| at end of committed arc {dist:.3f} m")
     assert dist < 100_000.0, (
-        f"XTOOL-MARS-CRUISE-GMAT: position difference at arrival is {dist:.3f} m "
-        f"(gate: < 100 km)"
+        f"XTOOL-MARS-CRUISE-GMAT: position difference at the end of the "
+        f"committed 7-day arc is {dist:.3f} m (gate: < 100 km; the arrival-SOI "
+        f"form is checklist item 12)"
     )
 
 

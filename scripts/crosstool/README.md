@@ -44,7 +44,9 @@ policy).
 Five additional GMAT cases: Molniya, lunar orbiter, Mars orbiter, trans-lunar
 coast, and Earth-Mars cruise (the Molniya, lunar-orbiter, and Mars-orbiter
 gates are 7-day position RMS < 100 m; trans-lunar is < 1 km at lunar arrival;
-Mars cruise is < 100 km at arrival). Their missions, GMAT `.script` files, and
+Mars cruise is < 100 km at the end of its committed 7-day arc rather than at
+Mars-SOI arrival, which is checklist item 12). Their missions, GMAT `.script`
+files, and
 gravity-field COF inputs are committed; the frozen truth is generated offline
 on the maintainer GMAT machine (`docs/release_checklist.md` item 10) because
 GMAT was not installed on the Phase 8 execution host. Status 2026-07-25: all
@@ -73,7 +75,9 @@ Phase 8 regeneration order (repo root; maintainer with GMAT R2026a):
    if a future build locates a different lunar arrival epoch.
 4. `python scripts/crosstool/compare_rms.py <mission run.srlog> <truth.csv>` —
    report the 7-day RMS numbers for the manifest (the trans-lunar and
-   Mars-cruise arrival-point numbers are reported by their gates directly).
+   Mars-cruise gates are single-epoch differences rather than RMS values --
+   trans-lunar at lunar arrival, Mars cruise at its arc end -- and each is
+   reported by its own gate directly).
 
 CI never runs any of this; it consumes only the committed CSVs, and a gate
 whose CSV is missing from a checkout skips rather than passes. The lunar cases

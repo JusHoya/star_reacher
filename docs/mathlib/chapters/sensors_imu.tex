@@ -512,16 +512,26 @@ machine-checked test identifier. The zero-error increments remain the
 model's zero-coefficient special case: each error stage degenerates to an
 exact identity, which is itself asserted rather than assumed.
 
-\begin{table}[htbp]
-  \centering
+% longtable rather than table: these rows outgrew a single page once every
+% stage of the error chain earned a row of its own beside the exit-criterion-1
+% bit-identity row, and a float too large for the page drops its trailing rows
+% from the PDF while the source still lists them.
+\begin{longtable}{lp{8.4cm}}
   \caption{Validation evidence for the IMU: core (doctest,
     \texttt{cpp/tests/test\_sensors.cpp},
     \texttt{cpp/tests/test\_gnc\_cycle.cpp}).}
-  \label{tab:imu:validation}
-  \begin{tabular}{lp{8.4cm}}
-    \toprule
-    Test ID & Acceptance basis \\
-    \midrule
+  \label{tab:imu:validation} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{@{}l}{\itshape Table \thetable\ continued from the previous page.} \\
+  \toprule
+  Test ID & Acceptance basis \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
     \testid{sensors_ideal_imu_trapezoidal_accumulation_and_reset} &
       Two cycles of held endpoint kinematics, with $\Delta t$ and endpoint
       values chosen exactly representable in binary64, accumulate to the
@@ -581,9 +591,7 @@ exact identity, which is itself asserted rather than assumed.
       every-sensor clause is carried by
       \testid{test_full_sensor_suite_reruns_bit_identical} in
       Table~\ref{tab:imu:validation-py}. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\end{longtable}
 
 \begin{table}[htbp]
   \centering

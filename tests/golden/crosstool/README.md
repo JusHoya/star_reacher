@@ -158,7 +158,7 @@ Their gates are PRD Phase 8 exit criterion 1 verbatim:
 | Lunar orbiter | `missions/lunar_orbiter.toml` | GMAT | position RMS < 100 m over 7 days |
 | Mars orbiter | `missions/mars_orbiter.toml` | GMAT | position RMS < 100 m over 7 days |
 | Trans-lunar | `missions/tli.toml` (coast) | GMAT | position < 1 km at lunar arrival |
-| Earth-Mars cruise | `missions/mars_cruise.toml` | GMAT | position < 100 km at arrival |
+| Earth-Mars cruise | `missions/mars_cruise.toml` | GMAT | position < 100 km at the end of the committed 7-day arc, not at Mars-SOI arrival (checklist item 12) |
 
 Plus an illustrative LRO-ephemeris comparison (`missions/lro_illustrative.toml`,
 a ~50 km LRO-class mapping orbit) carried as a **report case study only, NOT a
@@ -256,7 +256,7 @@ measure and are met.
 | XTOOL-LUNAR-GMAT | `truth_gmat_lunar_orbiter.csv` | RMS < 100 m / 7 d | **7.232688 m** |
 | XTOOL-MARS-ORBITER-GMAT | `truth_gmat_mars_orbiter.csv` | RMS < 100 m / 7 d | **79.478630 m** |
 | XTOOL-TRANSLUNAR-GMAT | `truth_gmat_translunar.csv` | < 1 km at lunar arrival | **18.089824 m** |
-| XTOOL-MARS-CRUISE-GMAT | `truth_gmat_mars_cruise.csv` | < 100 km at arrival | **952.550 m** |
+| XTOOL-MARS-CRUISE-GMAT | `truth_gmat_mars_cruise.csv` | < 100 km at arc end (item 12) | **952.550 m** |
 
 The command lines, artifact SHA-256 pins, and the toolchain provenance behind
 each value are recorded in `manifest.toml`. The Mars-orbiter case carries the
