@@ -66,6 +66,148 @@ decomposition of the environment terms in the vehicle path is deferred.
 environment force decomposition, and no shipped mission enables SRP or orbital
 drag on the vehicle path.
 
+**Correction to the impact paragraph, and ownership (2026-07-28).** The bound
+above has become circular and is recorded as such rather than carried forward.
+It rests on no shipped mission enabling SRP or orbital drag on the vehicle
+path; the content campaign of 2026-07-27 shows why that is true.
+`content/missions/tmi_relay_carrier.toml` disables both models and says so in
+the file (lines 136-141 and 225-229), the second comment block stating plainly
+that "there is no separate solar-radiation-pressure or drag channel" on the
+vehicle path. A defect that discourages the missions which would expose it is
+not bounded by their absence. The verdict of every Phase 4 criterion is still
+unaffected — none tests a per-source decomposition — but the reasoning for that
+verdict is now the criteria's own wording rather than the absence of exercising
+missions. The defect is **owned by Phase 9-B exit criterion 12** (`PRD.md`),
+which requires per-source `srp` and `drag` channels on the vehicle path with
+`thirdbody` narrowed to the third-body term alone, and closes this entry in
+place with its history retained. The decomposition must be for reporting only:
+D-10 pins the force-summation order for bit-determinism, so the split is done
+inside the existing accumulation, leaving the summed acceleration bit-identical.
+
+## KNOWN-ISSUE-P4-3 — `prograde_hold` logs a body rate that cannot generate its own quaternion
+
+**Owned by Phase 9-B exit criterion 8 (`PRD.md`).** Found during the content
+campaign of 2026-07-27 and measured on its committed logs. This is a defect in
+a **shipped truth channel**, not a missing capability: FR-1 makes quaternion
+attitude kinematics the first requirement in the specification, and Goal 1 is a
+truth model "suitable as ground truth for GNC and navigation research". A
+researcher who integrates the logged `truth.w_b_radps` to check the logged
+`truth.q_i2b` gets a wrong answer on any `prograde_hold` run.
+
+**Defect.** The `kProgradeHold` branch of the open-loop attitude command
+(`cpp/src/vehicle_cycle.cpp:1358-1366`) prescribes a velocity-pointing
+quaternion each control cycle and then sets `omega_b = Eigen::Vector3d::Zero()`.
+The quaternion sweeps; the logged rate does not. The truth stream is therefore
+internally inconsistent on that channel: an integrator of the logged `w` does
+not reproduce the logged `q`.
+
+**The defect is confined to this one mode.** The other four branches of the
+same function are consistent and must not be changed. `kPadFixed` (`:1329-1340`)
+logs the planet spin resolved in body axes, `C(q) * omega_earth`, which is
+correct for a pad co-rotating with the planet. `kPitchProgram` (`:1341-1354`)
+forms the commanded attitude at `t` and at `t + dt` and logs
+`models::omega_from_quaternions(q0, q1, dt)` — the routine `prograde_hold`
+needs and does not call, two branches above it in the same function.
+`kRateCommand` (`:1355-1358`) logs the commanded rate resolved per the declared
+frame. The inertial-hold branch (`:1371-1372`) logs zero, which is correct
+because its `q` is constant. `kGnc` is the Phase 6 closed-loop path, where `q`
+and `omega_b` are the integrated attitude state and are consistent by
+construction.
+
+**Reproduction on a committed mission.** `missions/tli.toml` flies
+`action = "prograde_hold"` (`:67`) and is in the repository, so this defect is
+reproducible from a clean clone with no campaign material. Run the mission and
+read its truth group:
+
+```
+star run missions/tli.toml --out out/tli
+```
+
+```python
+import numpy as np, star_reacher
+t = star_reacher.load("out/tli/run.srlog").groups["truth"]
+w = np.asarray(t["w_b_radps"]); q = np.asarray(t["q_i2b"])
+d = np.clip(np.abs(q @ q[0]), -1, 1)
+print("samples          ", w.shape[0])
+print("max|w_b_radps|   ", np.abs(w).max())
+print("nonzero w comps  ", int(np.count_nonzero(w)), "of", w.size)
+print("max angle from q0", 2 * np.arccos(d).max(), "rad")
+```
+
+Measured on the build host at v0.8.0, `run.srlog` SHA-256
+`4ea0641e60c014a28fcbf062802e5ceec0d7b6f4a80b5c1ad5e9518425066ef9`:
+
+```
+samples           455756
+max|w_b_radps|    0.0
+nonzero w comps   0 of 1367268
+max angle from q0 3.141591858352968 rad
+```
+
+Every one of the **1,367,268** logged rate components across **455,756** truth
+samples is exactly `0.0`, while `q_i2b` accumulates a **209.723055 deg**
+sample-to-sample sweep and departs its own t0 attitude by **3.141592 rad**, a
+full 180 degrees. A zero-rate reconstruction from the logged t0 quaternion
+therefore misses the logged quaternion by up to π radians — the largest miss the
+metric admits. The finite difference of the logged `q_i2b` implies a body rate
+reaching **1.183354e-03 rad/s**, which is what the channel should have carried.
+
+**Corroboration from the content campaign.** The same measurement on the
+campaign's trans-Mars-injection carrier, `content/run/carrier/run.srlog` — which
+flies `action = "prograde_hold"` at
+`content/missions/tmi_relay_carrier.toml:248` — reports all **1,814,403** rate
+components across **604,801** truth samples exactly `0.0`, a **78.618638 deg**
+cumulative sweep, a maximum departure from t0 of **1.155152 rad (66.185349
+deg)**, and a finite-difference-implied rate reaching **8.516475e-04 rad/s**.
+Note that `content/run/` is git-ignored (`content/.gitignore:19`), so those
+paths are working-tree artifacts rather than committed evidence; they are cited
+because they are what the defect was found on, and the committed `tli` figures
+above are the reproducible record.
+
+The campaign's closed-loop runs are the control, and they are correct:
+`content/run/relay2/run.srlog` logs a real rate peaking at **3.863997e-02
+rad/s** against a 179.999955 deg quaternion sweep, and
+`content/run/relay3/run.srlog` peaks at **1.814332e-02 rad/s**. The
+inconsistency tracks the attitude mode, not the campaign.
+
+**The fix moves trajectories, not only a logged channel.** `omega_b` is not a
+write-only diagnostic. It is passed to `models::separation_remap` for the FR-10
+state remap `v_new = v + omega x delta_r_cg`
+(`cpp/src/vehicle_cycle.cpp:1286-1290`) and to `models::aero_force_torque` for
+the `Cmq` damping term (`:311-316`). So giving `prograde_hold` a nonzero rate
+changes the **trajectory** of any prograde-hold mission that jettisons, or that
+flies an aero block in atmosphere — not merely its logged rate. Of the shipped
+missions, `missions/tli.toml` uses `prograde_hold` (`:67`) but carries no
+jettison and no aero in vacuum, so only its `truth.w_b_radps` channel moves.
+The campaign's carrier executes three `jettison` actions under `prograde_hold`
+(`content/missions/tmi_relay_carrier.toml:270`, `:278`, `:286`), so its
+post-deploy trajectory moves. Any regeneration of affected reference logs must
+go through the FR-22 two-key path (`scripts/golden_update.py`) or CI rejects it,
+and the set of logs whose SHA-256 changes must be enumerated by name in the
+fixing commit.
+
+**Remedy.** Give `kProgradeHold` the same finite-difference rate
+`kPitchProgram` already uses: form the prograde attitude at `t` and at `t + dt`
+from the state the cycle already has and difference them with
+`models::omega_from_quaternions`. The result is O(dt) accurate, so a
+reconstruction test's tolerance must be *derived* from the cycle rate rather
+than asserted, or the gate is either vacuous or flaky. Making the open-loop
+modes **dynamically** consistent is explicitly not the remedy and not wanted: no
+torque is claimed to produce these rates and none should be. The `docs/mathlib`
+vehicle-attitude chapter should state, per open-loop mode, whether the logged
+rate generates the logged quaternion and to what order of `dt`.
+
+**Exit-criterion impact: none in verdict, on the evidence available.** No Phase
+4 or Phase 6 exit criterion reads `truth.w_b_radps` on a `prograde_hold`
+mission. Phase 4 exit criterion 6 evaluates `missions/tli.toml` on its
+SOI-transition event and perilune altitude, both of which are position-derived;
+Phase 8 exit criterion 1's trans-lunar cross-tool case compares position and
+velocity at the lunar-SOI arrival epoch (18.089824 m against a < 1 km gate) and
+`missions/tli.toml` carries no jettison, so the FR-10 remap is not reached and
+that gate's trajectory does not move under the fix. What is affected is any
+downstream consumer that treats the logged rate as ground truth — the use the
+channel exists for.
+
 ## KNOWN-ISSUE-P6-1 — the mission validator does not count the FR-23 optical sensors as ephemeris consumers
 
 `[environment] ephemeris` is rejected unless a *force* model consumes it: the
@@ -466,6 +608,19 @@ position.
 
 ## KNOWN-ISSUE-P6-8 — camera landmark aberration uses the barycentric velocity for a co-moving source
 
+**Status correction (2026-07-28): the owning phase named below has already
+closed.** This entry was written "Scheduled for Phase 7"; Phase 7 closed on
+2026-07-23 (merge `81d0138`) without the fix, and the entry was never registered
+on the `docs/release_checklist.md` section 9 register, so it has had **no owner
+and no closure gate** since that date and v0.8.0 shipped with it open. Verified
+still open at v0.8.0: `cpp/src/sensors/camera.cpp:131-132` still forms the
+barycentric beta and applies it to co-moving landmarks. Assigning a live owner
+is required by **Phase 9-B exit criterion 9** (`PRD.md`), whose last clause
+requires this entry to carry a status line naming a live owning phase and a
+register item number; the fix itself is explicitly **out** of that criterion's
+scope, which corrects ownership only. The original scheduling text is retained
+below unedited, because the wording is what let a phase close drop the defect.
+
 **Scheduled for Phase 7.** Found in a post-close independent review; the fix is a
 core change plus a specification correction and is deferred to Phase 7.
 
@@ -531,6 +686,20 @@ truth pixels undetected. No shipped mission is affected today.
 
 ## KNOWN-ISSUE-P6-9 — configured reaction wheels are built but never actuated
 
+**Status correction (2026-07-28): owned by Phase 9-B exit criterion 9
+(`PRD.md`).** This entry was written "Scheduled for Phase 7"; Phase 7 closed on
+2026-07-23 (merge `81d0138`) without the fix, and the entry was never registered
+on the `docs/release_checklist.md` section 9 register, so it had **no owner and
+no closure gate** between those dates and v0.8.0 shipped with it open. Verified
+still open at v0.8.0: `models::wheel_step` (`cpp/src/models/actuators.cpp:103`)
+has call sites only under `cpp/tests` and `tests/golden`, and none in
+`cpp/src`. Phase 9-B exit criterion 9 now owns both the fix and the ownership
+correction, and discharges under either remedy below — the actuation route or
+the rejection fallback — with the choice standing as `PRD.md` section 9 open
+question 11, where the recommendation is the actuation route. The original
+scheduling text is retained below unedited, because the wording is what let a
+phase close drop the defect.
+
 **Scheduled for Phase 7.** Found in a post-close independent review; the fix is a
 core change and is deferred to Phase 7.
 
@@ -575,6 +744,19 @@ It does mean no reaction-wheel dynamics claim can be made until the actuator is 
 the loop.
 
 ## KNOWN-ISSUE-P6-10 — an IMU bias_instability without bias_tau_s silently disables the in-run bias
+
+**Status correction (2026-07-28): the owning phase named below has already
+closed.** This entry was written "Scheduled for Phase 7"; Phase 7 closed on
+2026-07-23 (merge `81d0138`) without the fix, and the entry was never registered
+on the `docs/release_checklist.md` section 9 register, so it has had **no owner
+and no closure gate** since that date and v0.8.0 shipped with it open. Verified
+still open at v0.8.0: `python/star_reacher/mission.py` carries no cross-field
+rule tying `bias_instability > 0` to `bias_tau_s > 0`. Assigning a live owner is
+required by **Phase 9-B exit criterion 9** (`PRD.md`), whose last clause
+requires this entry to carry a status line naming a live owning phase and a
+register item number; the fix itself is explicitly **out** of that criterion's
+scope, which corrects ownership only. The original scheduling text is retained
+below unedited, because the wording is what let a phase close drop the defect.
 
 **Scheduled for Phase 7.** Found in a post-close independent review; the fix is a
 validator check plus a specification correction and is deferred to Phase 7.
