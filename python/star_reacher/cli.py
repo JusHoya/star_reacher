@@ -320,6 +320,7 @@ def _parse_set_value(raw: str):
     mismatch. Raises ValueError with an actionable message.
     """
     import json
+    import math
 
     text = raw.strip()
     try:
@@ -331,14 +332,15 @@ def _parse_set_value(raw: str):
         ) from exc
 
     def _is_number(v):
-        return isinstance(v, (int, float)) and not isinstance(v, bool)
+        return (isinstance(v, (int, float)) and not isinstance(v, bool)
+                and (not isinstance(v, float) or math.isfinite(v)))
 
     if _is_number(value):
         return value
     if isinstance(value, list) and value and all(_is_number(v) for v in value):
         return value
     raise ValueError(
-        f"{raw!r} must be a number or a non-empty JSON array of numbers "
+        f"{raw!r} must be a finite number or a non-empty JSON array of finite numbers "
         f"(e.g. 12, 5.4e3, or [0.5,0.5,0.5]); got {value!r}"
     )
 

@@ -57,6 +57,35 @@ def test_parse_set_value_array():
     assert _parse_set_value("[1, 2, 3]") == [1, 2, 3]
 
 
+@pytest.mark.parametrize("raw", ["NaN", "Infinity", "-Infinity", "1e999", "[1, NaN]", "[1e999]"])
+def test_parse_set_value_rejects_nonfinite(raw):
+    with pytest.raises(ValueError, match="finite"):
+        _parse_set_value(raw)
+
+
+@pytest.mark.parametrize("current", [1, 1.0, [1, 2], [1.0, 2.0]])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_override_rejects_nonfinite_without_mutation(current, value):
+    from star_reacher.overrides import OverrideError, apply_override
+
+    resolved = {"mission": {"value": current}}
+    replacement = [3, value] if isinstance(current, list) else value
+    with pytest.raises(OverrideError, match="mission.value.*finite"):
+        apply_override(resolved, "mission.value", replacement)
+    assert resolved["mission"]["value"] == current
+
+
+@pytest.mark.parametrize("current", [0, [0, 0]])
+def test_override_preserves_full_width_integers(current):
+    from star_reacher.overrides import apply_override
+
+    resolved = {"value": current}
+    seed = 2**64 - 1
+    replacement = [seed, seed] if isinstance(current, list) else seed
+    apply_override(resolved, "value", replacement)
+    assert resolved["value"] == replacement
+
+
 @pytest.mark.parametrize(
     "raw",
     [

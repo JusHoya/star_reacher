@@ -40,6 +40,8 @@ configuration was never validated at all.
 
 from __future__ import annotations
 
+import math
+
 from star_reacher.mission import canonical_bytes
 
 __all__ = [
@@ -124,7 +126,7 @@ def override_target(resolved, path):
 
 
 def apply_override(resolved, path, value):
-    """Apply one numeric override in place, preserving the leaf's kind."""
+    """Apply one finite numeric override in place, preserving the leaf's kind."""
     container, key = override_target(resolved, path)
     current = container[key]
 
@@ -134,6 +136,8 @@ def apply_override(resolved, path, value):
                 f"override {path!r}: expected a number to replace "
                 f"{current!r}, got {type(value).__name__}"
             )
+        if isinstance(value, float) and not math.isfinite(value):
+            raise OverrideError(f"override {path!r}: expected a finite number, got {value!r}")
         # An integer leaf keeps its type: control_rate_hz, latency_cycles and
         # seed are counts, and letting one become 10.0 would change the
         # canonical config bytes - and so the config hash - without changing
@@ -167,6 +171,10 @@ def apply_override(resolved, path, value):
             raise OverrideError(
                 f"override {path!r}: every element must be a number, got "
                 f"{value!r}"
+            )
+        if any(isinstance(v, float) and not math.isfinite(v) for v in value):
+            raise OverrideError(
+                f"override {path!r}: every element must be a finite number, got {value!r}"
             )
         # Same rule as the scalar branch, element by element: only a float
         # element with a fractional part truncates; an int element is already
